@@ -45,6 +45,16 @@ class ExperimentBuilder {
       activeVariation: null
     };
 
+    // Capture mode (full page or element)
+    this.captureMode = 'full';
+
+    // Initialize utility classes
+    this.sessionManager = new SessionManager(this);
+    this.keyboardShortcuts = new KeyboardShortcuts(this);
+    this.promptAssistant = new PromptAssistant();
+    this.designFileManager = new DesignFileManager();
+    this.convertSmartLists = new ConvertSmartLists();
+
     this.initializeConvertState();
 
     this.initializeUI();
@@ -53,6 +63,9 @@ class ExperimentBuilder {
     this.loadUsageStats();
     this.loadCurrentPage();
     this.loadConvertAPIKeys(); // Load Convert.com API keys
+
+    // Initialize utilities
+    this.initializeUtilities();
   }
 
   initializeUI() {
@@ -199,18 +212,25 @@ class ExperimentBuilder {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.url) throw new Error('No active tab found');
 
-      const response = await chrome.runtime.sendMessage({
-        type: 'CAPTURE_PAGE',
-        tabId: tab.id
-      });
-
-      if (response.success) {
-        this.currentPageData = response.data;
-        this.displayPagePreview(response.data);
-        this.addStatusLog('✓ Page captured successfully', 'success');
-        this.showSuccess('Page captured successfully!');
+      // Check capture mode
+      if (this.captureMode === 'element') {
+        // Activate element selector
+        await this.captureElement(tab.id);
       } else {
-        throw new Error(response.error || 'Capture failed');
+        // Standard full page capture
+        const response = await chrome.runtime.sendMessage({
+          type: 'CAPTURE_PAGE',
+          tabId: tab.id
+        });
+
+        if (response.success) {
+          this.currentPageData = response.data;
+          this.displayPagePreview(response.data);
+          this.addStatusLog('✓ Page captured successfully', 'success');
+          this.showSuccess('Page captured successfully!');
+        } else {
+          throw new Error(response.error || 'Capture failed');
+        }
       }
     } catch (error) {
       console.error('Capture failed:', error);
@@ -218,6 +238,77 @@ class ExperimentBuilder {
       this.showError(error.message);
     } finally {
       this.setButtonLoading(btn, false);
+    }
+  }
+
+  async captureElement(tabId) {
+    this.addStatusLog('🎯 Click any element on the page to select it', 'info');
+
+    // Send message to activate element selector
+    const response = await chrome.runtime.sendMessage({
+      type: 'START_ELEMENT_SELECTION',
+      tabId: tabId
+    });
+
+    if (response.success) {
+      this.addStatusLog('✓ Element selected and captured', 'success');
+      this.showSuccess('Element captured successfully!');
+
+      // Store element data as focused capture
+      this.currentPageData = {
+        ...this.currentPageData,
+        selectedElement: response.data,
+        captureMode: 'element'
+      };
+
+      // Show element preview
+      this.displaySelectedElementPreview(response.data);
+
+      // Also show in main preview area
+      if (response.data.screenshot) {
+        const preview = document.getElementById('pagePreview');
+        const img = document.getElementById('screenshotPreview');
+        const time = document.getElementById('captureTime');
+
+        img.src = response.data.screenshot;
+        time.textContent = `Element captured: ${response.data.selector}`;
+        preview.classList.remove('hidden');
+      }
+    } else {
+      throw new Error(response.error || 'Element selection failed');
+    }
+  }
+
+  displaySelectedElementPreview(elementData) {
+    const selectionHint = document.getElementById('elementSelectionHint');
+    const selectedPreview = document.getElementById('selectedElementPreview');
+    const elementScreenshot = document.getElementById('elementScreenshot');
+    const elementSelector = document.getElementById('elementSelector');
+    const elementDimensions = document.getElementById('elementDimensions');
+    const elementTag = document.getElementById('elementTag');
+
+    if (!selectedPreview || !elementData) return;
+
+    // Hide hint, show preview
+    selectionHint?.classList.add('hidden');
+    selectedPreview.classList.remove('hidden');
+
+    // Update preview content
+    if (elementScreenshot && elementData.screenshot) {
+      elementScreenshot.src = elementData.screenshot;
+    }
+
+    if (elementSelector && elementData.selector) {
+      elementSelector.textContent = elementData.selector;
+    }
+
+    if (elementDimensions && elementData.dimensions) {
+      const { width, height } = elementData.dimensions;
+      elementDimensions.textContent = `${Math.round(width)}×${Math.round(height)}px`;
+    }
+
+    if (elementTag && elementData.tag) {
+      elementTag.textContent = elementData.tag.toUpperCase();
     }
   }
 
@@ -2221,6 +2312,347 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     };
   }
 
+  initializeUtilities() {
+    // Initialize keyboard shortcuts
+    this.keyboardShortcuts.init();
+    console.log('⌨️ Keyboard shortcuts initialized');
+
+    // Setup session auto-save
+    this.sessionManager.setupAutoSave();
+    console.log('💾 Session auto-save initialized');
+
+    // Try to restore previous session
+    this.restoreSession();
+
+    // Setup capture mode toggles
+    this.setupCaptureModeToggles();
+
+    // Setup design file upload
+    this.setupDesignFileUpload();
+
+    // Setup prompt helper
+    this.setupPromptHelper();
+
+    // Setup template library
+    this.setupTemplateLibrary();
+
+    console.log('✅ All utilities initialized');
+  }
+
+  async restoreSession() {
+    const session = await this.sessionManager.loadSession();
+    if (session) {
+      this.sessionManager.showRestoreDialog(session);
+    }
+  }
+
+  setupCaptureModeToggles() {
+    const fullBtn = document.getElementById('captureModeFull');
+    const elementBtn = document.getElementById('captureModeElement');
+    const selectionHint = document.getElementById('elementSelectionHint');
+    const selectedPreview = document.getElementById('selectedElementPreview');
+
+    if (!fullBtn || !elementBtn) return;
+
+    fullBtn.addEventListener('click', () => {
+      this.captureMode = 'full';
+      fullBtn.classList.add('active');
+      elementBtn.classList.remove('active');
+      
+      // Hide element-specific UI
+      selectionHint?.classList.add('hidden');
+      selectedPreview?.classList.add('hidden');
+      
+      this.addStatusLog('📄 Capture mode: Full page', 'info');
+    });
+
+    elementBtn.addEventListener('click', () => {
+      this.captureMode = 'element';
+      elementBtn.classList.add('active');
+      fullBtn.classList.remove('active');
+      
+      // Show element selection hint
+      selectionHint?.classList.remove('hidden');
+      
+      this.addStatusLog('🎯 Capture mode: Select element - Click "Capture Page" then select an element', 'info');
+    });
+
+    // Setup change selection button
+    const changeSelectionBtn = document.getElementById('changeSelectionBtn');
+    changeSelectionBtn?.addEventListener('click', () => {
+      selectedPreview?.classList.add('hidden');
+      selectionHint?.classList.remove('hidden');
+      this.currentPageData.selectedElement = null;
+      this.addStatusLog('🎯 Click "Capture Page" to select a new element', 'info');
+    });
+  }
+
+  setupDesignFileUpload() {
+    const uploadBox = document.getElementById('uploadBox');
+    const fileInput = document.getElementById('designFileInput');
+    const previewGrid = document.getElementById('designPreviewGrid');
+
+    if (!uploadBox || !fileInput || !previewGrid) return;
+
+    // Click to browse
+    uploadBox.addEventListener('click', () => fileInput.click());
+
+    // Drag and drop
+    uploadBox.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadBox.classList.add('drag-over');
+    });
+
+    uploadBox.addEventListener('dragleave', () => {
+      uploadBox.classList.remove('drag-over');
+    });
+
+    uploadBox.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      uploadBox.classList.remove('drag-over');
+
+      const files = Array.from(e.dataTransfer.files);
+      await this.handleDesignFiles(files);
+    });
+
+    // File input change
+    fileInput.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files);
+      await this.handleDesignFiles(files);
+    });
+  }
+
+  async handleDesignFiles(files) {
+    for (const file of files) {
+      try {
+        const processed = await this.designFileManager.addFile(file);
+        this.renderDesignPreview(processed);
+        this.addStatusLog(`✅ Added design file: ${file.name}`, 'success');
+      } catch (error) {
+        this.showError(error.message);
+      }
+    }
+  }
+
+  renderDesignPreview(file) {
+    const previewGrid = document.getElementById('designPreviewGrid');
+    if (!previewGrid) return;
+
+    const card = document.createElement('div');
+    card.innerHTML = this.designFileManager.generatePreviewCard(file);
+    previewGrid.appendChild(card.firstElementChild);
+
+    // Bind remove button
+    const removeBtn = card.querySelector('.design-remove-btn');
+    removeBtn?.addEventListener('click', () => {
+      this.designFileManager.removeFile(file.id);
+      card.firstElementChild.remove();
+      this.addStatusLog(`🗑️ Removed design file: ${file.name}`, 'info');
+    });
+
+    // Bind notes input
+    const notesInput = card.querySelector('.design-notes-input');
+    notesInput?.addEventListener('input', (e) => {
+      this.designFileManager.updateFileNotes(file.id, e.target.value);
+    });
+  }
+
+  setupPromptHelper() {
+    const suggestionsBtn = document.getElementById('showSuggestionsBtn');
+    const examplesBtn = document.getElementById('showExamplesBtn');
+    const templatesBtn = document.getElementById('showTemplatesBtn');
+    const suggestionChips = document.getElementById('suggestionChips');
+    const chipsContainer = document.getElementById('chipsContainer');
+
+    if (!suggestionsBtn || !examplesBtn || !templatesBtn) return;
+
+    // Show/hide suggestions
+    suggestionsBtn.addEventListener('click', () => {
+      const isVisible = suggestionChips.style.display !== 'none';
+      if (isVisible) {
+        suggestionChips.style.display = 'none';
+      } else {
+        this.showPromptSuggestions();
+        suggestionChips.style.display = 'block';
+      }
+    });
+
+    // Show examples modal
+    examplesBtn.addEventListener('click', () => {
+      this.showExamplesModal();
+    });
+
+    // Show templates (reuse existing template functionality)
+    templatesBtn.addEventListener('click', () => {
+      this.showTemplateLibrary();
+    });
+
+    // Setup examples modal
+    this.setupExamplesModal();
+  }
+
+  showPromptSuggestions() {
+    const chipsContainer = document.getElementById('chipsContainer');
+    if (!chipsContainer) return;
+
+    // Get suggestions based on current context
+    const selectedElement = this.currentPageData?.selectedElement;
+    const suggestions = this.promptAssistant.getSuggestionsForElement(selectedElement);
+
+    // Clear existing chips
+    chipsContainer.innerHTML = '';
+
+    // Create suggestion chips
+    suggestions.forEach(suggestion => {
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.textContent = suggestion;
+      chip.addEventListener('click', () => {
+        this.insertSuggestion(suggestion);
+      });
+      chipsContainer.appendChild(chip);
+    });
+  }
+
+  insertSuggestion(suggestion) {
+    const descriptionText = document.getElementById('descriptionText');
+    if (!descriptionText) return;
+
+    const currentText = descriptionText.value;
+    const newText = currentText ? `${currentText}\n\n${suggestion}` : suggestion;
+    
+    descriptionText.value = newText;
+    descriptionText.focus();
+
+    // Update character count if it exists
+    const charCount = document.getElementById('charCount');
+    if (charCount) {
+      charCount.textContent = newText.length;
+    }
+
+    // Hide suggestions after selection
+    const suggestionChips = document.getElementById('suggestionChips');
+    if (suggestionChips) {
+      suggestionChips.style.display = 'none';
+    }
+  }
+
+  setupExamplesModal() {
+    const modal = document.getElementById('examplesModal');
+    const closeBtn = document.getElementById('closeExamplesModal');
+    const overlay = modal?.querySelector('.modal-overlay');
+
+    if (!modal) return;
+
+    closeBtn?.addEventListener('click', () => {
+      modal.classList.add('hidden');
+    });
+
+    overlay?.addEventListener('click', () => {
+      modal.classList.add('hidden');
+    });
+
+    // Make example cards clickable
+    modal.addEventListener('click', (e) => {
+      const exampleCard = e.target.closest('.example-card');
+      if (exampleCard) {
+        const exampleText = exampleCard.querySelector('.example-text')?.textContent;
+        if (exampleText) {
+          this.insertSuggestion(exampleText.replace(/["""]/g, ''));
+          modal.classList.add('hidden');
+        }
+      }
+    });
+  }
+
+  showExamplesModal() {
+    const modal = document.getElementById('examplesModal');
+    if (modal) {
+      modal.classList.remove('hidden');
+    }
+  }
+
+  setupTemplateLibrary() {
+    const browseBtn = document.getElementById('browseTemplatesBtn');
+    const modal = document.getElementById('templateModal');
+    const closeBtn = document.getElementById('closeTemplateModal');
+    const overlay = modal?.querySelector('.modal-overlay');
+
+    if (!browseBtn || !modal) return;
+
+    browseBtn.addEventListener('click', () => {
+      this.showTemplateLibrary();
+    });
+
+    closeBtn?.addEventListener('click', () => {
+      modal.classList.add('hidden');
+    });
+
+    overlay?.addEventListener('click', () => {
+      modal.classList.add('hidden');
+    });
+  }
+
+  showTemplateLibrary() {
+    const modal = document.getElementById('templateModal');
+    const grid = document.getElementById('templateGrid');
+
+    if (!modal || !grid) return;
+
+    // Get templates from prompt assistant
+    const templates = this.promptAssistant.templates;
+
+    // Render template cards
+    grid.innerHTML = Object.entries(templates).map(([id, template]) => `
+      <div class="template-card" data-template-id="${id}">
+        <div class="template-icon">${template.icon}</div>
+        <h4>${template.name}</h4>
+        <p>${template.description}</p>
+        <div class="template-meta">${template.variations.length} variations</div>
+        <button class="btn-primary template-apply-btn">Apply Template</button>
+      </div>
+    `).join('');
+
+    // Bind apply buttons
+    grid.querySelectorAll('.template-apply-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const card = e.target.closest('.template-card');
+        const templateId = card.getAttribute('data-template-id');
+        this.applyTemplate(templateId);
+        modal.classList.add('hidden');
+      });
+    });
+
+    modal.classList.remove('hidden');
+  }
+
+  applyTemplate(templateId) {
+    const template = this.promptAssistant.templates[templateId];
+    if (!template) return;
+
+    // Clear existing variations
+    this.variations = [];
+
+    // Add template variations
+    template.variations.forEach((v, idx) => {
+      this.variations.push({
+        id: idx + 1,
+        name: v.name,
+        description: v.instructions
+      });
+    });
+
+    // Update focused variation
+    this.focusedVariationId = this.variations[0]?.id || 1;
+
+    // Re-render
+    this.renderVariations();
+    this.updateFocusedVariationWorkspace();
+
+    this.showSuccess(`Applied template: ${template.name}`);
+    this.addStatusLog(`📋 Applied template: ${template.name} (${template.variations.length} variations)`, 'success');
+  }
+
   getConvertElements() {
     return {
       section: document.getElementById('convertIntegrationSection'),
@@ -2376,15 +2808,22 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     if (!elements.accountSelect) return;
 
     const accounts = this.convertState.accounts || [];
+    
+    // Sort accounts using smart lists
+    const sortedAccounts = this.convertSmartLists.sortAccounts(accounts);
+    
     const options = ['<option value="">-- Select Account --</option>']
-      .concat(accounts.map(account => {
-        const name = this.escapeHtml(account.name || `Account ${account.id}`);
-        const status = account.status ? ` (${this.escapeHtml(String(account.status))})` : '';
-        return `<option value="${account.id}">${name}${status}</option>`;
+      .concat(sortedAccounts.map(account => {
+        const enhanced = this.convertSmartLists.enhanceAccountDisplay(account);
+        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
+        return `<option value="${enhanced.value}"${searchAttr}>${enhanced.html}</option>`;
       }));
 
     elements.accountSelect.innerHTML = options.join('');
     elements.accountSelect.disabled = accounts.length === 0;
+
+    // Add enhanced class for styling
+    elements.accountSelect.className = 'convert-enhanced-select';
 
     if (accounts.length === 1) {
       elements.accountSelect.value = accounts[0].id;
@@ -2478,16 +2917,28 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     if (!elements.projectSelect) return;
 
     const projects = this.convertState.projects || [];
+    
+    // Sort projects using smart lists
+    const sortedProjects = this.convertSmartLists.sortProjects(projects);
+    
     const options = ['<option value="">-- Select Project --</option>']
-      .concat(projects.map(project => {
-        const name = this.escapeHtml(project.name || `Project ${project.id}`);
-        const status = project.status ? `[${this.escapeHtml(String(project.status))}]` : '';
-        const type = project.type ? this.escapeHtml(String(project.type)) : '';
-        return `<option value="${project.id}">${status} ${name} • ${type}</option>`;
+      .concat(sortedProjects.map(project => {
+        const enhanced = this.convertSmartLists.enhanceProjectDisplay(project);
+        const metaAttr = enhanced.meta ? ` data-meta="${this.escapeHtml(enhanced.meta)}"` : '';
+        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
+        return `<option value="${enhanced.value}"${metaAttr}${searchAttr}>${enhanced.html}</option>`;
       }));
 
     elements.projectSelect.innerHTML = options.join('');
     elements.projectSelect.disabled = projects.length === 0;
+
+    // Add enhanced class for styling
+    elements.projectSelect.className = 'convert-enhanced-select';
+
+    // Add search functionality for large lists
+    if (projects.length > 10) {
+      this.convertSmartLists.addSearchToSelect(elements.projectSelect);
+    }
 
     if (projects.length === 1) {
       elements.projectSelect.value = projects[0].id;
@@ -2572,18 +3023,45 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     if (!elements.experienceSelect) return;
 
     const experiences = this.convertState.experiences || [];
-    const defaultOption = '<option value="">-- Select Experience --</option>';
-    const createOption = '<option value="__create__">➕ Create New Experience</option>';
+    
+    // Sort and group experiences using smart lists
+    const sortedExperiences = this.convertSmartLists.sortExperiences(experiences);
+    
+    let optionsHtml;
+    
+    if (experiences.length > 5) {
+      // Use grouped display for large lists
+      const groups = this.convertSmartLists.groupExperiencesByStatus(sortedExperiences);
+      optionsHtml = this.convertSmartLists.createGroupedSelect(
+        groups, 
+        this.convertSmartLists.enhanceExperienceDisplay.bind(this.convertSmartLists), 
+        '-- Select Experience --'
+      );
+    } else {
+      // Simple display for small lists
+      const options = ['<option value="">-- Select Experience --</option>'];
+      options.push('<option value="__create__">➕ Create New Experience</option>');
+      
+      sortedExperiences.forEach(experience => {
+        const enhanced = this.convertSmartLists.enhanceExperienceDisplay(experience);
+        const metaAttr = enhanced.meta ? ` data-meta="${this.escapeHtml(enhanced.meta)}"` : '';
+        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
+        options.push(`<option value="${enhanced.value}"${metaAttr}${searchAttr}>${enhanced.html}</option>`);
+      });
+      
+      optionsHtml = options.join('');
+    }
 
-    const options = experiences.map(experience => {
-      const name = this.escapeHtml(experience.name || `Experience ${experience.id}`);
-      const status = experience.status ? `[${this.escapeHtml(String(experience.status))}]` : '';
-      const type = experience.type ? this.escapeHtml(String(experience.type)) : '';
-      return `<option value="${experience.id}">${status} ${name} • ${type}</option>`;
-    });
-
-    elements.experienceSelect.innerHTML = [defaultOption].concat(options, [createOption]).join('');
+    elements.experienceSelect.innerHTML = optionsHtml;
     elements.experienceSelect.disabled = false;
+
+    // Add enhanced class for styling
+    elements.experienceSelect.className = 'convert-enhanced-select';
+
+    // Add search functionality for large lists
+    if (experiences.length > 8) {
+      this.convertSmartLists.addSearchToSelect(elements.experienceSelect);
+    }
   }
 
   onConvertExperienceChange() {
