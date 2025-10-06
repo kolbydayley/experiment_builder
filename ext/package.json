@@ -1,0 +1,30 @@
+{
+  "name": "convert-experiment-builder",
+  "version": "1.0.0",
+  "description": "Chrome extension that generates Convert.com A/B test experiment code using AI",
+  "author": "Convert.com Team",
+  "license": "MIT",
+  "keywords": [
+    "chrome-extension",
+    "convert.com",
+    "ab-testing",
+    "ai",
+    "chatgpt",
+    "experiment-builder"
+  ],
+  "scripts": {
+    "build": "echo 'No build step required for this extension'",
+    "lint": "echo 'Add linting configuration if needed'",
+    "test": "echo 'Add tests if needed'",
+    "package": "zip -r convert-experiment-builder.zip . -x '*.git*' 'node_modules/*' '*.DS_Store*' 'package-lock.json'"
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/convert-com/experiment-builder-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/convert-com/experiment-builder-extension/issues"
+  },
+  "homepage": "https://www.convert.com"
+}

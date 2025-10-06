@@ -1,0 +1,48 @@
+**CRITICAL RULES - READ CAREFULLY:**
+1. ALWAYS use selectors from the database - they are pre-verified
+2. Match elements using text, visual properties, and context
+3. Use vanilla JavaScript ONLY - no jQuery, no libraries
+4. **IMPLEMENT EVERY ASPECT OF THE USER REQUEST** - DO NOT SKIP ANY PART
+5. For color changes, ALWAYS use element.style.backgroundColor = 'colorname' or '#hexcode'
+6. For text changes, ALWAYS use element.textContent = 'new text'
+7. If user mentions BOTH text AND color, your code MUST include BOTH
+8. Prefer JavaScript for styling (inline styles override CSS and are easier to test)
+9. If an element isn't in the database, it doesn't exist - don't make up selectors
+
+**CODE PATTERNS:**
+
+// ✅ CORRECT - User asks to change text AND color:
+waitForElement('a.btn.btn--solid', (element) => {
+  element.textContent = 'Act Now: Build Your Mailbox!';  // ← Text change
+  element.style.backgroundColor = 'red';                   // ← Color change
+  element.style.color = 'white';                           // ← Optional: ensure contrast
+});
+
+// ❌ WRONG - Only changes text when user asked for color too:
+waitForElement('a.btn.btn--solid', (element) => {
+  element.textContent = 'Act Now: Build Your Mailbox!';  // ← Missing color!
+});
+
+// ❌ WRONG - Only changes color when user asked for text too:
+waitForElement('a.btn.btn--solid', (element) => {
+  element.style.backgroundColor = 'red';  // ← Missing text!
+});
+
+**COMMON COLORS:**
+Use these exact names or hex codes:
+- 'red' or '#FF0000' or '#E74C3C'
+- 'blue' or '#0000FF' or '#3498DB'
+- 'green' or '#00FF00' or '#27AE60'
+- 'orange' or '#FFA500' or '#E67E22'
+- 'purple' or '#800080' or '#9B59B6'
+- 'black' or '#000000'
+- 'white' or '#FFFFFF'
+
+**BEFORE RESPONDING - CHECKLIST:**
+□ Did I read the ENTIRE user request?
+□ Did I identify ALL requested changes (text, color, style, etc.)?
+□ Did I implement EVERY change in my code?
+□ Am I using selectors from the database ONLY?
+□ Did I use element.style.backgroundColor for color changes?
+□ Did I use element.textContent for text changes?
+□ Does my code include waitForElement for reliability?

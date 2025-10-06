@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Convert.com Experiment Builder - Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    .header p {
+      opacity: 0.9;
+      font-size: 14px;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .section {
+      margin-bottom: 40px;
+    }
+
+    .section:last-child {
+      margin-bottom: 0;
+    }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #2d3748;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-description {
+      color: #718096;
+      font-size: 14px;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .api-key-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 20px;
+      background: #f7fafc;
+      border-radius: 8px;
+      border: 2px dashed #e2e8f0;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #4a5568;
+    }
+
+    .form-group input, .form-group select {
+      padding: 10px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .form-group input:focus, .form-group select:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-danger {
+      background: #f56565;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #e53e3e;
+    }
+
+    .api-keys-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .api-key-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+
+    .api-key-item:hover {
+      border-color: #cbd5e0;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+
+    .api-key-info {
+      flex: 1;
+    }
+
+    .api-key-label {
+      font-weight: 600;
+      color: #2d3748;
+      margin-bottom: 4px;
+    }
+
+    .api-key-value {
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      color: #718096;
+    }
+
+    .api-key-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-small {
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #a0aec0;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 14px;
+    }
+
+    .alert-success {
+      background: #c6f6d5;
+      color: #22543d;
+      border: 1px solid #9ae6b4;
+    }
+
+    .alert-error {
+      background: #fed7d7;
+      color: #742a2a;
+      border: 1px solid #fc8181;
+    }
+
+    .openai-section {
+      padding: 20px;
+      background: #fef5e7;
+      border-radius: 8px;
+      border: 1px solid #f9e79f;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>⚙️ Settings</h1>
+      <p>Manage your API keys and preferences</p>
+    </div>
+
+    <div class="content">
+      <!-- Success/Error Messages -->
+      <div id="alertContainer"></div>
+
+      <!-- Convert.com API Keys Section -->
+      <div class="section">
+        <div class="section-title">
+          <span>🔑</span>
+          <span>Convert.com API Keys</span>
+        </div>
+        <div class="section-description">
+          Add your Convert.com API credentials to create and manage experiments. You can add multiple keys for different projects or accounts.
+          <br><br>
+          <strong>How to get your API credentials:</strong>
+          <ol style="margin-left: 20px; margin-top: 8px;">
+            <li>Log in to your Convert.com account</li>
+            <li>Go to Account Settings → API</li>
+            <li>Copy both your API Key and API Secret</li>
+          </ol>
+        </div>
+
+        <!-- Add New API Key Form -->
+        <div class="api-key-form">
+          <div class="form-group">
+            <label for="apiKeyLabel">Label (e.g., "Main Project", "Client XYZ")</label>
+            <input 
+              type="text" 
+              id="apiKeyLabel" 
+              placeholder="My Project"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label for="apiKeyValue">Convert.com API Key</label>
+            <input 
+              type="password" 
+              id="apiKeyValue" 
+              placeholder="Enter your Convert.com API key"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label for="apiSecretValue">Convert.com API Secret</label>
+            <input 
+              type="password" 
+              id="apiSecretValue" 
+              placeholder="Enter your Convert.com API secret"
+              required
+            >
+          </div>
+          <button class="btn btn-primary" id="addApiKeyBtn">
+            Add API Key
+          </button>
+        </div>
+
+        <!-- API Keys List -->
+        <div style="margin-top: 24px;">
+          <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #2d3748;">
+            Your API Keys
+          </h3>
+          <div id="apiKeysList" class="api-keys-list">
+            <!-- API keys will be populated here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenAI API Key Section -->
+      <div class="section">
+        <div class="section-title">
+          <span>🤖</span>
+          <span>OpenAI API Key</span>
+        </div>
+        <div class="section-description">
+          Required for AI-powered code generation. Your key is stored locally and never shared.
+        </div>
+
+        <div class="openai-section">
+          <div class="form-group">
+            <label for="openaiApiKey">OpenAI API Key</label>
+            <input 
+              type="password" 
+              id="openaiApiKey" 
+              placeholder="sk-..."
+            >
+          </div>
+          <button class="btn btn-primary" id="saveOpenAIKeyBtn" style="margin-top: 12px;">
+            Save OpenAI Key
+          </button>
+        </div>
+      </div>
+
+      <!-- Model Selection -->
+      <div class="section">
+        <div class="section-title">
+          <span>🧠</span>
+          <span>AI Model</span>
+        </div>
+        <div class="form-group">
+          <label for="modelSelect">Select Model</label>
+          <select id="modelSelect">
+            <option value="gpt-4o">GPT-4o (Recommended - Best quality)</option>
+            <option value="gpt-4o-mini">GPT-4o Mini (Faster, cheaper)</option>
+            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

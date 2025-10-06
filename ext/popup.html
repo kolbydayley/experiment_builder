@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Convert.com Experiment Builder</title>
+    <style>
+        body {
+            width: 350px;
+            min-height: 400px;
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #0066cc, #0056b3);
+            color: white;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .logo {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .status {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .success { color: #4CAF50; }
+        .button {
+            background: #ff6b35;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        .button:hover {
+            background: #ff5722;
+        }
+        .info {
+            font-size: 12px;
+            opacity: 0.8;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">Convert.com</div>
+        <div>Experiment Builder</div>
+    </div>
+
+    <div class="status">
+        <div class="success">✅ Extension Loaded Successfully!</div>
+        <div style="margin-top: 10px;">
+            <strong>Next Step:</strong> Try opening the side panel
+        </div>
+    </div>
+
+    <button class="button" onclick="openSidePanel()">Open Side Panel</button>
+    <button class="button" onclick="testConnection()">Test Connection</button>
+    <button class="button" onclick="checkAPIs()">Check Chrome APIs</button>
+
+    <div class="info">
+        <div>Chrome Version: <span id="chromeVersion">Checking...</span></div>
+        <div>Side Panel Support: <span id="sidePanelSupport">Checking...</span></div>
+    </div>
+
+    <script>
+        console.log('🎮 Popup loaded');
+
+        // Check Chrome version
+        const userAgent = navigator.userAgent;
+        const chromeMatch = userAgent.match(/Chrome\/(\d+)/);
+        const chromeVersion = chromeMatch ? parseInt(chromeMatch[1]) : 'Unknown';
+        document.getElementById('chromeVersion').textContent = chromeVersion;
+
+        // Check side panel support
+        const sidePanelSupported = !!chrome.sidePanel;
+        document.getElementById('sidePanelSupport').textContent = 
+            sidePanelSupported ? '✅ Available' : '❌ Not Available';
+
+        async function openSidePanel() {
+            try {
+                console.log('🚪 Attempting to open side panel...');
+                
+                const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                
+                // Try different approaches
+                if (chrome.sidePanel?.open) {
+                    await chrome.sidePanel.open({ windowId: tab.windowId });
+                    console.log('✅ Side panel opened via windowId');
+                } else if (chrome.sidePanel?.setOptions) {
+                    await chrome.sidePanel.setOptions({
+                        path: 'test-sidepanel.html',
+                        enabled: true
+                    });
+                    console.log('✅ Side panel options set');
+                } else {
+                    alert('❌ Side Panel API not available in this Chrome version');
+                    return;
+                }
+                
+                // Close popup after opening side panel
+                window.close();
+                
+            } catch (error) {
+                console.error('❌ Failed to open side panel:', error);
+                alert(`Failed to open side panel: ${error.message}`);
+            }
+        }
+
+        async function testConnection() {
+            try {
+                const response = await chrome.runtime.sendMessage({
+                    type: 'TEST_CONNECTION'
+                });
+                
+                if (response.success) {
+                    alert('✅ Service worker connection successful!');
+                } else {
+                    alert('❌ Service worker connection failed');
+                }
+            } catch (error) {
+                alert(`❌ Connection error: ${error.message}`);
+            }
+        }
+
+        function checkAPIs() {
+            const apis = {
+                'chrome.sidePanel': !!chrome.sidePanel,
+                'chrome.sidePanel.open': !!chrome.sidePanel?.open,
+                'chrome.sidePanel.setPanelBehavior': !!chrome.sidePanel?.setPanelBehavior,
+                'chrome.sidePanel.setOptions': !!chrome.sidePanel?.setOptions,
+                'chrome.tabs': !!chrome.tabs,
+                'chrome.storage': !!chrome.storage,
+                'chrome.runtime': !!chrome.runtime
+            };
+
+            let message = 'Chrome API Availability:\\n\\n';
+            for (const [api, available] of Object.entries(apis)) {
+                message += `${available ? '✅' : '❌'} ${api}\\n`;
+            }
+
+            alert(message);
+        }
+    </script>
+</body>
+</html>

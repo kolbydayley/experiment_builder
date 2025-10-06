@@ -1,0 +1,75 @@
+{
+  "manifest_version": 3,
+  "name": "Convert.com Experiment Builder",
+  "version": "1.1.0",
+  "description": "Generate Convert.com A/B test experiment code using AI with smart element selection and design file support",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "sidePanel",
+    "scripting",
+    "tabs",
+    "cookies",
+    "tabCapture"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://api.openai.com/*",
+    "https://chat.openai.com/*",
+    "https://api.convert.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "Open Convert.com Experiment Builder",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content-scripts/page-capture.js",
+        "content-scripts/element-selector.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "options_page": "settings/settings.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*", "utils/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+C",
+        "mac": "Command+Shift+C"
+      },
+      "description": "Open Convert.com Experiment Builder"
+    },
+    "capture_page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P",
+        "mac": "Command+Shift+P"
+      },
+      "description": "Capture current page"
+    }
+  }
+}

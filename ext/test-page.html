@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Extension Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 10px 20px; margin: 10px; font-size: 16px; }
+        .console { background: #f0f0f0; padding: 10px; margin: 10px 0; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>Chrome Extension Test Page</h1>
+    <p>Use this page to test if the extension is working:</p>
+    
+    <button onclick="testExtension()">Test Extension Connection</button>
+    <button onclick="testSidePanel()">Try Open Side Panel</button>
+    <button onclick="injectContentScript()">Test Content Script</button>
+    
+    <div class="console" id="output">Test results will appear here...</div>
+    
+    <script>
+        function log(message) {
+            const output = document.getElementById('output');
+            output.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+            console.log(message);
+        }
+        
+        async function testExtension() {
+            try {
+                log('🔍 Testing extension connection...');
+                
+                // This won't work from a regular webpage, but we can try
+                if (typeof chrome !== 'undefined' && chrome.runtime) {
+                    const response = await chrome.runtime.sendMessage('your-extension-id', {
+                        type: 'TEST_CONNECTION'
+                    });
+                    log('✅ Extension responded: ' + JSON.stringify(response));
+                } else {
+                    log('❌ Chrome extension APIs not available from webpage');
+                    log('ℹ️  This is normal - extensions can\'t be accessed from regular webpages');
+                }
+            } catch (error) {
+                log('❌ Error: ' + error.message);
+            }
+        }
+        
+        function testSidePanel() {
+            log('ℹ️  Side panel can only be opened by the extension itself');
+            log('ℹ️  Try right-clicking on the page and looking for extension options');
+        }
+        
+        function injectContentScript() {
+            log('🔍 Checking if content script is injected...');
+            
+            // The content script should create a global variable or method
+            if (typeof window.pageCapture !== 'undefined') {
+                log('✅ Content script is loaded');
+            } else {
+                log('❌ Content script not detected');
+                log('ℹ️  Check if the extension is enabled and reload this page');
+            }
+        }
+        
+        // Auto-run some tests
+        window.onload = function() {
+            log('📄 Test page loaded');
+            setTimeout(injectContentScript, 1000);
+        };
+    </script>
+</body>
+</html>

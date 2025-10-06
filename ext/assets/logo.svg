@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0066cc"/>
+      <stop offset="100%" stop-color="#0056b3"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="20" fill="url(#bg)"/>
+  <g fill="white">
+    <!-- Convert.com logo representation -->
+    <circle cx="32" cy="32" r="8"/>
+    <circle cx="96" cy="32" r="8"/>
+    <circle cx="32" cy="96" r="8"/>
+    <circle cx="96" cy="96" r="8"/>
+    
+    <!-- A/B testing arrows -->
+    <path d="M20 64 L108 64 M100 56 L108 64 L100 72" stroke="white" stroke-width="3" fill="none"/>
+    
+    <!-- Code brackets -->
+    <path d="M45 20 L35 30 L35 50 L45 60" stroke="white" stroke-width="3" fill="none"/>
+    <path d="M83 20 L93 30 L93 50 L83 60" stroke="white" stroke-width="3" fill="none"/>
+    
+    <!-- AI sparkles -->
+    <path d="M70 40 L72 36 L74 40 L78 42 L74 44 L72 48 L70 44 L66 42 Z" fill="white"/>
+    <path d="M55 75 L56 73 L57 75 L59 76 L57 77 L56 79 L55 77 L53 76 Z" fill="white"/>
+  </g>
+  <text x="64" y="110" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-size="12" font-weight="bold">CONVERT</text>
+</svg>

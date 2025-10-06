@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convert.com Experiment Builder</title>
+    <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+    <div class="app">
+        <div class="sticky-header-container">
+            <header class="header">
+                <h1>🔬 Experiment Builder</h1>
+                <p class="subtitle">AI-powered Convert.com workflow</p>
+            </header>
+
+            <nav class="primary-nav" aria-label="Primary">
+            <button class="nav-btn active" data-panel="build">
+                <span class="nav-icon">🛠️</span>
+                <span>Build</span>
+            </button>
+            <button class="nav-btn" data-panel="review">
+                <span class="nav-icon">🧪</span>
+                <span>Review</span>
+            </button>
+            <button class="nav-btn" data-panel="code">
+                <span class="nav-icon">💻</span>
+                <span>Code</span>
+            </button>
+            <button class="nav-btn" data-panel="convert">
+                <span class="nav-icon">🚀</span>
+                <span>Convert</span>
+            </button>
+        </nav>
+        </div>
+
+        <main class="panel-container">
+            <section id="panel-build" class="panel-view active" aria-labelledby="build">
+                <div class="workflow">
+                    <div class="step">
+                        <div class="step-header">
+                            <span class="step-number">1</span>
+                            <div class="step-heading">
+                                <h2>Capture Current Page</h2>
+                                <p class="step-note">Take a fresh snapshot so the AI works with the live DOM.</p>
+                            </div>
+                        </div>
+                        <div class="step-content">
+                            <div class="page-info">
+                                <span class="url" id="currentUrl">No page loaded</span>
+                            </div>
+                            <button id="captureBtn" class="btn btn-primary">
+                                <span class="btn-text">📸 Capture Page</span>
+                                <span class="btn-loading hidden">Capturing...</span>
+                            </button>
+                            <div id="pagePreview" class="preview hidden">
+                                <img id="screenshotPreview" alt="Page Screenshot" />
+                                <div class="preview-info">
+                                    <span id="captureTime"></span>
+                                    <button id="recaptureBtn" class="btn-link">Recapture</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="step optional">
+                        <div class="step-header">
+                            <span class="step-number">2</span>
+                            <div class="step-heading">
+                                <h2>Shared Context (optional)</h2>
+                                <p class="step-note">Only add guardrails or goals that apply to every variation.</p>
+                            </div>
+                        </div>
+                        <div class="step-content">
+                            <textarea 
+                                id="descriptionText" 
+                                placeholder="Optional: add shared goals, success metrics, or constraints that every variation should respect. Leave empty if each variation stands on its own."
+                                rows="4"
+                            ></textarea>
+                            <div class="char-counter">
+                                <span id="charCount">0</span> characters
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-header">
+                            <span class="step-number">3</span>
+                            <div class="step-heading">
+                                <h2>Variation Instructions</h2>
+                                <p class="step-note">Give each variation a specific outcome. The focused variation auto-applies in Review.</p>
+                            </div>
+                            <button id="addVariationBtn" class="btn-icon" title="Add Variation">+</button>
+                        </div>
+                        <div class="step-content">
+                            <div id="variationsList" class="variations-list"></div>
+                            <p class="hint variation-hint">Tip: describe only what makes this variation unique. The AI already knows the current page state.</p>
+                        </div>
+                    </div>
+
+                    <div class="step">
+                        <div class="step-header">
+                            <span class="step-number">⚙️</span>
+                            <div class="step-heading">
+                                <h2>Generation Model</h2>
+                                <p class="step-note">Choose your AI model. API keys are managed in Settings.</p>
+                            </div>
+                        </div>
+                        <div class="step-content settings-step">
+                            <div class="settings-card">
+                                <div class="settings-card-header">
+                                    <h3>Model Selection</h3>
+                                    <button id="openFullSettingsBtn" class="btn-link">Full settings</button>
+                                </div>
+                                <div class="setting-group">
+                                    <label for="modelSelect">OpenAI Model</label>
+                                    <select id="modelSelect" class="input">
+                                        <option value="gpt-4o-mini">GPT-4o Mini · Fast & efficient</option>
+                                        <option value="gpt-4o">GPT-4o · Highest quality</option>
+                                        <option value="gpt-4.1-mini">GPT-4.1 Mini · Latest fast model</option>
+                                    </select>
+                                </div>
+                                <div class="toggle-grid">
+                                    <label class="toggle">
+                                        <input type="checkbox" id="preferCSS" checked>
+                                        <span class="toggle-text">Prefer CSS over JavaScript</span>
+                                    </label>
+                                    <label class="toggle">
+                                        <input type="checkbox" id="includeDOMChecks" checked>
+                                        <span class="toggle-text">Include DOM ready checks</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="generate-section">
+                        <button id="generateBtn" class="btn-generate">
+                            <span class="btn-text">✨ Generate &amp; Test Automatically</span>
+                            <span class="btn-loading hidden">
+                                <span class="spinner"></span>
+                                Generating...
+                            </span>
+                        </button>
+                        <p class="generate-hint">Tip: stay on this tab to adjust requirements while the run is in progress.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="panel-review" class="panel-view" aria-labelledby="review">
+                <div class="review-columns">
+                    <div class="review-column">
+                        <div id="statusPanel" class="status-panel card hidden">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Status Timeline</h3>
+                                    <p>Live progress for generation, previews, and validation.</p>
+                                </div>
+                                <span id="statusIndicator" class="indicator">●</span>
+                            </div>
+                            <div id="statusLog" class="status-log"></div>
+                            <div class="status-footer">
+                                <span id="usageStats">Tokens: 0 | Cost: $0.00</span>
+                                <button id="copyLogBtn" class="btn-link">Copy log</button>
+                            </div>
+                        </div>
+
+                        <div class="variation-workspace card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Active Variation Workspace</h3>
+                                    <p>Focused variation auto-applies when you make changes. Switch focus to work on different variations.</p>
+                                </div>
+                                <button id="editVariationsBtn" class="btn-small btn-secondary">Edit variation instructions</button>
+                            </div>
+                            <div class="variation-focus">
+                                <div class="variation-focus-header">
+                                    <span class="variation-focus-label">🎯 Currently Focused</span>
+                                    <div class="variation-focus-actions">
+                                        <button id="switchFocusBtn" class="btn-link btn-small">Switch focus</button>
+                                    </div>
+                                </div>
+                                <h4 id="focusedVariationTitle">Variation 1</h4>
+                                <p id="focusedVariationSummary">Add variation-specific instructions in the Build tab to see details here.</p>
+                                <div class="variation-focus-status">
+                                    <span id="focusedVariationStatus" class="variation-status-indicator">Not generated</span>
+                                </div>
+                            </div>
+                            <div id="aiActivityBanner" class="ai-activity" data-status="idle">Ready to review updates.</div>
+                            <div id="variationPreview" class="variation-preview hidden">
+                                <div class="variation-preview-header">
+                                    <h4>All Variations</h4>
+                                    <div class="variation-preview-actions">
+                                        <button id="clearPreviewBtn" class="btn-link btn-small" disabled>Clear all previews</button>
+                                    </div>
+                                </div>
+                                <div id="variationPreviewList" class="variation-preview-list"></div>
+                                <p id="variationPreviewHint" class="variation-preview-hint">Preview is off. Choose any variation to apply it to the active tab.</p>
+                            </div>
+
+                            <div id="testScreenshot" class="test-screenshot hidden">
+                                <h4>Latest Test Result</h4>
+                                <img id="screenshotImg" alt="Test Result" />
+                                <div id="screenshotMeta" class="screenshot-meta"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="review-column">
+                        <div class="chat-panel card">
+                            <div class="card-header">
+                                <div>
+                                    <h3>Chat &amp; Adjust</h3>
+                                    <p>Refine the focused variation without leaving review.</p>
+                                </div>
+                            </div>
+                            <div id="chatThread" class="chat-thread" aria-live="polite">
+                                <div id="chatEmptyState" class="chat-empty">
+                                    <p>Generate code to start a thread. Ask for tweaks, clarifications, or regression checks.</p>
+                                </div>
+                            </div>
+                            <form id="chatComposer" class="chat-composer" autocomplete="off">
+                                <label for="chatInput" class="sr-only">Message</label>
+                                <textarea id="chatInput" rows="3" placeholder="Describe what you'd like to adjust or ask follow-up questions..." required></textarea>
+                                <div class="chat-actions">
+                                    <span class="chat-status" id="chatStatus"></span>
+                                    <button type="submit" id="chatSendBtn" class="btn-primary">Send</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="panel-code" class="panel-view" aria-labelledby="code">
+                <div id="resultsPanel" class="results-panel card hidden">
+                    <div class="results-header">
+                        <div>
+                            <h3>Generated Code</h3>
+                            <p class="results-subtitle">Review or edit the source for each variation.</p>
+                        </div>
+                        <div class="results-actions">
+                            <button id="stopIterationBtn" class="btn-danger btn-small hidden">⏹ Stop</button>
+                            <button id="exportAllBtn" class="btn-small">📥 Export</button>
+                            <button id="clearResultsBtn" class="btn-link">Clear</button>
+                        </div>
+                    </div>
+
+                    <div id="codeTabs" class="tabs"></div>
+                    <div id="codeContent" class="code-content"></div>
+                </div>
+            </section>
+
+            <section id="panel-convert" class="panel-view" aria-labelledby="convert">
+                <div id="convertIntegrationSection" class="convert-container card">
+                    <div class="card-header">
+                        <div>
+                            <h3>Convert.com Workspace</h3>
+                            <p>Move between credentials, projects, and launch actions without leaving the panel.</p>
+                        </div>
+                    </div>
+
+                    <div class="convert-grid">
+                        <div class="convert-card">
+                            <h4>1. Choose Credential</h4>
+                            <p class="convert-hint">Keys stay on this device. Manage them any time in Settings.</p>
+                            <select id="convertApiKeySelect" class="input">
+                                <option value="">-- Select API Key --</option>
+                            </select>
+                            <button class="btn-link" id="manageConvertKeysBtn">⚙️ Manage API Keys</button>
+                        </div>
+
+                        <div class="convert-card">
+                            <h4>2. Pick Account</h4>
+                            <p class="convert-hint">Accounts load after selecting credentials.</p>
+                            <select id="convertAccountSelect" class="input" disabled>
+                                <option value="">-- Select Account --</option>
+                            </select>
+                        </div>
+
+                        <div class="convert-card">
+                            <h4>3. Project &amp; Experience</h4>
+                            <div class="convert-fieldset">
+                                <label class="setting-label-row" for="convertProjectSelect">
+                                    <span>Project</span>
+                                    <button class="btn-link" id="refreshConvertProjectsBtn" disabled>⟲ Refresh</button>
+                                </label>
+                                <select id="convertProjectSelect" class="input" disabled>
+                                    <option value="">-- Select Project --</option>
+                                </select>
+
+                                <label class="setting-label-row" for="convertExperienceSelect">
+                                    <span>Experience</span>
+                                    <button class="btn-link" id="refreshConvertExperiencesBtn" disabled>⟲ Refresh</button>
+                                </label>
+                                <select id="convertExperienceSelect" class="input" disabled>
+                                    <option value="">-- Select Experience --</option>
+                                    <option value="__create__">➕ Create New Experience</option>
+                                </select>
+                            </div>
+
+                            <div id="convertExperienceMeta" class="convert-meta hidden">
+                                <div class="convert-meta-row"><span>Status</span><span id="convertExperienceStatus">-</span></div>
+                                <div class="convert-meta-row"><span>Type</span><span id="convertExperienceType">-</span></div>
+                                <div class="convert-meta-row"><span>Last Updated</span><span id="convertExperienceUpdated">-</span></div>
+                            </div>
+
+                            <div id="convertCreateFields" class="convert-create hidden">
+                                <div class="setting-group">
+                                    <label for="convertNewExperienceName">Experience Name</label>
+                                    <input type="text" id="convertNewExperienceName" class="input" placeholder="Homepage Headline Test">
+                                </div>
+                                <div class="setting-group">
+                                    <label for="convertNewExperienceType">Experience Type</label>
+                                    <select id="convertNewExperienceType" class="input">
+                                        <option value="a/b">A/B Test</option>
+                                        <option value="a/a">A/A Test</option>
+                                        <option value="deploy">Deploy</option>
+                                        <option value="split_url">Split URL</option>
+                                    </select>
+                                </div>
+                                <div class="setting-group">
+                                    <label for="convertNewExperienceUrl">Target URL</label>
+                                    <input type="text" id="convertNewExperienceUrl" class="input" placeholder="https://example.com/page">
+                                </div>
+                                <div class="setting-row-group">
+                                    <div class="setting-group">
+                                        <label for="convertNewBaselineName">Baseline Name</label>
+                                        <input type="text" id="convertNewBaselineName" class="input" placeholder="Original">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label for="convertNewVariationName">Variation Name</label>
+                                        <input type="text" id="convertNewVariationName" class="input" placeholder="Variation 1">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="convert-card">
+                            <h4>4. Sync Actions</h4>
+                            <p class="convert-hint">Import existing experiences, push updates, or preview from the active tab.</p>
+                            <div class="convert-actions">
+                                <button id="importExperienceBtn" class="btn-secondary" disabled>⬇️ Pull Experience Code</button>
+                                <button id="pushExperienceBtn" class="btn-primary" disabled>⬆️ Push Updates to Convert</button>
+                            </div>
+                            <div class="convert-actions">
+                                <button id="runConvertPreviewBtn" class="btn-secondary" disabled>▶️ Run Current Variation</button>
+                            </div>
+                            <div id="convertStatus" class="convert-status"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <div id="errorDisplay" class="notification error hidden">
+            <span class="icon">⚠️</span>
+            <span class="message"></span>
+            <button class="close" aria-label="Dismiss">×</button>
+        </div>
+
+        <div id="successDisplay" class="notification success hidden">
+            <span class="icon">✓</span>
+            <span class="message"></span>
+        </div>
+    </div>
+
+    <script src="sidepanel.js"></script>
+</body>
+</html>
