@@ -49,6 +49,39 @@
                             <div class="page-info">
                                 <span class="url" id="currentUrl">No page loaded</span>
                             </div>
+
+                            <!-- Capture Mode Selector -->
+                            <div class="capture-mode-selector">
+                                <button class="btn-toggle active" id="captureModeFull" data-mode="full">
+                                    📄 Full Page
+                                </button>
+                                <button class="btn-toggle" id="captureModeElement" data-mode="element">
+                                    🎯 Select Element
+                                </button>
+                            </div>
+
+                            <!-- Element Selection Hint -->
+                            <div class="element-selection-hint hidden" id="elementSelectionHint">
+                                <span class="icon">👆</span>
+                                <span>Click "Capture Page" then click any element on the page to isolate it</span>
+                            </div>
+
+                            <!-- Selected Element Preview -->
+                            <div class="selected-element-preview hidden" id="selectedElementPreview">
+                                <div class="element-preview-header">
+                                    <span class="preview-title">Selected Element:</span>
+                                    <button class="btn-small" id="changeSelectionBtn">Change Selection</button>
+                                </div>
+                                <img id="elementScreenshot" class="element-screenshot" alt="Selected Element" />
+                                <div class="element-info">
+                                    <code id="elementSelector">.example-selector</code>
+                                    <div class="element-meta" id="elementMeta">
+                                        <span id="elementDimensions">200×50px</span> • 
+                                        <span id="elementTag">BUTTON</span>
+                                    </div>
+                                </div>
+                            </div>
+
                             <button id="captureBtn" class="btn btn-primary">
                                 <span class="btn-text">📸 Capture Page</span>
                                 <span class="btn-loading hidden">Capturing...</span>
@@ -72,6 +105,28 @@
                             </div>
                         </div>
                         <div class="step-content">
+                            <div class="instruction-helper">
+                                <div class="helper-actions">
+                                    <button type="button" class="btn-text" id="showSuggestionsBtn">
+                                        💡 Need ideas?
+                                    </button>
+                                    <button type="button" class="btn-text" id="showExamplesBtn">
+                                        📚 See examples
+                                    </button>
+                                    <button type="button" class="btn-text" id="showTemplatesBtn">
+                                        📋 Templates
+                                    </button>
+                                </div>
+
+                                <!-- Suggestion chips -->
+                                <div class="suggestion-chips" id="suggestionChips" style="display: none;">
+                                    <div class="chip-label">Quick suggestions:</div>
+                                    <div class="chips-container" id="chipsContainer">
+                                        <!-- Chips will be populated by JavaScript -->
+                                    </div>
+                                </div>
+                            </div>
+
                             <textarea 
                                 id="descriptionText" 
                                 placeholder="Optional: add shared goals, success metrics, or constraints that every variation should respect. Leave empty if each variation stands on its own."
@@ -83,6 +138,28 @@
                         </div>
                     </div>
 
+                    <!-- Design Files (Optional) -->
+                    <div class="step optional">
+                        <div class="step-header">
+                            <span class="step-number">2.5</span>
+                            <div class="step-heading">
+                                <h2>Design Files (optional)</h2>
+                                <p class="step-note">Upload mockups or designs to show AI the desired end state.</p>
+                            </div>
+                        </div>
+                        <div class="step-content">
+                            <div class="design-upload-area" id="designUploadArea">
+                                <input type="file" id="designFileInput" accept="image/*" multiple style="display: none;">
+                                <div class="upload-box" id="uploadBox">
+                                    <span class="icon">📎</span>
+                                    <p>Drop design files here or click to browse</p>
+                                    <small>PNG, JPG, SVG supported • Max 10MB each</small>
+                                </div>
+                                <div class="design-preview-grid" id="designPreviewGrid"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="step">
                         <div class="step-header">
                             <span class="step-number">3</span>
@@ -90,7 +167,12 @@
                                 <h2>Variation Instructions</h2>
                                 <p class="step-note">Give each variation a specific outcome. The focused variation auto-applies in Review.</p>
                             </div>
-                            <button id="addVariationBtn" class="btn-icon" title="Add Variation">+</button>
+                            <div class="step-header-actions">
+                                <button id="browseTemplatesBtn" class="btn-text" title="Browse Templates">
+                                    📋 Templates
+                                </button>
+                                <button id="addVariationBtn" class="btn-icon" title="Add Variation">+</button>
+                            </div>
                         </div>
                         <div class="step-content">
                             <div id="variationsList" class="variations-list"></div>
@@ -365,6 +447,79 @@
         </div>
     </div>
 
+    <!-- Examples Modal -->
+    <div id="examplesModal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Example Instructions</h3>
+                <button class="modal-close" id="closeExamplesModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="examples-grid">
+                    <div class="example-section">
+                        <h4>Button Changes</h4>
+                        <div class="example-card">
+                            <div class="example-label">Simple Color Change</div>
+                            <p class="example-text">"Change CTA button to orange (#FF6B35) with white text"</p>
+                        </div>
+                        <div class="example-card">
+                            <div class="example-label">Comprehensive Update</div>
+                            <p class="example-text">"Make CTA 30% larger, change to green (#4CAF50), add white text, rounded corners (8px), shadow, and smooth hover effect"</p>
+                        </div>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>Layout Changes</h4>
+                        <div class="example-card">
+                            <div class="example-label">Element Positioning</div>
+                            <p class="example-text">"Move hero image from right to left side, make it 50% width, position text content on the right"</p>
+                        </div>
+                        <div class="example-card">
+                            <div class="example-label">Spacing Improvements</div>
+                            <p class="example-text">"Increase spacing between sections by 40px, add more padding inside content boxes (24px all around)"</p>
+                        </div>
+                    </div>
+
+                    <div class="example-section">
+                        <h4>Vague but Effective</h4>
+                        <div class="example-card">
+                            <div class="example-label">Trust Building</div>
+                            <p class="example-text">"Make the pricing section more eye-catching and trustworthy"</p>
+                        </div>
+                        <div class="example-card">
+                            <div class="example-label">Modernization</div>
+                            <p class="example-text">"Give the page a more modern, professional look"</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Template Library Modal -->
+    <div id="templateModal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Experiment Templates</h3>
+                <button class="modal-close" id="closeTemplateModal">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-description">Choose a pre-built experiment template to get started quickly</p>
+                <div class="template-grid" id="templateGrid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Utility Classes -->
+    <script src="../utils/session-manager.js"></script>
+    <script src="../utils/keyboard-shortcuts.js"></script>
+    <script src="../utils/prompt-assistant.js"></script>
+    <script src="../utils/design-file-manager.js"></script>
+    <script src="../utils/convert-smart-lists.js"></script>
+
+    <!-- Main Application -->
     <script src="sidepanel.js"></script>
 </body>
 </html>
