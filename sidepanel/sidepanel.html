@@ -9,27 +9,26 @@
 <body>
     <div class="app">
         <div class="sticky-header-container">
-            <header class="header">
-                <h1>🔬 Experiment Builder</h1>
+            <header class="header"                                <button id="runConvertPreviewBtn" class="btn-secondary" disabled">Run Current Variation</button>
+                <h1>Experiment Builder</h1>
                 <p class="subtitle">AI-powered Convert.com workflow</p>
             </header>
 
             <nav class="primary-nav" aria-label="Primary">
             <button class="nav-btn active" data-panel="build">
-                <span class="nav-icon">🛠️</span>
-                <span>Build</span>
+                Build
             </button>
             <button class="nav-btn" data-panel="review">
-                <span class="nav-icon">🧪</span>
-                <span>Review</span>
+                Review
             </button>
             <button class="nav-btn" data-panel="code">
-                <span class="nav-icon">💻</span>
-                <span>Code</span>
+                Code
             </button>
             <button class="nav-btn" data-panel="convert">
-                <span class="nav-icon">🚀</span>
-                <span>Convert</span>
+                Convert
+            </button>
+            <button class="nav-btn settings-nav-btn" id="openSettingsBtn" title="Open Settings">
+                ⚙️
             </button>
         </nav>
         </div>
@@ -53,16 +52,15 @@
                             <!-- Capture Mode Selector -->
                             <div class="capture-mode-selector">
                                 <button class="btn-toggle active" id="captureModeFull" data-mode="full">
-                                    📄 Full Page
+                                    Full Page
                                 </button>
                                 <button class="btn-toggle" id="captureModeElement" data-mode="element">
-                                    🎯 Select Element
+                                    Select Element
                                 </button>
                             </div>
 
                             <!-- Element Selection Hint -->
                             <div class="element-selection-hint hidden" id="elementSelectionHint">
-                                <span class="icon">👆</span>
                                 <span>Click "Capture Page" then click any element on the page to isolate it</span>
                             </div>
 
@@ -83,7 +81,7 @@
                             </div>
 
                             <button id="captureBtn" class="btn btn-primary">
-                                <span class="btn-text">📸 Capture Page</span>
+                                <span class="btn-text">Capture Page</span>
                                 <span class="btn-loading hidden">Capturing...</span>
                             </button>
                             <div id="pagePreview" class="preview hidden">
@@ -96,80 +94,16 @@
                         </div>
                     </div>
 
-                    <div class="step optional">
-                        <div class="step-header">
-                            <span class="step-number">2</span>
-                            <div class="step-heading">
-                                <h2>Shared Context (optional)</h2>
-                                <p class="step-note">Only add guardrails or goals that apply to every variation.</p>
-                            </div>
-                        </div>
-                        <div class="step-content">
-                            <div class="instruction-helper">
-                                <div class="helper-actions">
-                                    <button type="button" class="btn-text" id="showSuggestionsBtn">
-                                        💡 Need ideas?
-                                    </button>
-                                    <button type="button" class="btn-text" id="showExamplesBtn">
-                                        📚 See examples
-                                    </button>
-                                    <button type="button" class="btn-text" id="showTemplatesBtn">
-                                        📋 Templates
-                                    </button>
-                                </div>
-
-                                <!-- Suggestion chips -->
-                                <div class="suggestion-chips" id="suggestionChips" style="display: none;">
-                                    <div class="chip-label">Quick suggestions:</div>
-                                    <div class="chips-container" id="chipsContainer">
-                                        <!-- Chips will be populated by JavaScript -->
-                                    </div>
-                                </div>
-                            </div>
-
-                            <textarea 
-                                id="descriptionText" 
-                                placeholder="Optional: add shared goals, success metrics, or constraints that every variation should respect. Leave empty if each variation stands on its own."
-                                rows="4"
-                            ></textarea>
-                            <div class="char-counter">
-                                <span id="charCount">0</span> characters
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Design Files (Optional) -->
-                    <div class="step optional">
-                        <div class="step-header">
-                            <span class="step-number">2.5</span>
-                            <div class="step-heading">
-                                <h2>Design Files (optional)</h2>
-                                <p class="step-note">Upload mockups or designs to show AI the desired end state.</p>
-                            </div>
-                        </div>
-                        <div class="step-content">
-                            <div class="design-upload-area" id="designUploadArea">
-                                <input type="file" id="designFileInput" accept="image/*" multiple style="display: none;">
-                                <div class="upload-box" id="uploadBox">
-                                    <span class="icon">📎</span>
-                                    <p>Drop design files here or click to browse</p>
-                                    <small>PNG, JPG, SVG supported • Max 10MB each</small>
-                                </div>
-                                <div class="design-preview-grid" id="designPreviewGrid"></div>
-                            </div>
-                        </div>
-                    </div>
-
                     <div class="step">
                         <div class="step-header">
-                            <span class="step-number">3</span>
+                            <span class="step-number">2</span>
                             <div class="step-heading">
                                 <h2>Variation Instructions</h2>
                                 <p class="step-note">Give each variation a specific outcome. The focused variation auto-applies in Review.</p>
                             </div>
                             <div class="step-header-actions">
                                 <button id="browseTemplatesBtn" class="btn-text" title="Browse Templates">
-                                    📋 Templates
+                                    Templates
                                 </button>
                                 <button id="addVariationBtn" class="btn-icon" title="Add Variation">+</button>
                             </div>
@@ -180,45 +114,10 @@
                         </div>
                     </div>
 
-                    <div class="step">
-                        <div class="step-header">
-                            <span class="step-number">⚙️</span>
-                            <div class="step-heading">
-                                <h2>Generation Model</h2>
-                                <p class="step-note">Choose your AI model. API keys are managed in Settings.</p>
-                            </div>
-                        </div>
-                        <div class="step-content settings-step">
-                            <div class="settings-card">
-                                <div class="settings-card-header">
-                                    <h3>Model Selection</h3>
-                                    <button id="openFullSettingsBtn" class="btn-link">Full settings</button>
-                                </div>
-                                <div class="setting-group">
-                                    <label for="modelSelect">OpenAI Model</label>
-                                    <select id="modelSelect" class="input">
-                                        <option value="gpt-4o-mini">GPT-4o Mini · Fast & efficient</option>
-                                        <option value="gpt-4o">GPT-4o · Highest quality</option>
-                                        <option value="gpt-4.1-mini">GPT-4.1 Mini · Latest fast model</option>
-                                    </select>
-                                </div>
-                                <div class="toggle-grid">
-                                    <label class="toggle">
-                                        <input type="checkbox" id="preferCSS" checked>
-                                        <span class="toggle-text">Prefer CSS over JavaScript</span>
-                                    </label>
-                                    <label class="toggle">
-                                        <input type="checkbox" id="includeDOMChecks" checked>
-                                        <span class="toggle-text">Include DOM ready checks</span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
 
                     <div class="generate-section">
                         <button id="generateBtn" class="btn-generate">
-                            <span class="btn-text">✨ Generate &amp; Test Automatically</span>
+                            <span class="btn-text">Generate &amp; Test Automatically</span>
                             <span class="btn-loading hidden">
                                 <span class="spinner"></span>
                                 Generating...
@@ -301,9 +200,40 @@
                                     <p>Generate code to start a thread. Ask for tweaks, clarifications, or regression checks.</p>
                                 </div>
                             </div>
+
+                            <!-- Chat Tools -->
+                            <div class="chat-tools">
+                                <div class="tool-group">
+                                    <button type="button" class="tool-btn" id="chatElementSelector" title="Select element on page">
+                                        Select Element
+                                    </button>
+                                    <button type="button" class="tool-btn" id="chatCapturePage" title="Capture current page">
+                                        Capture Page
+                                    </button>
+                                    <button type="button" class="tool-btn" id="chatClearSelection" title="Clear selected elements" disabled>
+                                        Clear
+                                    </button>
+                                </div>
+                                
+                                <!-- Selected Elements Display -->
+                                <div id="chatSelectedElements" class="selected-elements hidden">
+                                    <div class="selected-elements-header">
+                                        <span class="elements-count" id="chatElementsCount">0 elements selected</span>
+                                        <button type="button" class="btn-link btn-small" id="chatViewElements">View all</button>
+                                    </div>
+                                    <div class="selected-elements-list" id="chatElementsList">
+                                        <!-- Selected elements will be populated here -->
+                                    </div>
+                                </div>
+                            </div>
+
                             <form id="chatComposer" class="chat-composer" autocomplete="off">
                                 <label for="chatInput" class="sr-only">Message</label>
                                 <textarea id="chatInput" rows="3" placeholder="Describe what you'd like to adjust or ask follow-up questions..." required></textarea>
+                                <div class="chat-context-indicator hidden" id="chatContextIndicator">
+                                    <span class="context-icon">🎯</span>
+                                    <span class="context-text">Context ready - elements selected</span>
+                                </div>
                                 <div class="chat-actions">
                                     <span class="chat-status" id="chatStatus"></span>
                                     <button type="submit" id="chatSendBtn" class="btn-primary">Send</button>
@@ -322,8 +252,8 @@
                             <p class="results-subtitle">Review or edit the source for each variation.</p>
                         </div>
                         <div class="results-actions">
-                            <button id="stopIterationBtn" class="btn-danger btn-small hidden">⏹ Stop</button>
-                            <button id="exportAllBtn" class="btn-small">📥 Export</button>
+                            <button id="stopIterationBtn" class="btn-danger btn-small hidden">Stop</button>
+                            <button id="exportAllBtn" class="btn-small">Export</button>
                             <button id="clearResultsBtn" class="btn-link">Clear</button>
                         </div>
                     </div>
@@ -349,7 +279,7 @@
                             <select id="convertApiKeySelect" class="input">
                                 <option value="">-- Select API Key --</option>
                             </select>
-                            <button class="btn-link" id="manageConvertKeysBtn">⚙️ Manage API Keys</button>
+                            <button class="btn-link" id="manageConvertKeysBtn">Manage API Keys</button>
                         </div>
 
                         <div class="convert-card">
@@ -365,7 +295,7 @@
                             <div class="convert-fieldset">
                                 <label class="setting-label-row" for="convertProjectSelect">
                                     <span>Project</span>
-                                    <button class="btn-link" id="refreshConvertProjectsBtn" disabled>⟲ Refresh</button>
+                                    <button class="btn-link" id="refreshConvertProjectsBtn" disabled>Refresh</button>
                                 </label>
                                 <select id="convertProjectSelect" class="input" disabled>
                                     <option value="">-- Select Project --</option>
@@ -373,11 +303,11 @@
 
                                 <label class="setting-label-row" for="convertExperienceSelect">
                                     <span>Experience</span>
-                                    <button class="btn-link" id="refreshConvertExperiencesBtn" disabled>⟲ Refresh</button>
+                                    <button class="btn-link" id="refreshConvertExperiencesBtn" disabled>Refresh</button>
                                 </label>
                                 <select id="convertExperienceSelect" class="input" disabled>
                                     <option value="">-- Select Experience --</option>
-                                    <option value="__create__">➕ Create New Experience</option>
+                                    <option value="__create__">Create New Experience</option>
                                 </select>
                             </div>
 
@@ -422,8 +352,8 @@
                             <h4>4. Sync Actions</h4>
                             <p class="convert-hint">Import existing experiences, push updates, or preview from the active tab.</p>
                             <div class="convert-actions">
-                                <button id="importExperienceBtn" class="btn-secondary" disabled>⬇️ Pull Experience Code</button>
-                                <button id="pushExperienceBtn" class="btn-primary" disabled>⬆️ Push Updates to Convert</button>
+                                <button id="importExperienceBtn" class="btn-secondary" disabled>Pull Experience Code</button>
+                                <button id="pushExperienceBtn" class="btn-primary" disabled>Push Updates to Convert</button>
                             </div>
                             <div class="convert-actions">
                                 <button id="runConvertPreviewBtn" class="btn-secondary" disabled>▶️ Run Current Variation</button>
@@ -518,6 +448,8 @@
     <script src="../utils/prompt-assistant.js"></script>
     <script src="../utils/design-file-manager.js"></script>
     <script src="../utils/convert-smart-lists.js"></script>
+    <script src="../utils/visual-qa-service.js"></script>
+    <script src="../utils/code-quality-monitor.js"></script>
 
     <!-- Main Application -->
     <script src="sidepanel.js"></script>

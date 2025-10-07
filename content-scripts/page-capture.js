@@ -17,7 +17,14 @@ class PageCapture {
       }
       
       if (message.type === 'CAPTURE_PAGE_DATA') {
-        this.capturePageData()
+        const options = {
+          selectedElementSelector: message.selectedElementSelector || null,
+          maxProximityElements: message.maxProximityElements || 8,
+          maxStructureElements: message.maxStructureElements || 12,
+          proximityRadius: message.proximityRadius || 300
+        };
+
+        this.capturePageData(options)
           .then(data => sendResponse({ success: true, data }))
           .catch(error => sendResponse({ success: false, error: error.message }));
         return true; // Keep message channel open for async response
@@ -33,15 +40,51 @@ class PageCapture {
         return false;
       }
 
+
+
       if (message.type === 'APPLY_VARIATION') {
         const payload = message;
         try {
+          console.log('[Convert CSS Debug] Received APPLY_VARIATION message:', payload);
           const result = this.applyVariation(payload);
+          console.log('[Convert CSS Debug] applyVariation returned:', result);
+
+          // Send logs back to background for debugging
+          if (result && typeof result === 'object') {
+            result.debugLogs = [
+              `applyVariation called with: css=${!!payload.css}, js=${!!payload.js}, key=${payload.key}`,
+              `variation key: ${payload.key || 'auto-generated'}`,
+              `result: ${JSON.stringify(result)}`
+            ];
+          }
+
+          console.log('[Convert CSS Debug] Sending response:', result);
           sendResponse(result);
+          console.log('[Convert CSS Debug] Response sent');
+        } catch (error) {
+          console.error('[Convert CSS Debug] Error in applyVariation:', error);
+          const errorResponse = { success: false, error: error.message };
+          console.log('[Convert CSS Debug] Sending error response:', errorResponse);
+          sendResponse(errorResponse);
+        }
+        return true; // Keep message channel open for response
+      }
+
+      // ✨ NEW: Automatic code testing
+      if (message.type === 'TEST_CODE') {
+        try {
+          const tester = new CodeTester();
+          tester.testGeneratedCode(message.variation, { testExecution: false })
+            .then(testResult => {
+              sendResponse({ success: true, testResult });
+            })
+            .catch(error => {
+              sendResponse({ success: false, error: error.message });
+            });
         } catch (error) {
           sendResponse({ success: false, error: error.message });
         }
-        return false; // Synchronous response
+        return true; // Keep message channel open for async response
       }
     });
 
@@ -49,6 +92,7 @@ class PageCapture {
   }
 
   clearInjectedAssets(prefix) {
+    // Remove injected CSS and JS tags
     document.querySelectorAll('[data-convert-ai-style]').forEach(node => {
       if (!prefix || node.dataset.convertAiStyle?.startsWith(prefix)) {
         node.remove();
@@ -59,108 +103,155 @@ class PageCapture {
         node.remove();
       }
     });
+    
+    console.log(`🧹 Cleared injected CSS and JS assets for prefix: ${prefix}`);
   }
 
   applyVariation({ css, js, key }) {
     const variationKey = key || `convert-ai-${Date.now()}`;
+
+    // Wrap everything in a try-catch to ensure we always return a response
     try {
       this.clearInjectedAssets(variationKey);
 
       if (css) {
         // Clean CSS: remove comments and extra whitespace
         const cleanCSS = css
-          .replace(/\/\/.*$/gm, '')           // Remove single-line comments
+          .replace(/^\s*\/\/.*$/gm, '')       // Remove single-line comments (only full line comments)
           .replace(/\/\*[\s\S]*?\*\//g, '')   // Remove multi-line comments
           .replace(/\n\s*\n/g, '\n')          // Remove empty lines
           .trim();
-        
+
         const style = document.createElement('style');
         style.dataset.convertAiStyle = variationKey;
         style.textContent = cleanCSS;
         document.head.appendChild(style);
-        
-        // Clean CSS and debug selector matching
-        let debugCSS = css.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
+
+        // Quick validation: only check if at least one CSS rule matches
+        // (Removed expensive per-rule debugging to prevent timeout)
+        let debugCSS = css.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
         const cssRules = debugCSS.match(/([^{]+)\s*{/g);
-        if (cssRules) {
-          cssRules.forEach(rule => {
+        if (cssRules && cssRules.length > 0) {
+          let matchedCount = 0;
+          // Only check first 3 rules to avoid timeout
+          cssRules.slice(0, 3).forEach(rule => {
             const selector = rule.replace('{', '').trim();
             try {
               const matchingElements = document.querySelectorAll(selector);
-              const firstElement = matchingElements[0];
-              const computedStyle = firstElement ? window.getComputedStyle(firstElement) : null;
-              
-              console.log(`[Convert CSS Debug] Selector "${selector}" matches ${matchingElements.length} elements`, {
-                selector,
-                matchCount: matchingElements.length,
-                elements: Array.from(matchingElements).slice(0, 3).map(el => ({
-                  tagName: el.tagName,
-                  classes: el.className,
-                  id: el.id,
-                  text: el.textContent?.substring(0, 50),
-                  currentBackgroundColor: window.getComputedStyle(el).backgroundColor
-                })),
-                firstElementCurrentBg: computedStyle?.backgroundColor,
-                expectedChange: 'Should change to red'
-              });
+              if (matchingElements.length > 0) matchedCount++;
             } catch (e) {
-              console.error(`[Convert CSS Debug] Invalid selector "${selector}":`, e.message);
+              console.warn(`[Convert CSS] Invalid selector: ${selector}`);
             }
           });
+          console.log(`[Convert CSS] ${matchedCount}/${Math.min(3, cssRules.length)} selectors matched`);
         }
-        
+
         console.log('[Convert Variation] CSS applied', {
           key: variationKey,
-          length: css.length,
-          totalStyles: document.querySelectorAll('[data-convert-ai-style]').length,
-          cssContent: css
+          rules: cssRules?.length || 0
         });
       }
 
       // JavaScript execution is now handled by the background service worker
       // using chrome.scripting.executeScript to avoid CSP violations
       // The content script only handles CSS injection
-      
+
       return {
         success: true,
         cssApplied: !!css,
         cssLength: css ? css.length : 0,
         jsPresent: !!js,
-        styleCount: document.querySelectorAll('[data-convert-ai-style]').length
+        key: variationKey
       };
     } catch (error) {
-      console.error('[Convert Variation] CSS injection failed', {
-        key: variationKey,
-        error: error?.message,
-        stack: error?.stack
-      });
+      console.error('[Convert Variation] CSS injection failed:', error.message);
       return { success: false, error: error.message };
     }
   }
 
-  async capturePageData() {
+  async capturePageData(options = {}) {
     try {
-      // Build element database - this is the NEW approach!
-      const elementDatabase = this.buildElementDatabase();
-      
+      console.log('🔍 Page capture starting with options:', options);
+
+      // Use intelligent context builder for better AI performance
+      const contextBuilder = new ContextBuilder();
+
+      // If a selector was provided, find the element in the DOM
+      let selectedElement = null;
+      if (options.selectedElementSelector) {
+        selectedElement = document.querySelector(options.selectedElementSelector);
+        if (!selectedElement) {
+          console.warn(`⚠️ Could not find element with selector: ${options.selectedElementSelector}`);
+        } else {
+          console.log('✓ Found selected element:', selectedElement);
+        }
+      }
+
+      const context = contextBuilder.buildContext(selectedElement, {
+        includeScreenshot: false, // Screenshot handled separately
+        maxProximityElements: options.maxProximityElements || 8,
+        maxStructureElements: options.maxStructureElements || 12,
+        proximityRadius: options.proximityRadius || 300
+      });
+
       const pageData = {
         url: window.location.href,
         title: document.title,
-        elementDatabase: elementDatabase, // NEW: Structured element data
+
+        // NEW: Hierarchical context (replaces elementDatabase)
+        context: context,
+
+        // LEGACY: Keep elementDatabase for backward compatibility
+        elementDatabase: this.convertContextToLegacyFormat(context),
+
         viewport: this.getViewportInfo(),
         timestamp: Date.now(),
-        
-        // Keep for backwards compatibility (deprecated)
+
+        // Deprecated fields (keep for compatibility)
         html: null,
         css: null,
         elements: null
       };
+
+      console.log('📦 Page data captured:', {
+        mode: context.mode,
+        primary: context.primary.length,
+        proximity: context.proximity.length,
+        structure: context.structure.length,
+        tokens: context.metadata.estimatedTokens
+      });
 
       return pageData;
     } catch (error) {
       console.error('Page capture failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Convert new hierarchical context to legacy elementDatabase format
+   * for backward compatibility
+   */
+  convertContextToLegacyFormat(context) {
+    const elements = [];
+
+    // Combine all levels into a flat array
+    [...context.primary, ...context.proximity, ...context.structure].forEach(el => {
+      elements.push({
+        id: `el_${String(elements.length).padStart(3, '0')}`,
+        selector: el.selector,
+        type: el.tag,
+        text: el.text || '',
+        visual: el.visual || {},
+        context: el.context || {},
+        level: el.level // Preserve level information
+      });
+    });
+
+    return {
+      elements: elements,
+      metadata: context.metadata
+    };
   }
 
   getCleanHTML() {
@@ -585,10 +676,17 @@ class PageCapture {
     database.elements.sort((a, b) => b.metadata.importance - a.metadata.importance);
     
     database.metadata.totalElements = database.elements.length;
-    
+
     console.log(`✅ Element Database built: ${database.elements.length} elements`);
-    
-    return database;
+
+    // ✨ NEW: Validate all selectors before returning
+    const validator = new SelectorValidator();
+    const validatedDatabase = validator.validateElementDatabase(database);
+
+    // Filter to high-confidence selectors (0.7+)
+    const highConfidenceDatabase = validator.filterHighConfidence(validatedDatabase, 0.7);
+
+    return highConfidenceDatabase;
   }
 
   generateAlternatives(element) {

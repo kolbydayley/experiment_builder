@@ -4,6 +4,8 @@ console.log('🎨 Experiment Builder Loading...');
 class ExperimentBuilder {
   constructor() {
     this.currentPageData = null;
+    this.basePageData = null; // Store original page data for iterations
+    this.targetTabId = null; // NEW: Store the tab ID being worked on
     this.variations = [{ id: 1, name: 'Variation 1', description: '' }];
     this.generatedCode = null;
     this.editedCode = {}; // Track edited code blocks
@@ -11,7 +13,15 @@ class ExperimentBuilder {
       preferCSS: true,
       includeDOMChecks: true,
       authToken: '',
-      model: 'gpt-4o-mini'
+      model: 'gpt-5-mini'
+    };
+
+    // NEW: Track code evolution for iterative requests
+    this.codeHistory = {
+      originalPageData: null,      // Captured once, never changes
+      originalRequest: '',          // First user request
+      appliedCode: null,            // Currently applied code
+      conversationLog: []           // All requests + responses
     };
 
     this.focusedVariationId = this.variations[0].id;
@@ -48,12 +58,18 @@ class ExperimentBuilder {
     // Capture mode (full page or element)
     this.captureMode = 'full';
 
+    // Chat tools state
+    this.chatSelectedElements = [];
+    this.chatPageCapture = null;
+
     // Initialize utility classes
     this.sessionManager = new SessionManager(this);
     this.keyboardShortcuts = new KeyboardShortcuts(this);
     this.promptAssistant = new PromptAssistant();
     this.designFileManager = new DesignFileManager();
     this.convertSmartLists = new ConvertSmartLists();
+    this.visualQAService = new VisualQAService();
+    this.codeQualityMonitor = new CodeQualityMonitor(); // NEW: Track code quality
 
     this.initializeConvertState();
 
@@ -84,33 +100,15 @@ class ExperimentBuilder {
     document.getElementById('recaptureBtn')?.addEventListener('click', () => this.capturePage());
 
     // Text input
-    document.getElementById('descriptionText').addEventListener('input', () => this.updateCharCounter());
+    // Removed descriptionText (shared context section was removed)
 
     // Variations
     document.getElementById('addVariationBtn').addEventListener('click', () => this.addVariation());
 
-    // Settings
-    const openSettingsBtn = document.getElementById('openFullSettingsBtn');
+    // Settings - Open settings page
+    const openSettingsBtn = document.getElementById('openSettingsBtn');
     openSettingsBtn?.addEventListener('click', () => {
       chrome.runtime.openOptionsPage();
-    });
-
-    const preferCSS = document.getElementById('preferCSS');
-    preferCSS?.addEventListener('change', (e) => {
-      this.settings.preferCSS = e.target.checked;
-      this.saveSettings();
-    });
-
-    const includeDOMChecks = document.getElementById('includeDOMChecks');
-    includeDOMChecks?.addEventListener('change', (e) => {
-      this.settings.includeDOMChecks = e.target.checked;
-      this.saveSettings();
-    });
-
-    const modelSelect = document.getElementById('modelSelect');
-    modelSelect?.addEventListener('change', (e) => {
-      this.settings.model = e.target.value;
-      this.saveSettings();
     });
 
     const editVariationsBtn = document.getElementById('editVariationsBtn');
@@ -193,9 +191,43 @@ class ExperimentBuilder {
     });
   }
 
+  // NEW: Helper to get target tab (stored or current active)
+  async getTargetTab() {
+    try {
+      // If we have a stored tab ID, verify it still exists
+      if (this.targetTabId !== null) {
+        try {
+          const tab = await chrome.tabs.get(this.targetTabId);
+          if (tab) {
+            console.log(`✅ Using stored tab ID: ${this.targetTabId}`);
+            return tab;
+          }
+        } catch (error) {
+          // Tab no longer exists, clear stored ID
+          console.log('⚠️ Stored tab no longer exists, falling back to active tab');
+          this.addStatusLog('⚠️ Original tab closed - using current active tab', 'error');
+          this.targetTabId = null;
+          // Clear stored page data since tab is gone
+          this.currentPageData = null;
+          this.basePageData = null;
+        }
+      }
+
+      // Fall back to active tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && this.targetTabId === null) {
+        console.log('📍 No stored tab, using active tab:', tab.id);
+      }
+      return tab || null;
+    } catch (error) {
+      console.error('Failed to get target tab:', error);
+      return null;
+    }
+  }
+
   async loadCurrentPage() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await this.getTargetTab();
       if (tab?.url) {
         document.getElementById('currentUrl').textContent = this.formatUrl(tab.url);
       }
@@ -212,6 +244,10 @@ class ExperimentBuilder {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.url) throw new Error('No active tab found');
 
+      // NEW: Store tab ID for persistent tracking
+      this.targetTabId = tab.id;
+      console.log(`📍 Locked onto tab ID: ${this.targetTabId}`);
+
       // Check capture mode
       if (this.captureMode === 'element') {
         // Activate element selector
@@ -225,8 +261,19 @@ class ExperimentBuilder {
 
         if (response.success) {
           this.currentPageData = response.data;
+          // Store base page data for iterations (deep copy to avoid mutation)
+          this.basePageData = JSON.parse(JSON.stringify(response.data));
+          console.log('🏠 Saved base page data for iterations');
+
+          // NEW: Store as immutable original if first capture
+          if (!this.codeHistory.originalPageData) {
+            this.codeHistory.originalPageData = JSON.parse(JSON.stringify(response.data));
+            console.log('📸 Original page data preserved for follow-up requests');
+          }
+
           this.displayPagePreview(response.data);
           this.addStatusLog('✓ Page captured successfully', 'success');
+          this.addStatusLog(`📍 Locked to tab: ${tab.url}`, 'info');
           this.showSuccess('Page captured successfully!');
         } else {
           throw new Error(response.error || 'Capture failed');
@@ -244,38 +291,66 @@ class ExperimentBuilder {
   async captureElement(tabId) {
     this.addStatusLog('🎯 Click any element on the page to select it', 'info');
 
+    // Get tab information first
+    const tab = await chrome.tabs.get(tabId);
+
     // Send message to activate element selector
-    const response = await chrome.runtime.sendMessage({
+    const selectionResponse = await chrome.runtime.sendMessage({
       type: 'START_ELEMENT_SELECTION',
       tabId: tabId
     });
 
-    if (response.success) {
-      this.addStatusLog('✓ Element selected and captured', 'success');
-      this.showSuccess('Element captured successfully!');
+    if (selectionResponse.success) {
+      this.addStatusLog('✓ Element selected, capturing full page context...', 'success');
 
-      // Store element data as focused capture
-      this.currentPageData = {
-        ...this.currentPageData,
-        selectedElement: response.data,
-        captureMode: 'element'
-      };
+      console.log('🎯 Selected element data:', selectionResponse.data);
 
-      // Show element preview
-      this.displaySelectedElementPreview(response.data);
+      // Now capture the FULL PAGE with the selected element as the focus
+      // The new context builder will automatically capture proximity and structure
+      const captureResponse = await chrome.runtime.sendMessage({
+        type: 'CAPTURE_PAGE_WITH_ELEMENT',
+        tabId: tabId,
+        selectedElementSelector: selectionResponse.data.selector
+      });
 
-      // Also show in main preview area
-      if (response.data.screenshot) {
-        const preview = document.getElementById('pagePreview');
-        const img = document.getElementById('screenshotPreview');
-        const time = document.getElementById('captureTime');
+      if (captureResponse.success) {
+        this.currentPageData = captureResponse.data;
+        this.currentPageData.selectedElement = selectionResponse.data; // Keep for UI display
+        this.currentPageData.captureMode = 'element-focused';
+        
+        // Store base page data for iterations (deep copy to avoid mutation)
+        this.basePageData = JSON.parse(JSON.stringify(this.currentPageData));
+        console.log('🏠 Saved base page data for iterations (element-focused)');
 
-        img.src = response.data.screenshot;
-        time.textContent = `Element captured: ${response.data.selector}`;
-        preview.classList.remove('hidden');
+        console.log('📦 Page data with hierarchical context:', {
+          mode: this.currentPageData.context?.mode,
+          primary: this.currentPageData.context?.primary?.length,
+          proximity: this.currentPageData.context?.proximity?.length,
+          structure: this.currentPageData.context?.structure?.length,
+          estimatedTokens: this.currentPageData.context?.metadata?.estimatedTokens
+        });
+
+        this.addStatusLog('✓ Element-focused context captured', 'success');
+        this.showSuccess('Element captured with full context!');
+
+        // Show element preview
+        this.displaySelectedElementPreview(selectionResponse.data);
+
+        // Also show in main preview area
+        if (selectionResponse.data.screenshot) {
+          const preview = document.getElementById('pagePreview');
+          const img = document.getElementById('screenshotPreview');
+          const time = document.getElementById('captureTime');
+
+          img.src = selectionResponse.data.screenshot;
+          time.textContent = `Element captured: ${selectionResponse.data.selector}`;
+          preview.classList.remove('hidden');
+        }
+      } else {
+        throw new Error(captureResponse.error || 'Page capture with element failed');
       }
     } else {
-      throw new Error(response.error || 'Element selection failed');
+      throw new Error(selectionResponse.error || 'Element selection failed');
     }
   }
 
@@ -325,9 +400,8 @@ class ExperimentBuilder {
   }
 
   updateCharCounter() {
-    const textarea = document.getElementById('descriptionText');
-    const counter = document.getElementById('charCount');
-    counter.textContent = textarea.value.length;
+    // Shared context section was removed - this function is no longer needed
+    return;
   }
 
   addVariation() {
@@ -762,6 +836,36 @@ class ExperimentBuilder {
       }));
   }
 
+  /**
+   * Get code evolution summary for AI context
+   */
+  getCodeEvolutionSummary() {
+    if (!this.codeHistory.conversationLog || this.codeHistory.conversationLog.length === 0) {
+      return null;
+    }
+
+    return {
+      totalChanges: this.codeHistory.conversationLog.length,
+      changesSummary: this.codeHistory.conversationLog.map((entry, index) => ({
+        step: index + 1,
+        request: entry.request,
+        timestamp: new Date(entry.timestamp).toLocaleTimeString(),
+        codeSnapshot: {
+          variationCount: entry.code?.variations?.length || 0,
+          hasGlobalCSS: !!entry.code?.globalCSS,
+          hasGlobalJS: !!entry.code?.globalJS
+        }
+      })),
+      currentState: {
+        appliedCode: this.codeHistory.appliedCode ? {
+          variationCount: this.codeHistory.appliedCode.variations?.length || 0,
+          hasGlobalCSS: !!this.codeHistory.appliedCode.globalCSS,
+          hasGlobalJS: !!this.codeHistory.appliedCode.globalJS
+        } : null
+      }
+    };
+  }
+
   handleChatSubmit(event) {
     if (event?.type === 'keydown') {
       if (!((event.metaKey || event.ctrlKey) && event.key === 'Enter')) {
@@ -822,37 +926,113 @@ class ExperimentBuilder {
     }
 
     try {
-      const adjusted = await this.adjustCode(message, null, { includeConversation: true });
+      // Include chat context (selected elements and page capture) in the request
+      const chatContext = this.getChatContextForAI();
+      const enhancedMessage = chatContext ? `${chatContext}USER REQUEST: ${message}` : message;
+      
+      const adjusted = await this.adjustCode(enhancedMessage, null, { 
+        includeConversation: true,
+        chatContext: {
+          selectedElements: this.chatSelectedElements,
+          pageCapture: this.chatPageCapture
+        }
+      });
+      
       if (!adjusted) {
         throw new Error('No response from AI');
       }
 
-      // Clear current preview before applying changes
-      await this.clearVariationPreview(false);
-      
-      // Update the generated code
+      // Update the generated code and history
       this.generatedCode = adjusted.code;
       this.recordUsage(adjusted.usage);
-      this.displayGeneratedCode(adjusted.code);
 
-      // Auto-apply the focused variation after updates
-      if (this.focusedVariationId && this.generatedCode?.variations?.length) {
-        this.setAiActivity('working', 'Auto-applying updated variation...');
-        await this.previewVariation(this.focusedVariationId, { silent: true });
-        this.setAiActivity('preview', `Updated variation ${this.focusedVariationId} applied automatically.`);
-      } else {
-        this.setAiActivity('idle', 'Code updated. Select a variation to preview changes.');
-      }
-
-      const summary = this.buildAdjustmentSummary(adjusted.code);
-      this.addConversationMessage({
-        role: 'assistant',
-        content: summary,
-        meta: { type: 'chat-response' }
+      // Update code history for follow-up context
+      this.codeHistory.appliedCode = adjusted.code;
+      this.codeHistory.conversationLog.push({
+        request: message,
+        code: adjusted.code,
+        timestamp: Date.now(),
+        source: 'chat'
       });
 
-      this.addStatusLog('✓ Chat adjustments applied and auto-previewed', 'success');
-      this.setChatStatus(`Updated • ${this.formatChatTimestamp(Date.now())}`);
+      // NEW: Analyze code quality and warn if degrading
+      const qualityAnalysis = this.codeQualityMonitor.analyzeCode(adjusted.code, 'chat');
+      this.logQualityAnalysis(qualityAnalysis);
+
+      // Check for degradation
+      if (qualityAnalysis.degradation?.detected) {
+        this.addStatusLog('⚠️ Code quality degradation detected - consider simplifying', 'error');
+        qualityAnalysis.degradation.changes.forEach(change => {
+          this.addStatusLog(`  • ${change.message} (+${change.increase})`, 'error');
+        });
+      }
+
+      this.displayGeneratedCode(adjusted.code);
+
+      // NEW: Run full test and validation pipeline like main generation
+      const generatedVariations = Array.isArray(this.generatedCode?.variations)
+        ? this.generatedCode.variations
+        : [];
+
+      if (generatedVariations.length > 0) {
+        this.addStatusLog('🧪 Testing chat-adjusted code...', 'info');
+        this.setAiActivity('working', 'Validating your changes...');
+
+        // Refresh page before testing to ensure clean state
+        const tab = await this.getTargetTab();
+        if (tab) {
+          this.addStatusLog('🔄 Refreshing page for clean testing...', 'info');
+          await chrome.tabs.reload(tab.id);
+          await this.sleep(3000); // Wait for page to fully reload
+        }
+
+        // Set up auto-iteration state for testing
+        this.autoIteration = {
+          active: true,
+          currentVariation: this.focusedVariationId || 1,
+          iterations: 0,
+          maxIterations: 3, // Use fewer iterations for chat (faster feedback)
+          startTime: Date.now(),
+          source: 'chat' // Mark as chat-initiated
+        };
+
+        // Test the focused variation (or first variation if no focus)
+        const variationToTest = this.focusedVariationId || 1;
+        const generatedVariation = generatedVariations.find(v => v.number === variationToTest) || generatedVariations[0];
+        const variationConfig = this.variations[variationToTest - 1] || {
+          id: variationToTest,
+          name: generatedVariation?.name || `Variation ${variationToTest}`,
+          description: message // Use chat message as description
+        };
+
+        this.addStatusLog(`📋 Testing ${variationConfig.name}...`, 'info');
+        await this.autoIterateVariation(variationToTest, variationConfig);
+
+        this.autoIteration.active = false;
+
+        const summary = `✅ Changes applied and validated! ${this.buildAdjustmentSummary(adjusted.code)}`;
+        this.addConversationMessage({
+          role: 'assistant',
+          content: summary,
+          meta: { type: 'chat-response' }
+        });
+
+        this.addStatusLog('✓ Chat adjustments tested and applied', 'success');
+        this.setChatStatus(`Updated & Tested • ${this.formatChatTimestamp(Date.now())}`);
+        this.setAiActivity('preview', `Changes validated and applied to ${variationConfig.name}.`);
+      } else {
+        // Fallback: no variations (shouldn't happen)
+        const summary = this.buildAdjustmentSummary(adjusted.code);
+        this.addConversationMessage({
+          role: 'assistant',
+          content: summary,
+          meta: { type: 'chat-response' }
+        });
+
+        this.addStatusLog('✓ Chat adjustments applied', 'success');
+        this.setChatStatus(`Updated • ${this.formatChatTimestamp(Date.now())}`);
+        this.setAiActivity('idle', 'Code updated. Select a variation to preview.');
+      }
     } catch (error) {
       console.error('Chat request failed:', error);
       this.addConversationMessage({
@@ -880,6 +1060,9 @@ class ExperimentBuilder {
       return 'Code refreshed. Review the updates in the Review tab.';
     }
 
+    // Generate detailed code diff summary
+    const codeChanges = this.generateCodeChangeSummary(codeData);
+    
     const names = codeData.variations
       .map(v => v.name || `Variation ${v.number}`)
       .filter(Boolean);
@@ -892,7 +1075,106 @@ class ExperimentBuilder {
     if (codeData.globalJS) extras.push('global JS');
     const extrasText = extras.length ? ` Global assets refreshed (${extras.join(', ')}).` : '';
 
-    return `Updated ${names.length} variation${names.length === 1 ? '' : 's'}: ${visible}${remaining}.${extrasText} Review the Review tab to preview or retest.`;
+    let summary = `**Changes Applied to ${names.length} variation${names.length === 1 ? '' : 's'}:** ${visible}${remaining}\n\n`;
+    
+    if (codeChanges.length > 0) {
+      summary += `**Code Changes:**\n${codeChanges}\n\n`;
+    }
+    
+    summary += `${extrasText}Review the **Review** tab to preview or retest.`;
+    
+    return summary;
+  }
+
+  /**
+   * Generate a readable summary of code changes for chat responses
+   */
+  generateCodeChangeSummary(newCodeData) {
+    if (!this.codeHistory.appliedCode || !newCodeData) {
+      return 'New code generated (no previous version to compare)';
+    }
+
+    const changes = [];
+    const previousCode = this.codeHistory.appliedCode;
+    
+    // Compare variations
+    if (newCodeData.variations && previousCode.variations) {
+      newCodeData.variations.forEach((newVar, index) => {
+        const prevVar = previousCode.variations[index];
+        if (prevVar) {
+          const varChanges = this.compareVariationCode(prevVar, newVar);
+          if (varChanges.length > 0) {
+            changes.push(`**${newVar.name || `Variation ${newVar.number}`}:**`);
+            varChanges.forEach(change => changes.push(`  • ${change}`));
+          }
+        }
+      });
+    }
+    
+    // Compare global CSS
+    if (newCodeData.globalCSS !== previousCode.globalCSS) {
+      changes.push(`**Global CSS:** Updated${this.getCodeLengthChange(previousCode.globalCSS, newCodeData.globalCSS)}`);
+    }
+    
+    // Compare global JS  
+    if (newCodeData.globalJS !== previousCode.globalJS) {
+      changes.push(`**Global JS:** Updated${this.getCodeLengthChange(previousCode.globalJS, newCodeData.globalJS)}`);
+    }
+    
+    return changes.length > 0 ? changes.join('\n') : 'Minor code adjustments made';
+  }
+
+  compareVariationCode(prevVar, newVar) {
+    const changes = [];
+    
+    // Compare CSS
+    if (prevVar.css !== newVar.css) {
+      const cssChange = this.getCodeChangeDescription(prevVar.css, newVar.css, 'CSS');
+      if (cssChange) changes.push(cssChange);
+    }
+    
+    // Compare JS
+    if (prevVar.js !== newVar.js) {
+      const jsChange = this.getCodeChangeDescription(prevVar.js, newVar.js, 'JavaScript');  
+      if (jsChange) changes.push(jsChange);
+    }
+    
+    // Compare HTML
+    if (prevVar.html !== newVar.html) {
+      const htmlChange = this.getCodeChangeDescription(prevVar.html, newVar.html, 'HTML');
+      if (htmlChange) changes.push(htmlChange);
+    }
+    
+    return changes;
+  }
+
+  getCodeChangeDescription(oldCode, newCode, type) {
+    const oldLength = (oldCode || '').length;
+    const newLength = (newCode || '').length;
+    
+    if (oldLength === 0 && newLength > 0) {
+      return `${type} added (${newLength} characters)`;
+    } else if (oldLength > 0 && newLength === 0) {
+      return `${type} removed`;
+    } else if (oldLength !== newLength) {
+      const diff = newLength - oldLength;
+      const change = diff > 0 ? `+${diff}` : `${diff}`;
+      return `${type} modified (${change} characters)`;
+    }
+    return `${type} updated`;
+  }
+
+  getCodeLengthChange(oldCode, newCode) {
+    const oldLength = (oldCode || '').length;
+    const newLength = (newCode || '').length;
+    const diff = newLength - oldLength;
+    
+    if (diff > 0) {
+      return ` (+${diff} characters)`;
+    } else if (diff < 0) {
+      return ` (${diff} characters)`;
+    }
+    return '';
   }
 
   buildGenerationSummary(codeData) {
@@ -997,7 +1279,13 @@ class ExperimentBuilder {
     this.setButtonLoading(btn, true);
     this.setAiActivity('working', 'Preparing to generate variations...');
 
-    const description = document.getElementById('descriptionText').value.trim();
+    const description = ''; // Shared context section removed
+
+    // NEW: Detect if this is a follow-up request
+    const isFollowUp = this.generatedCode !== null &&
+                       this.codeHistory.appliedCode !== null &&
+                       this.codeHistory.originalPageData !== null;
+
     if (description) {
       const lastMessage = this.conversation[this.conversation.length - 1];
       if (!lastMessage || lastMessage.meta?.type !== 'generation-request' || lastMessage.content !== description) {
@@ -1009,6 +1297,15 @@ class ExperimentBuilder {
       }
     }
 
+    // NEW: Route to appropriate handler
+    if (isFollowUp) {
+      console.log('🔄 Detected follow-up request - using iterative flow');
+      this.addStatusLog('🔄 Processing follow-up request (preserving previous changes)...', 'info');
+      await this.handleFollowUpRequest(description, btn);
+      return;
+    }
+
+    // Clear preview for fresh generation
     await this.clearVariationPreview(false);
 
     // Auto-capture page data if not available
@@ -1036,6 +1333,18 @@ class ExperimentBuilder {
       startTime: Date.now()
     };
 
+    // Ensure base page data is current (refresh from current state)
+    if (this.currentPageData) {
+      this.basePageData = JSON.parse(JSON.stringify(this.currentPageData));
+      console.log('🔄 Refreshed base page data for new generation cycle');
+    }
+
+    // NEW: Store original request
+    if (!this.codeHistory.originalRequest) {
+      this.codeHistory.originalRequest = description;
+      console.log('📝 Stored original request for follow-ups');
+    }
+
     this.showStatusPanel();
     this.addStatusLog('🚀 Starting automatic generation and testing...', 'info');
     this.updateIndicator('working');
@@ -1045,7 +1354,7 @@ class ExperimentBuilder {
       this.addStatusLog('⚙️ Sending generation request to AI...', 'info');
       this.setAiActivity('working', `Generating ${this.variations.length} variation${this.variations.length === 1 ? '' : 's'} with ${this.settings.model}...`);
       const generationData = this.buildGenerationData();
-      
+
       const response = await chrome.runtime.sendMessage({
         type: 'GENERATE_CODE',
         data: generationData
@@ -1057,9 +1366,22 @@ class ExperimentBuilder {
 
       this.generatedCode = response.code;
       this.recordUsage(response.usage);
-      
+
+      // NEW: Track applied code in history
+      this.codeHistory.appliedCode = response.code;
+      this.codeHistory.conversationLog.push({
+        request: description,
+        code: response.code,
+        timestamp: Date.now()
+      });
+      console.log('💾 Stored code in history for follow-ups');
+
       const generatedCount = response.code?.variations?.length || 0;
       this.addStatusLog(`✓ AI generated ${generatedCount} variation${generatedCount === 1 ? '' : 's'}`, 'success');
+
+      // NEW: Analyze code quality
+      const qualityAnalysis = this.codeQualityMonitor.analyzeCode(response.code, 'initial');
+      this.logQualityAnalysis(qualityAnalysis);
 
       // Display initial code
       this.setAiActivity('working', 'Updating interface with new code...');
@@ -1115,9 +1437,192 @@ class ExperimentBuilder {
     }
   }
 
+  // NEW: Handle follow-up requests with context preservation
+  async handleFollowUpRequest(newRequest, btn) {
+    this.setAiActivity('working', 'Processing follow-up request...');
+    this.showStatusPanel();
+
+    try {
+      // Build cumulative context
+      const context = {
+        originalPageData: this.codeHistory.originalPageData,
+        originalRequest: this.codeHistory.originalRequest,
+        appliedCode: this.codeHistory.appliedCode,
+        conversationLog: this.codeHistory.conversationLog,
+        newRequest: newRequest
+      };
+
+      this.addStatusLog(`📜 Context: ${this.codeHistory.conversationLog.length} previous request(s)`, 'info');
+      this.addStatusLog(`🎯 Original page: ${this.codeHistory.originalPageData?.url || 'captured'}`, 'info');
+      this.addStatusLog('⚙️ Adjusting code to include new changes...', 'info');
+
+      // Call ADJUST_CODE instead of GENERATE_CODE
+      const response = await chrome.runtime.sendMessage({
+        type: 'ADJUST_CODE',
+        data: {
+          pageData: this.codeHistory.originalPageData, // Use ORIGINAL page data
+          previousCode: this.formatCodeForAdjustment(this.codeHistory.appliedCode),
+          newRequest: newRequest,
+          conversationHistory: this.codeHistory.conversationLog,
+          variations: this.variations,
+          settings: this.settings
+        }
+      });
+
+      if (!response?.success) {
+        throw new Error(response?.error || 'Code adjustment failed');
+      }
+
+      // Update code and history
+      this.generatedCode = response.code;
+      this.codeHistory.appliedCode = response.code;
+      this.codeHistory.conversationLog.push({
+        request: newRequest,
+        code: response.code,
+        timestamp: Date.now()
+      });
+
+      this.recordUsage(response.usage);
+      this.addStatusLog('✓ Code adjusted successfully', 'success');
+
+      // Update generated code and history
+      this.generatedCode = response.code;
+
+      // Display and apply updated code
+      this.displayGeneratedCode(response.code);
+      await this.handleGenerationSuccess(response.code);
+
+      // NEW: Auto-test and iterate like initial generation
+      const generatedVariations = Array.isArray(this.generatedCode?.variations)
+        ? this.generatedCode.variations
+        : [];
+
+      if (generatedVariations.length > 0) {
+        this.addStatusLog('🧪 Auto-testing follow-up changes...', 'info');
+        this.setAiActivity('working', 'Testing updated code...');
+
+        // NEW: Refresh page before testing follow-up to ensure clean state
+        const tab = await this.getTargetTab();
+        if (tab) {
+          this.addStatusLog('🔄 Refreshing page for clean testing...', 'info');
+          await chrome.tabs.reload(tab.id);
+          await this.sleep(3000); // Wait for page to fully reload
+        }
+
+        // Set up auto-iteration state
+        this.autoIteration = {
+          active: true,
+          currentVariation: 1,
+          iterations: 0,
+          maxIterations: 5,
+          startTime: Date.now()
+        };
+
+        // Test each variation with auto-iteration
+        for (let i = 0; i < generatedVariations.length; i++) {
+          if (!this.autoIteration.active) {
+            this.addStatusLog('⏸ Testing stopped by user', 'info');
+            break;
+          }
+
+          const generatedVariation = generatedVariations[i];
+          const variationNumber = generatedVariation?.number || (i + 1);
+          const variationConfig = this.variations[i] || {
+            id: variationNumber,
+            name: generatedVariation?.name || `Variation ${variationNumber}`,
+            description: newRequest // Use the new request as description
+          };
+
+          this.autoIteration.currentVariation = variationNumber;
+          const variationLabel = generatedVariation?.name || variationConfig.name || `Variation ${variationNumber}`;
+
+          this.addStatusLog(`\n📋 Testing ${variationLabel}...`, 'info');
+          await this.autoIterateVariation(variationNumber, variationConfig);
+        }
+
+        this.autoIteration.active = false;
+        this.addStatusLog('\n✅ Follow-up changes tested and applied!', 'success');
+      }
+
+      this.updateIndicator('active');
+      this.showSuccess('Code updated and tested successfully!');
+      this.setAiActivity('preview', 'Follow-up changes applied and tested.');
+
+    } catch (error) {
+      console.error('Follow-up request failed:', error);
+      this.addStatusLog(`✗ Follow-up failed: ${error.message}`, 'error');
+      this.updateIndicator('error');
+      this.showError(error.message);
+      this.setAiActivity('error', error.message || 'Follow-up request failed.');
+    } finally {
+      this.setButtonLoading(btn, false);
+    }
+  }
+
+  // Helper: Format code for adjustment context
+  formatCodeForAdjustment(code) {
+    if (!code) return '';
+
+    try {
+      // Convert code object to formatted string for AI context
+      let formatted = '';
+
+      if (code.variations && Array.isArray(code.variations)) {
+        code.variations.forEach((variation, index) => {
+          formatted += `// VARIATION ${variation.number || (index + 1)} - ${variation.name || 'Unnamed'}\n`;
+          if (variation.css) {
+            formatted += `// CSS:\n${variation.css}\n\n`;
+          }
+          if (variation.js) {
+            formatted += `// JavaScript:\n${variation.js}\n\n`;
+          }
+        });
+      }
+
+      if (code.globalCSS) {
+        formatted += `// GLOBAL CSS:\n${code.globalCSS}\n\n`;
+      }
+
+      if (code.globalJS) {
+        formatted += `// GLOBAL JS:\n${code.globalJS}\n`;
+      }
+
+      return formatted;
+    } catch (error) {
+      console.error('Error formatting code:', error);
+      return JSON.stringify(code, null, 2);
+    }
+  }
+
   async autoIterateVariation(variationNumber, variationConfig) {
     let iteration = 0;
     const maxIterations = this.autoIteration.maxIterations;
+
+    // Find the variation object for Visual QA
+    const variation = this.generatedCode?.variations?.find(v => v.number === variationNumber);
+    if (!variation) {
+      console.error('[Auto-Iterate] Variation not found:', variationNumber);
+      this.addStatusLog(`  ✗ Variation ${variationNumber} not found`, 'error');
+      return;
+    }
+
+    // Capture BEFORE screenshot once at start
+    const tab = await this.getTargetTab();
+    let beforeScreenshot = null;
+    if (tab) {
+      try {
+        beforeScreenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: 'png',
+          quality: 90
+        });
+        // Convert to data URL format for GPT-4 Vision
+        beforeScreenshot = `data:image/png;base64,${beforeScreenshot.split(',')[1] || beforeScreenshot}`;
+      } catch (error) {
+        console.warn('[Auto-Iterate] Failed to capture before screenshot:', error);
+      }
+    }
+
+    let previousDefects = [];
 
     while (iteration < maxIterations && this.autoIteration.active) {
       iteration++;
@@ -1127,7 +1632,7 @@ class ExperimentBuilder {
       this.addStatusLog(`  Iteration ${iteration}/${maxIterations}...`, 'info');
       this.setAiActivity('working', `Auto-testing ${variationLabel} (${iteration}/${maxIterations})...`);
 
-      // Test the variation
+      // Test the variation (includes screenshot capture)
       const testResult = await this.testVariation(variationNumber);
 
       if (!testResult) {
@@ -1136,45 +1641,214 @@ class ExperimentBuilder {
         break;
       }
 
-      // Check for errors
-      if (!testResult.errors || testResult.errors.length === 0) {
-        this.addStatusLog(`  ✓ No errors detected - variation works!`, 'success');
-        this.setAiActivity('preview', `${variationLabel} passed validation.`);
-        break;
+      // Technical validation - check for errors
+      if (testResult.errors && testResult.errors.length > 0) {
+        this.addStatusLog(`  ⚠️ ${testResult.errors.length} technical issue(s) detected`, 'error');
+        testResult.errors.forEach((err, idx) => {
+          this.addStatusLog(`    ${idx + 1}. ${err}`, 'error');
+        });
+
+        // If last iteration, stop
+        if (iteration >= maxIterations) {
+          this.addStatusLog(`  ⚠️ Max iterations reached. Manual review needed.`, 'error');
+          this.setAiActivity('error', `${variationLabel} still has issues after ${maxIterations} attempts.`);
+          break;
+        }
+
+        // Request AI to fix technical issues
+        this.addStatusLog(`  🔧 Requesting AI to fix technical issues...`, 'info');
+        this.setAiActivity('working', `Adjusting ${variationLabel} based on test feedback...`);
+
+        const feedback = this.buildAutoFeedback(testResult, variationConfig);
+        const adjusted = await this.adjustCode(feedback, testResult);
+
+        if (!adjusted) {
+          this.addStatusLog(`  ✗ AI adjustment failed`, 'error');
+          this.setAiActivity('error', `Automatic adjustment failed for ${variationLabel}.`);
+          break;
+        }
+
+        this.generatedCode = adjusted.code;
+        this.recordUsage(adjusted.usage);
+        this.displayGeneratedCode(adjusted.code);
+
+        this.addStatusLog(`  ✓ Code updated, retesting...`, 'info');
+        await this.sleep(500);
+        continue; // Restart loop with fixed code
       }
 
-      // Errors found
-      this.addStatusLog(`  ⚠️ ${testResult.errors.length} issue(s) detected`, 'error');
-      testResult.errors.forEach((err, idx) => {
-        this.addStatusLog(`    ${idx + 1}. ${err}`, 'error');
+      // Technical validation passed - run Visual QA
+      this.addStatusLog(`  ✓ No technical errors detected`, 'success');
+
+      // Debug screenshot availability
+      console.log('[Auto-Iterate] Screenshot availability:', {
+        hasBeforeScreenshot: !!beforeScreenshot,
+        hasAfterScreenshot: !!testResult.screenshot,
+        beforeLength: beforeScreenshot?.length || 0,
+        afterLength: testResult.screenshot?.length || 0
       });
 
-      // If last iteration, stop
-      if (iteration >= maxIterations) {
-        this.addStatusLog(`  ⚠️ Max iterations reached. Manual review needed.`, 'error');
-        this.setAiActivity('error', `${variationLabel} still has issues after ${maxIterations} attempts.`);
-        break;
-      }
-
-      // Request AI to fix
-      this.addStatusLog(`  🔧 Requesting AI to fix issues...`, 'info');
-      this.setAiActivity('working', `Adjusting ${variationLabel} based on test feedback...`);
+      // Run Visual QA if we have screenshots OR force it for important iterations
+      const shouldRunVisualQA = (beforeScreenshot && testResult.screenshot) || iteration === 1;
       
-      const feedback = this.buildAutoFeedback(testResult, variationConfig);
-      const adjusted = await this.adjustCode(feedback, testResult);
+      if (shouldRunVisualQA) {
+        this.addStatusLog(`  👁️ Running AI Visual QA...`, 'info');
+        this.setAiActivity('working', `Checking visual quality of ${variationLabel}...`);
 
-      if (!adjusted) {
-        this.addStatusLog(`  ✗ AI adjustment failed`, 'error');
-        this.setAiActivity('error', `Automatic adjustment failed for ${variationLabel}.`);
-        break;
+        // Handle missing screenshots gracefully
+        if (!beforeScreenshot || !testResult.screenshot) {
+          this.addStatusLog(`  ⚠️ Missing screenshots (before: ${!!beforeScreenshot}, after: ${!!testResult.screenshot}) - running simplified QA`, 'info');
+        }
+
+        try {
+          // Convert after screenshot to data URL format
+          let afterScreenshot = testResult.screenshot;
+          if (!afterScreenshot.startsWith('data:')) {
+            afterScreenshot = `data:image/png;base64,${afterScreenshot.split(',')[1] || afterScreenshot}`;
+          }
+
+          // Run Visual QA
+          // Use enhanced prompt for full suite reviews
+          const originalRequest = variationConfig?.enhancedPrompt || 
+                                  variationConfig?.description || 
+                                  'No description provided';
+          
+          const visualQAResult = await this.visualQAService.runQA({
+            originalRequest: originalRequest,
+            beforeScreenshot: beforeScreenshot,
+            afterScreenshot: afterScreenshot,
+            iteration: iteration,
+            previousDefects: previousDefects,
+            elementDatabase: this.elementDatabase,
+            generatedCode: variation
+          });
+
+          // Record Visual QA API usage for cost tracking
+          if (visualQAResult.usage) {
+            this.recordUsage(visualQAResult.usage);
+          }
+
+          // Display Visual QA results
+          this.displayVisualQAResult(visualQAResult, variationNumber);
+
+          if (visualQAResult.status === 'PASS') {
+            this.addStatusLog(`  ✓ Visual QA PASSED - variation looks good!`, 'success');
+            this.setAiActivity('preview', `${variationLabel} passed all checks.`);
+            break; // Success!
+          }
+
+          // Visual defects found
+          const defectCount = visualQAResult.defects?.length || 0;
+          const criticalCount = visualQAResult.defects?.filter(d => d.severity === 'critical').length || 0;
+
+          this.addStatusLog(`  ⚠️ Visual QA found ${defectCount} defect(s) (${criticalCount} critical)`, 'error');
+          visualQAResult.defects?.forEach((defect, idx) => {
+            const icon = defect.severity === 'critical' ? '🔴' : '🟡';
+            this.addStatusLog(`    ${icon} ${idx + 1}. [${defect.type || 'issue'}] ${defect.description}`, 'error');
+            if (defect.suggestedFix) {
+              this.addStatusLog(`       💡 How to fix: ${defect.suggestedFix}`, 'info');
+            }
+          });
+
+          // Check termination conditions
+          if (!this.visualQAService.shouldContinueIteration(visualQAResult, iteration, previousDefects)) {
+            this.addStatusLog(`  ⚠️ Stopping iteration (max attempts or repeated defects)`, 'error');
+            this.setAiActivity('error', `${variationLabel} needs manual review.`);
+            break;
+          }
+
+          // Additional safety check: if we're on iteration 3+ and still have defects, force stop
+          if (iteration >= 3) {
+            this.addStatusLog(`  ⚠️ Stopping after ${iteration} iterations to prevent infinite loop`, 'error');
+            this.setAiActivity('warning', `${variationLabel} has minor issues but stopping to prevent infinite iterations.`);
+            break;
+          }
+
+          // Build feedback for regeneration
+          const visualFeedback = this.visualQAService.buildFeedbackForRegeneration(visualQAResult);
+          if (!visualFeedback) {
+            this.addStatusLog(`  ⚠️ No actionable feedback generated from Visual QA`, 'error');
+            this.setAiActivity('error', `Unable to generate improvement feedback for ${variationLabel}.`);
+            break;
+          }
+
+          this.addStatusLog(`  🔧 Requesting AI to fix visual defects...`, 'info');
+          this.setAiActivity('working', `Adjusting ${variationLabel} based on visual feedback...`);
+
+          const adjusted = await this.adjustCode(visualFeedback, {
+            ...testResult,
+            visualQA: visualQAResult
+          });
+
+          if (!adjusted) {
+            this.addStatusLog(`  ✗ AI adjustment failed - check console for details`, 'error');
+            this.setAiActivity('error', `Automatic adjustment failed for ${variationLabel}. Check console log.`);
+            break;
+          }
+
+          if (!adjusted.code || !adjusted.code.variations || adjusted.code.variations.length === 0) {
+            this.addStatusLog(`  ✗ AI returned invalid code structure`, 'error');
+            this.setAiActivity('error', `AI returned invalid code for ${variationLabel}.`);
+            break;
+          }
+
+          this.generatedCode = adjusted.code;
+          this.recordUsage(adjusted.usage);
+          this.displayGeneratedCode(adjusted.code);
+
+          // Track defects for repeated detection
+          previousDefects = visualQAResult.defects || [];
+
+          this.addStatusLog(`  ✓ Code updated, retesting...`, 'info');
+          await this.sleep(500);
+        } catch (error) {
+          console.error('[Auto-Iterate] Visual QA error:', error);
+          this.addStatusLog(`  ⚠️ Visual QA failed: ${error.message}`, 'error');
+          // Continue without Visual QA if it fails
+          this.addStatusLog(`  ✓ Technical validation passed (Visual QA skipped)`, 'success');
+          this.setAiActivity('preview', `${variationLabel} passed technical validation.`);
+          break;
+        }
+      } else {
+        // Force Visual QA even without screenshots for consistency
+        this.addStatusLog(`  👁️ Running Visual QA without screenshots...`, 'info');
+        this.setAiActivity('working', `Running code-only Visual QA for ${variationLabel}...`);
+
+        try {
+          const originalRequest = variationConfig?.enhancedPrompt || 
+                                  variationConfig?.description || 
+                                  'No description provided';
+          
+          const visualQAResult = await this.visualQAService.runQA({
+            originalRequest: originalRequest,
+            beforeScreenshot: null,
+            afterScreenshot: null,
+            iteration: iteration,
+            previousDefects: previousDefects,
+            elementDatabase: this.elementDatabase,
+            generatedCode: variation
+          });
+
+          // Record Visual QA API usage for cost tracking
+          if (visualQAResult.usage) {
+            this.recordUsage(visualQAResult.usage);
+          }
+
+          // Display Visual QA results
+          this.displayVisualQAResult(visualQAResult, variationNumber);
+
+          this.addStatusLog(`  ✓ Visual QA completed (code-only review)`, 'success');
+          this.setAiActivity('preview', `${variationLabel} passed Visual QA.`);
+          break;
+
+        } catch (error) {
+          console.error('[Auto-Iterate] Visual QA error:', error);
+          this.addStatusLog(`  ⚠️ Visual QA failed: ${error.message}`, 'error');
+          this.addStatusLog(`  ✓ Technical validation passed (Visual QA unavailable)`, 'success');
+          this.setAiActivity('preview', `${variationLabel} passed technical validation.`);
+          break;
+        }
       }
-
-      this.generatedCode = adjusted.code;
-      this.recordUsage(adjusted.usage);
-      this.displayGeneratedCode(adjusted.code);
-      
-      this.addStatusLog(`  ✓ Code updated, retesting...`, 'info');
-      await this.sleep(500);
     }
   }
 
@@ -1184,7 +1858,7 @@ class ExperimentBuilder {
 
     const variationName = variation.name || `Variation ${variationNumber}`;
 
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await this.getTargetTab();
     if (!tab) return null;
 
     const result = {
@@ -1210,15 +1884,44 @@ class ExperimentBuilder {
         }
       });
 
-      // Step 2: Clear previous variation
+      // Step 2: Clear previous variation and reset DOM
       const resetResult = await this.resetVariationOnTab(tab.id, 'convert-ai-');
       await this.resetVariationOnTab(tab.id, 'convert-ai-preview');
-      if (!resetResult) {
+      
+      // NEW: For iterations, ALWAYS refresh page to ensure clean DOM state
+      // This is needed because JavaScript variations make complex DOM changes that are hard to track/undo
+      if (this.autoIteration?.iterations > 0) {
+        this.addStatusLog(`  🔄 Refreshing page for clean DOM state (iteration ${this.autoIteration.iterations})`, 'info');
+        console.log(`🔄 Refreshing page for iteration ${this.autoIteration.iterations} to ensure clean DOM state`);
+        
+        // Store current base page data before refresh
+        const currentBaseData = this.basePageData;
+        
+        // Refresh the page to get clean state
+        await chrome.tabs.reload(tab.id);
+        
+        // Wait for page to fully reload
+        await this.sleep(3000); // Increased wait time for stability
+        
+        // Restore base page data (it might get lost during reload)
+        if (currentBaseData) {
+          this.basePageData = currentBaseData;
+          console.log('✅ Restored base page data after refresh');
+        }
+        
+        // Re-inject content script after reload
+        await this.ensureContentScript(tab.id);
+        
+        console.log('✅ Page refreshed and content scripts re-injected');
+        this.addStatusLog(`  ✅ Page refreshed and ready for testing`, 'success');
+      }
+      
+      if (!resetResult && this.autoIteration?.iterations === 0) {
         this.addStatusLog('  ⚠️ Unable to reset previously injected code. Try reloading the page.', 'error');
         result.errors.push('Content script injection failed - try reloading the page');
       }
 
-      await this.sleep(200);
+      await this.sleep(500); // Wait for everything to settle
 
       // Step 3: Apply variation
       const payload = this.buildVariationPayload(variation);
@@ -1239,7 +1942,45 @@ class ExperimentBuilder {
         result.errors.push(applyResponse?.error || 'Failed to apply variation');
       }
 
-      await this.sleep(800); // Give time for JS to execute
+      // Give extra time for complex DOM manipulations to complete
+      await this.sleep(2000);
+      console.log('⏱️ Waited 2 seconds for JavaScript to complete DOM modifications');
+      
+      // DEBUG: Check what's actually on the page after variation is applied
+      try {
+        const pageState = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          func: () => {
+            const videoContainer = document.querySelector('#Video--template--21560119033891__section_video_VDBjPY');
+            const splitHeroContainer = document.querySelector('.split-hero-container');
+            const splitHeroLeft = document.querySelector('.split-hero-left');
+            const splitHeroContent = document.querySelector('.split-hero-content');
+            const buttons = document.querySelectorAll('button');
+            const links = document.querySelectorAll('a');
+            
+            return {
+              hasVideoContainer: !!videoContainer,
+              hasSplitHeroContainer: !!splitHeroContainer,
+              hasSplitHeroLeft: !!splitHeroLeft,
+              hasSplitHeroContent: !!splitHeroContent,
+              videoContainerApplied: videoContainer?.dataset?.varApplied,
+              splitContainerHTML: splitHeroContainer?.innerHTML?.substring(0, 300),
+              buttonCount: buttons.length,
+              linkCount: links.length,
+              allButtonTexts: Array.from(buttons).map(b => b.textContent),
+              allLinkTexts: Array.from(links).slice(0, 10).map(l => l.textContent?.substring(0, 50))
+            };
+          }
+        });
+        
+        if (pageState?.[0]?.result) {
+          console.log('🔍 Page state after variation applied:', pageState[0].result);
+          this.addStatusLog(`  🔍 Debug: Found ${pageState[0].result.buttonCount} buttons, varApplied=${pageState[0].result.videoContainerApplied}`, 'info');
+        }
+      } catch (debugError) {
+        console.log('⚠️ Could not check page state:', debugError);
+      }
 
       // Step 4: Collect errors from page
       const errorResults = await chrome.scripting.executeScript({
@@ -1264,7 +2005,7 @@ class ExperimentBuilder {
         });
       }
 
-      // Step 5: Check if critical elements exist (if JS was applied)
+      // Step 5: Check if critical elements exist (with smart fallback detection)
       if (variation.js) {
         const elementCheckResults = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -1278,13 +2019,26 @@ class ExperimentBuilder {
               selectors.push(match[1]);
             }
             
-            // Check if these selectors exist
+            // Check if these selectors exist and if code has fallback logic
             const missing = [];
             selectors.forEach(selector => {
               try {
                 const element = document.querySelector(selector);
                 if (!element) {
-                  missing.push(selector);
+                  // Check if this selector is part of fallback logic
+                  const hasFallbackPattern = 
+                    // Multiple selector attempts with ||
+                    (jsCode.includes('||') && jsCode.includes('querySelector')) ||
+                    // Conditional element checking
+                    /if\s*\(\s*\w+Element\s*\)/.test(jsCode) ||
+                    // Ternary with fallback text
+                    /\?\s*[^:]+\s*:\s*['"`][^'"`]{3,}['"`]/.test(jsCode) ||
+                    // Default fallback text assignment
+                    jsCode.includes('Up to 50% Off Sitewide');
+                  
+                  if (!hasFallbackPattern) {
+                    missing.push(selector);
+                  }
                 }
               } catch (e) {
                 missing.push(selector + ' (invalid selector)');
@@ -1310,9 +2064,14 @@ class ExperimentBuilder {
           format: 'png',
           quality: 90
         });
+        console.log('[testVariation] Screenshot captured successfully:', {
+          hasScreenshot: !!result.screenshot,
+          screenshotLength: result.screenshot?.length || 0
+        });
         this.displayTestScreenshot(result.screenshot, variationNumber);
       } catch (error) {
-        console.warn('Screenshot failed:', error);
+        console.error('[testVariation] Screenshot capture failed:', error);
+        this.addStatusLog(`  ⚠️ Screenshot capture failed: ${error.message}`, 'error');
       }
 
     } catch (error) {
@@ -1387,6 +2146,8 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
 
   async adjustCode(feedback, testSummary, options = {}) {
     try {
+      console.log('🔧 Starting code adjustment with feedback:', feedback?.substring(0, 200) + '...');
+      
       const payload = {
         generationData: this.buildGenerationData(),
         previousCode: this.serializeCode(this.generatedCode),
@@ -1395,25 +2156,51 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
       };
 
       if (options.includeConversation) {
+        // Enhanced conversation context with code history
         payload.conversationHistory = this.getConversationHistoryForAI();
+        payload.codeEvolution = this.getCodeEvolutionSummary();
+        payload.originalRequest = this.codeHistory.originalRequest || this.generationData?.description;
+        payload.currentElements = this.elementDatabase || {};
+      }
+
+      if (options.chatContext) {
+        payload.chatContext = options.chatContext;
       }
 
       if (options.extraContext) {
         payload.extraContext = options.extraContext;
       }
 
+      console.log('📤 Sending ADJUST_CODE message to service worker');
+      
       const response = await chrome.runtime.sendMessage({
         type: 'ADJUST_CODE',
         data: payload
       });
 
+      console.log('📥 Received ADJUST_CODE response:', {
+        success: response?.success,
+        hasCode: !!response?.code,
+        error: response?.error,
+        usage: response?.usage
+      });
+
       if (!response?.success) {
-        throw new Error(response?.error || 'Adjustment failed');
+        const errorMessage = response?.error || 'Adjustment failed - no error details provided';
+        console.error('❌ Adjustment failed with error:', errorMessage);
+        throw new Error(errorMessage);
       }
 
+      if (!response.code) {
+        console.error('❌ Adjustment succeeded but no code returned');
+        throw new Error('Adjustment succeeded but no code was returned');
+      }
+
+      console.log('✅ Code adjustment completed successfully');
       return response;
     } catch (error) {
-      console.error('Adjustment failed:', error);
+      console.error('❌ Adjustment failed with exception:', error);
+      this.addStatusLog(`  ✗ Adjustment error: ${error.message}`, 'error');
       return null;
     }
   }
@@ -1440,12 +2227,30 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
   }
 
   buildGenerationData() {
-    return {
-      pageData: this.currentPageData,
-      description: document.getElementById('descriptionText').value.trim(),
+    // Use base page data for iterations to prevent code stacking
+    const pageDataToUse = this.basePageData || this.currentPageData;
+    
+    const data = {
+      pageData: pageDataToUse,
+      description: '', // Shared context section removed
       variations: this.variations,
       settings: this.settings
     };
+    
+    console.log('🎯 Building generation data:', {
+      hasPageData: !!data.pageData,
+      usingBaseData: !!this.basePageData,
+      pageDataUrl: data.pageData?.url,
+      pageDataKeys: data.pageData ? Object.keys(data.pageData) : 'no pageData'
+    });
+    
+    if (this.basePageData) {
+      console.log('✅ Using BASE page data to prevent code stacking');
+    } else {
+      console.log('⚠️ No base page data - using current page data');
+    }
+    
+    return data;
   }
 
   displayGeneratedCode(codeData) {
@@ -1749,14 +2554,13 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
 
     let tab;
     try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      tab = tabs?.[0];
+      tab = await this.getTargetTab();
     } catch (error) {
-      console.error('Failed to query active tab:', error);
+      console.error('Failed to get target tab:', error);
     }
 
     if (!tab) {
-      this.showError('No active tab available for preview');
+      this.showError('No target tab available for preview');
       return;
     }
 
@@ -1830,6 +2634,13 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
       return;
     }
 
+    // NEW: Enhanced full suite review if we have conversation history
+    if (this.codeHistory.conversationLog.length > 0) {
+      await this.performFullSuiteReview(variationNumber);
+      return;
+    }
+
+    // Fallback to simple retest for initial variations
     const variationName = variation.name || `Variation ${variationNumber}`;
     this.addStatusLog(`🔁 Retesting ${variationName}...`, 'info');
     const result = await this.testVariation(variationNumber);
@@ -1856,6 +2667,72 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     this.updatePreviewActiveState();
   }
 
+  /**
+   * NEW: Perform comprehensive full suite review against BASE page
+   * Reviews ALL conversation requests to verify complete implementation
+   */
+  async performFullSuiteReview(variationNumber) {
+    const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
+    const variationName = variation.name || `Variation ${variationNumber}`;
+    
+    this.addStatusLog(`🔍 Full Suite Review: Checking ALL requests against BASE page...`, 'info');
+    
+    // Build comprehensive request summary
+    const allRequests = [this.codeHistory.originalRequest];
+    this.codeHistory.conversationLog.forEach(entry => {
+      allRequests.push(entry.request);
+    });
+    
+    const fullRequestSummary = allRequests
+      .map((req, idx) => `${idx + 1}. ${req}`)
+      .join('\n');
+    
+    this.addStatusLog(`📋 Reviewing ${allRequests.length} total request(s):`, 'info');
+    allRequests.forEach((req, idx) => {
+      this.addStatusLog(`  ${idx + 1}. ${req.substring(0, 80)}${req.length > 80 ? '...' : ''}`, 'info');
+    });
+    
+    try {
+      // Refresh page to get clean BASE state
+      const tab = await this.getTargetTab();
+      if (tab) {
+        await chrome.tabs.reload(tab.id);
+        await this.sleep(3000);
+        this.addStatusLog('🔄 Page refreshed to BASE state', 'info');
+      }
+      
+      // Run comprehensive Visual QA against ALL requests
+      this.addStatusLog('🎯 Running Visual QA for complete suite...', 'info');
+      
+      // Set up auto-iteration for full validation
+      this.autoIteration = {
+        active: true,
+        currentVariation: variationNumber,
+        iterations: 0,
+        maxIterations: 5, // More iterations for comprehensive review
+        startTime: Date.now(),
+        source: 'full-suite-retest',
+        fullSuiteRequests: fullRequestSummary
+      };
+      
+      // Apply variation and test
+      await this.autoIterateVariation(variation, {
+        enhancedPrompt: `FULL SUITE REVIEW - Verify ALL requests implemented correctly:
+
+${fullRequestSummary}
+
+This is a comprehensive review against the BASE page (before any changes). 
+All ${allRequests.length} requests above should be visible and working correctly in the final result.
+Pay special attention to ensuring NO requests were missed or incompletely implemented.`
+      });
+      
+    } catch (error) {
+      console.error('[Full Suite Review] Error:', error);
+      this.addStatusLog('✗ Full suite review failed', 'error');
+      this.showError('Full suite review encountered an error');
+    }
+  }
+
   isMissingContentScriptError(error) {
     if (!error) return false;
     const message = error.message || String(error);
@@ -1880,10 +2757,26 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
 
   async resetVariationOnTab(tabId, keyPrefix = 'convert-ai-') {
     try {
-      await chrome.tabs.sendMessage(tabId, {
+      // Add timeout to prevent hanging
+      const messagePromise = chrome.tabs.sendMessage(tabId, {
         type: 'RESET_VARIATION',
         keyPrefix
       });
+
+      const timeoutPromise = new Promise((resolve) => {
+        setTimeout(() => {
+          console.warn(`[Reset Variation] Timeout after 3s for key: ${keyPrefix}`);
+          resolve({ success: false, timeout: true });
+        }, 3000);
+      });
+
+      const result = await Promise.race([messagePromise, timeoutPromise]);
+
+      if (result?.timeout) {
+        console.warn('Reset variation timed out, continuing anyway');
+        return true; // Continue anyway, reset is not critical
+      }
+
       return true;
     } catch (error) {
       if (!this.isMissingContentScriptError(error)) {
@@ -1897,10 +2790,26 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
       }
 
       try {
-        await chrome.tabs.sendMessage(tabId, {
+        // Add timeout to retry as well
+        const retryPromise = chrome.tabs.sendMessage(tabId, {
           type: 'RESET_VARIATION',
           keyPrefix
         });
+
+        const retryTimeoutPromise = new Promise((resolve) => {
+          setTimeout(() => {
+            console.warn(`[Reset Variation] Retry timeout after 3s for key: ${keyPrefix}`);
+            resolve({ success: false, timeout: true });
+          }, 3000);
+        });
+
+        const retryResult = await Promise.race([retryPromise, retryTimeoutPromise]);
+
+        if (retryResult?.timeout) {
+          console.warn('Reset variation retry timed out, continuing anyway');
+          return true; // Continue anyway
+        }
+
         return true;
       } catch (retryError) {
         console.warn('Reset variation retry failed:', retryError);
@@ -1914,8 +2823,7 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     this.previewState.activeVariation = null;
 
     try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs?.[0];
+      const tab = await this.getTargetTab();
       if (tab) {
         await this.resetVariationOnTab(tab.id, 'convert-ai-preview');
         await this.resetVariationOnTab(tab.id, 'convert-ai-');
@@ -1939,10 +2847,104 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     const container = document.getElementById('testScreenshot');
     const img = document.getElementById('screenshotImg');
     const meta = document.getElementById('screenshotMeta');
-    
+
     img.src = screenshotData;
     meta.textContent = `Variation ${variationNumber} - ${new Date().toLocaleTimeString()}`;
     container.classList.remove('hidden');
+  }
+
+  displayVisualQAResult(qaResult, variationNumber) {
+    // Find or create Visual QA display container
+    let container = document.getElementById('visualQAResults');
+
+    if (!container) {
+      // Create container if it doesn't exist
+      const testScreenshot = document.getElementById('testScreenshot');
+      if (testScreenshot && testScreenshot.parentNode) {
+        container = document.createElement('div');
+        container.id = 'visualQAResults';
+        container.className = 'visual-qa-results';
+        testScreenshot.parentNode.insertBefore(container, testScreenshot.nextSibling);
+      } else {
+        console.warn('[Visual QA] No container to display results');
+        return;
+      }
+    }
+
+    // Build status badge
+    const statusIcons = {
+      'PASS': '✓',
+      'GOAL_NOT_MET': '⚠️',
+      'CRITICAL_DEFECT': '🔴',
+      'MAJOR_DEFECT': '🟡',
+      'ERROR': '❌'
+    };
+
+    const statusColors = {
+      'PASS': '#10b981',
+      'GOAL_NOT_MET': '#f59e0b',
+      'CRITICAL_DEFECT': '#ef4444',
+      'MAJOR_DEFECT': '#f59e0b',
+      'ERROR': '#ef4444'
+    };
+
+    const icon = statusIcons[qaResult.status] || '?';
+    const color = statusColors[qaResult.status] || '#6b7280';
+
+    // Build defects list HTML
+    let defectsHTML = '';
+    if (qaResult.defects && qaResult.defects.length > 0) {
+      defectsHTML = '<div class="visual-qa-defects">';
+      qaResult.defects.forEach((defect, idx) => {
+        const defectIcon = defect.severity === 'critical' ? '🔴' : '🟡';
+        defectsHTML += `
+          <div class="visual-qa-defect">
+            <div class="defect-header">
+              <span class="defect-icon">${defectIcon}</span>
+              <span class="defect-severity">${defect.severity.toUpperCase()}</span>
+              <span class="defect-type">${defect.type}</span>
+            </div>
+            <div class="defect-description">${this.escapeHTML(defect.description)}</div>
+            ${defect.suggestedFix ? `<div class="defect-fix">Fix: ${this.escapeHTML(defect.suggestedFix)}</div>` : ''}
+          </div>
+        `;
+      });
+      defectsHTML += '</div>';
+    }
+
+    // Build complete HTML
+    container.innerHTML = `
+      <div class="visual-qa-card">
+        <div class="visual-qa-header">
+          <div class="visual-qa-title">
+            <span class="status-icon" style="color: ${color}">${icon}</span>
+            <h3>Visual QA - Iteration ${qaResult.iteration}</h3>
+          </div>
+          <div class="visual-qa-status" style="background-color: ${color}20; color: ${color}; border: 1px solid ${color}">
+            ${qaResult.status.replace(/_/g, ' ')}
+          </div>
+        </div>
+
+        <div class="visual-qa-body">
+          ${qaResult.reasoning ? `<div class="visual-qa-reasoning">${this.escapeHTML(qaResult.reasoning)}</div>` : ''}
+          ${defectsHTML}
+
+          <div class="visual-qa-meta">
+            <span>Goal Accomplished: ${qaResult.goalAccomplished ? '✓ Yes' : '✗ No'}</span>
+            <span>Should Continue: ${qaResult.shouldContinue ? 'Yes' : 'No'}</span>
+            ${qaResult.timestamp ? `<span>${new Date(qaResult.timestamp).toLocaleTimeString()}</span>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+
+    container.classList.remove('hidden');
+  }
+
+  escapeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   stopIteration() {
@@ -1960,30 +2962,86 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     this.usageStats.tokens += tokens;
     const costDelta = this.calculateCost(usage);
     this.usageStats.cost = Number((this.usageStats.cost + costDelta).toFixed(6));
+    
+    // Debug logging for cost calculation
+    console.log('💰 Usage Recorded:', {
+      model: usage.model,
+      promptTokens,
+      completionTokens,
+      totalTokens: tokens,
+      cacheCreationTokens: usage.cacheCreationTokens || 0,
+      cacheReadTokens: usage.cacheReadTokens || 0,
+      costDelta: costDelta.toFixed(6),
+      totalCost: this.usageStats.cost.toFixed(6)
+    });
+    
     this.updateUsageDisplay();
     this.persistUsageStats();
   }
 
   calculateCost(usage) {
     const prices = {
+      // OpenAI Models
       'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
       'gpt-4o': { input: 0.005, output: 0.015 },
       'gpt-4.1-mini': { input: 0.00015, output: 0.0006 },
-      default: { input: 0.00015, output: 0.0006 }
+      'gpt-5-nano': { input: 0.0001, output: 0.0004 },
+      'gpt-5-micro': { input: 0.0002, output: 0.0008 },
+      'gpt-5-mini': { input: 0.0003, output: 0.0012 },
+      'gpt-5-turbo': { input: 0.007, output: 0.021 },
+      'gpt-5': { input: 0.01, output: 0.03 },
+      // Anthropic Claude Models
+      'claude-3-5-sonnet-20240620': { input: 0.003, output: 0.015 },
+      'claude-3-5-sonnet-20241022': { input: 0.003, output: 0.015 },
+      'claude-sonnet-4-20250514': { input: 0.003, output: 0.015 },
+      'claude-3-5-sonnet': { input: 0.003, output: 0.015 }, // Generic fallback
+      'claude-3.5-sonnet': { input: 0.003, output: 0.015 }, // Alternative naming
+      'claude-4.5-sonnet': { input: 0.003, output: 0.015 }, // Alternative naming
+      default: { input: 0.0003, output: 0.0012 }
     };
     const rawModel = (usage?.model || this.settings.model || 'gpt-4o-mini').toLowerCase();
-    const normalizedModel = rawModel.startsWith('gpt-4o-mini')
-      ? 'gpt-4o-mini'
-      : rawModel.startsWith('gpt-4.1-mini')
-        ? 'gpt-4.1-mini'
-        : rawModel.startsWith('gpt-4o')
-          ? 'gpt-4o'
-          : 'default';
+    const normalizedModel = 
+      // Claude models (check specific versions first)
+      rawModel.includes('claude-3-5-sonnet-20240620') ? 'claude-3-5-sonnet-20240620'
+      : rawModel.includes('claude-3-5-sonnet-20241022') ? 'claude-3-5-sonnet-20241022'
+      : rawModel.includes('claude-sonnet-4-20250514') ? 'claude-sonnet-4-20250514'
+      : rawModel.includes('claude-3.5-sonnet') ? 'claude-3.5-sonnet'
+      : rawModel.includes('claude-4.5-sonnet') ? 'claude-4.5-sonnet'
+      : rawModel.includes('claude-3-5-sonnet') ? 'claude-3-5-sonnet'
+      // OpenAI models
+      : rawModel.startsWith('gpt-5-nano') ? 'gpt-5-nano'
+      : rawModel.startsWith('gpt-5-micro') ? 'gpt-5-micro'
+      : rawModel.startsWith('gpt-5-mini') ? 'gpt-5-mini'
+      : rawModel.startsWith('gpt-5-turbo') ? 'gpt-5-turbo'
+      : rawModel.startsWith('gpt-5') ? 'gpt-5'
+      : rawModel.startsWith('gpt-4o-mini') ? 'gpt-4o-mini'
+      : rawModel.startsWith('gpt-4.1-mini') ? 'gpt-4.1-mini'
+      : rawModel.startsWith('gpt-4o') ? 'gpt-4o'
+      : 'default';
     const pricing = prices[normalizedModel] || prices.default;
 
     const promptTokens = usage?.promptTokens || usage?.inputTokens || 0;
     const completionTokens = usage?.completionTokens || usage?.outputTokens || 0;
-    return ((promptTokens * pricing.input) + (completionTokens * pricing.output)) / 1000;
+    
+    // Handle Claude cache tokens (priced differently)
+    const cacheCreationTokens = usage?.cacheCreationTokens || 0;
+    const cacheReadTokens = usage?.cacheReadTokens || 0;
+    
+    // Claude cache pricing: Cache writes = 1.25x, Cache reads = 0.1x input price
+    let totalCost = (completionTokens * pricing.output) / 1000;
+    
+    if (normalizedModel.includes('claude') && (cacheCreationTokens > 0 || cacheReadTokens > 0)) {
+      // Claude cache system
+      const regularInputTokens = promptTokens - cacheCreationTokens - cacheReadTokens;
+      totalCost += (regularInputTokens * pricing.input) / 1000; // Regular input tokens
+      totalCost += (cacheCreationTokens * pricing.input * 1.25) / 1000; // Cache creation (25% premium)
+      totalCost += (cacheReadTokens * pricing.input * 0.1) / 1000; // Cache reads (90% discount)
+    } else {
+      // Standard pricing for OpenAI and non-cached Claude requests
+      totalCost += (promptTokens * pricing.input) / 1000;
+    }
+    
+    return totalCost;
   }
 
   updateUsageDisplay() {
@@ -2327,11 +3385,14 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     // Setup capture mode toggles
     this.setupCaptureModeToggles();
 
-    // Setup design file upload
-    this.setupDesignFileUpload();
+    // Design file upload removed for space optimization
+    // this.setupDesignFileUpload();
 
     // Setup prompt helper
     this.setupPromptHelper();
+
+    // Setup chat tools
+    this.setupChatTools();
 
     // Setup template library
     this.setupTemplateLibrary();
@@ -2388,38 +3449,14 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
   }
 
   setupDesignFileUpload() {
+    // Design file upload section removed for UI space optimization
+    // Elements no longer exist in HTML
     const uploadBox = document.getElementById('uploadBox');
-    const fileInput = document.getElementById('designFileInput');
-    const previewGrid = document.getElementById('designPreviewGrid');
-
-    if (!uploadBox || !fileInput || !previewGrid) return;
-
-    // Click to browse
-    uploadBox.addEventListener('click', () => fileInput.click());
-
-    // Drag and drop
-    uploadBox.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      uploadBox.classList.add('drag-over');
-    });
-
-    uploadBox.addEventListener('dragleave', () => {
-      uploadBox.classList.remove('drag-over');
-    });
-
-    uploadBox.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      uploadBox.classList.remove('drag-over');
-
-      const files = Array.from(e.dataTransfer.files);
-      await this.handleDesignFiles(files);
-    });
-
-    // File input change
-    fileInput.addEventListener('change', async (e) => {
-      const files = Array.from(e.target.files);
-      await this.handleDesignFiles(files);
-    });
+    if (!uploadBox) {
+      console.log('Design file upload section removed for space optimization');
+      return;
+    }
+    // Original functionality preserved but disabled
   }
 
   async handleDesignFiles(files) {
@@ -2515,21 +3552,9 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
   }
 
   insertSuggestion(suggestion) {
-    const descriptionText = document.getElementById('descriptionText');
-    if (!descriptionText) return;
-
-    const currentText = descriptionText.value;
-    const newText = currentText ? `${currentText}\n\n${suggestion}` : suggestion;
+    // Shared context section was removed - suggestions no longer applicable
+    console.log('Suggestion ignored (shared context removed):', suggestion);
     
-    descriptionText.value = newText;
-    descriptionText.focus();
-
-    // Update character count if it exists
-    const charCount = document.getElementById('charCount');
-    if (charCount) {
-      charCount.textContent = newText.length;
-    }
-
     // Hide suggestions after selection
     const suggestionChips = document.getElementById('suggestionChips');
     if (suggestionChips) {
@@ -2570,6 +3595,253 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     if (modal) {
       modal.classList.remove('hidden');
     }
+  }
+
+  setupChatTools() {
+    const elementSelector = document.getElementById('chatElementSelector');
+    const capturePage = document.getElementById('chatCapturePage');
+    const clearSelection = document.getElementById('chatClearSelection');
+    const viewElements = document.getElementById('chatViewElements');
+
+    if (!elementSelector || !capturePage || !clearSelection) return;
+
+    // Initialize chat selected elements storage
+    if (!this.chatSelectedElements) {
+      this.chatSelectedElements = [];
+    }
+
+    // Element selector tool
+    elementSelector.addEventListener('click', async () => {
+      try {
+        elementSelector.classList.add('active');
+        this.addChatToolStatus('🎯 Click any element on the page to add it to your chat context...');
+
+        const tab = await this.getTargetTab();
+        if (!tab?.url) throw new Error('No target tab found');
+
+        const response = await chrome.runtime.sendMessage({
+          type: 'START_ELEMENT_SELECTION',
+          tabId: tab.id
+        });
+
+        if (response.success) {
+          this.addChatSelectedElement(response.data);
+          this.updateChatElementsDisplay();
+          this.addChatToolStatus('✓ Element added to chat context');
+        } else {
+          throw new Error(response.error || 'Element selection failed');
+        }
+      } catch (error) {
+        console.error('Chat element selection failed:', error);
+        this.addChatToolStatus('✗ Element selection failed: ' + error.message, 'error');
+      } finally {
+        elementSelector.classList.remove('active');
+      }
+    });
+
+    // Page capture tool
+    capturePage.addEventListener('click', async () => {
+      try {
+        capturePage.classList.add('active');
+        this.addChatToolStatus('📸 Capturing current page...');
+
+        const tab = await this.getTargetTab();
+        if (!tab?.url) throw new Error('No target tab found');
+
+        const response = await chrome.runtime.sendMessage({
+          type: 'CAPTURE_PAGE',
+          tabId: tab.id
+        });
+
+        if (response.success) {
+          // Add page capture to chat context
+          this.chatPageCapture = response.data;
+          this.addChatToolStatus('✓ Page captured and added to chat context');
+        } else {
+          throw new Error(response.error || 'Page capture failed');
+        }
+      } catch (error) {
+        console.error('Chat page capture failed:', error);
+        this.addChatToolStatus('✗ Page capture failed: ' + error.message, 'error');
+      } finally {
+        capturePage.classList.remove('active');
+      }
+    });
+
+    // Clear selection tool
+    clearSelection.addEventListener('click', () => {
+      this.chatSelectedElements = [];
+      this.chatPageCapture = null;
+      this.updateChatElementsDisplay();
+      this.addChatToolStatus('✓ Chat context cleared');
+    });
+
+    // View elements modal
+    viewElements?.addEventListener('click', () => {
+      this.showChatElementsModal();
+    });
+  }
+
+  addChatSelectedElement(elementData) {
+    // Avoid duplicates based on selector
+    const exists = this.chatSelectedElements.find(el => el.selector === elementData.selector);
+    if (exists) {
+      this.addChatToolStatus('Element already selected', 'warning');
+      return;
+    }
+
+    // Add timestamp for ordering
+    elementData.addedAt = Date.now();
+    this.chatSelectedElements.push(elementData);
+
+    // Limit to 5 elements to keep context manageable
+    if (this.chatSelectedElements.length > 5) {
+      this.chatSelectedElements.shift(); // Remove oldest
+      this.addChatToolStatus('Oldest element removed (max 5 elements)');
+    }
+  }
+
+  updateChatElementsDisplay() {
+    const selectedElements = document.getElementById('chatSelectedElements');
+    const elementsCount = document.getElementById('chatElementsCount');
+    const elementsList = document.getElementById('chatElementsList');
+    const clearBtn = document.getElementById('chatClearSelection');
+    const contextIndicator = document.getElementById('chatContextIndicator');
+
+    if (!selectedElements || !elementsCount || !elementsList) return;
+
+    const totalElements = this.chatSelectedElements.length;
+    const hasPageCapture = !!this.chatPageCapture;
+    const totalContext = totalElements + (hasPageCapture ? 1 : 0);
+
+    if (totalContext === 0) {
+      selectedElements.classList.add('hidden');
+      contextIndicator?.classList.add('hidden');
+      clearBtn.disabled = true;
+      return;
+    }
+
+    // Show elements display and context indicator
+    selectedElements.classList.remove('hidden');
+    contextIndicator?.classList.remove('hidden');
+    clearBtn.disabled = false;
+
+    // Update count
+    let countText = '';
+    if (hasPageCapture && totalElements > 0) {
+      countText = `Full page + ${totalElements} element${totalElements === 1 ? '' : 's'}`;
+    } else if (hasPageCapture) {
+      countText = 'Full page captured';
+    } else {
+      countText = `${totalElements} element${totalElements === 1 ? '' : 's'} selected`;
+    }
+    elementsCount.textContent = countText;
+
+    // Update elements list
+    elementsList.innerHTML = '';
+
+    // Show page capture if exists
+    if (hasPageCapture) {
+      const pageItem = this.createChatElementItem({
+        selector: 'Full Page',
+        tag: 'PAGE',
+        dimensions: { width: this.chatPageCapture.viewport?.width || 1200, height: this.chatPageCapture.viewport?.height || 800 },
+        screenshot: this.chatPageCapture.screenshot,
+        type: 'page'
+      });
+      elementsList.appendChild(pageItem);
+    }
+
+    // Show selected elements
+    this.chatSelectedElements.forEach(element => {
+      const item = this.createChatElementItem(element);
+      elementsList.appendChild(item);
+    });
+  }
+
+  createChatElementItem(elementData) {
+    const item = document.createElement('div');
+    item.className = 'selected-element-item';
+    
+    const isPage = elementData.type === 'page';
+    
+    item.innerHTML = `
+      <img src="${elementData.screenshot || ''}" class="element-preview-thumb" alt="${elementData.selector}">
+      <div class="element-item-info">
+        <div class="element-item-selector">${elementData.selector}</div>
+        <div class="element-item-meta">
+          ${elementData.tag} • ${Math.round(elementData.dimensions?.width || 0)}×${Math.round(elementData.dimensions?.height || 0)}px
+        </div>
+      </div>
+      <button class="element-item-remove" title="Remove from context">×</button>
+    `;
+
+    // Remove functionality
+    const removeBtn = item.querySelector('.element-item-remove');
+    removeBtn.addEventListener('click', () => {
+      if (isPage) {
+        this.chatPageCapture = null;
+      } else {
+        const index = this.chatSelectedElements.findIndex(el => el.selector === elementData.selector);
+        if (index > -1) {
+          this.chatSelectedElements.splice(index, 1);
+        }
+      }
+      this.updateChatElementsDisplay();
+      this.addChatToolStatus('✓ Removed from chat context');
+    });
+
+    return item;
+  }
+
+  addChatToolStatus(message, type = 'info') {
+    // Add or update tool status
+    let statusEl = document.querySelector('.chat-tools .tool-status');
+    
+    if (!statusEl) {
+      statusEl = document.createElement('div');
+      statusEl.className = 'tool-status';
+      document.querySelector('.chat-tools').appendChild(statusEl);
+    }
+
+    const icon = type === 'error' ? '⚠️' : type === 'warning' ? '⚠️' : 'ℹ️';
+    statusEl.innerHTML = `<span class="tool-status-icon">${icon}</span>${message}`;
+    statusEl.className = `tool-status ${type === 'error' ? 'error' : type === 'warning' ? 'warning' : ''}`;
+
+    // Auto-clear after 3 seconds
+    clearTimeout(this.chatToolStatusTimeout);
+    this.chatToolStatusTimeout = setTimeout(() => {
+      if (statusEl.parentElement) {
+        statusEl.remove();
+      }
+    }, 3000);
+  }
+
+  getChatContextForAI() {
+    // Build context string for AI that includes selected elements and page capture
+    let context = '';
+
+    if (this.chatPageCapture) {
+      context += 'FULL PAGE CONTEXT: Complete page screenshot and HTML provided.\n\n';
+    }
+
+    if (this.chatSelectedElements.length > 0) {
+      context += 'SELECTED ELEMENTS:\n';
+      this.chatSelectedElements.forEach((element, index) => {
+        context += `${index + 1}. ${element.selector} (${element.tag})\n`;
+        context += `   Dimensions: ${Math.round(element.dimensions?.width || 0)}×${Math.round(element.dimensions?.height || 0)}px\n`;
+        if (element.textContent) {
+          context += `   Content: "${element.textContent.substring(0, 100)}..."\n`;
+        }
+      });
+      context += '\n';
+    }
+
+    if (context) {
+      context += 'Please consider this context when providing suggestions and generating code.\n\n';
+    }
+
+    return context;
   }
 
   setupTemplateLibrary() {
@@ -3444,7 +4716,7 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     const url = elements.newExperienceUrl?.value.trim();
     const baselineName = elements.newBaselineName?.value.trim() || 'Original';
     const defaultVariationName = elements.newVariationName?.value.trim() || 'Variation 1';
-    const description = document.getElementById('descriptionText')?.value.trim() || '';
+    const description = ''; // Shared context section removed
 
     if (!name) {
       throw new Error('Provide a name for the new experience');
@@ -3728,7 +5000,7 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
         const includeDOMChecks = document.getElementById('includeDOMChecks');
         if (includeDOMChecks) includeDOMChecks.checked = this.settings.includeDOMChecks;
         const modelSelect = document.getElementById('modelSelect');
-        if (modelSelect) modelSelect.value = this.settings.model || 'gpt-4o-mini';
+        if (modelSelect) modelSelect.value = this.settings.model || 'gpt-5-mini';
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -3798,6 +5070,38 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
 
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Log code quality analysis results
+   */
+  logQualityAnalysis(analysis) {
+    const summary = this.codeQualityMonitor.getSummary();
+
+    console.log('📊 Code Quality Analysis:', {
+      score: summary.score,
+      status: summary.status,
+      issues: analysis.issues.length,
+      degraded: summary.degraded
+    });
+
+    // Log quality score
+    if (summary.score >= 80) {
+      this.addStatusLog(`📊 Code Quality: ${summary.status} (${summary.score}/100)`, 'success');
+    } else if (summary.score >= 60) {
+      this.addStatusLog(`📊 Code Quality: ${summary.status} (${summary.score}/100)`, 'info');
+    } else {
+      this.addStatusLog(`⚠️ Code Quality: ${summary.status} (${summary.score}/100)`, 'error');
+    }
+
+    // Log major issues
+    const majorIssues = analysis.issues.filter(i => i.severity === 'major');
+    if (majorIssues.length > 0) {
+      majorIssues.forEach(issue => {
+        this.addStatusLog(`  ⚠️ ${issue.message}`, 'error');
+        console.warn(`[Code Quality] ${issue.type}:`, issue.message, '\nSuggestion:', issue.suggestion);
+      });
+    }
   }
 }
 

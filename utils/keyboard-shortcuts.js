@@ -35,6 +35,12 @@ class KeyboardShortcuts {
         handler: () => this.activateElementSelector(),
         contexts: ['default']
       },
+      'ctrl+shift+a': {
+        name: 'Add to Chat',
+        description: 'Select element for chat context',
+        handler: () => this.activateChatElementSelector(),
+        contexts: ['default']
+      },
       
       // Navigation
       'ctrl+1': {
@@ -162,6 +168,19 @@ class KeyboardShortcuts {
     if (elementBtn) {
       elementBtn.click();
       this.builder.capturePage();
+    }
+  }
+
+  activateChatElementSelector() {
+    // Switch to review panel if not already there
+    if (this.builder.activePanel !== 'review') {
+      this.builder.switchPanel('review');
+    }
+    
+    // Trigger chat element selector
+    const chatElementBtn = document.getElementById('chatElementSelector');
+    if (chatElementBtn) {
+      chatElementBtn.click();
     }
   }
 
@@ -342,7 +361,8 @@ class KeyboardShortcuts {
     // Add hints to buttons
     const hints = [
       { id: 'generateBtn', shortcut: '⌘ ↵' },
-      { id: 'captureBtn', shortcut: '⌘ ⇧ P' }
+      { id: 'captureBtn', shortcut: '⌘ ⇧ P' },
+      { id: 'chatElementSelector', shortcut: '⌘ ⇧ A' }
     ];
 
     hints.forEach(({ id, shortcut }) => {

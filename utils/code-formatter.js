@@ -222,7 +222,7 @@ class CodeFormatter {
     if (!js) return '';
 
     return js
-      .replace(/\/\/.*$/gm, '') // Remove single-line comments
+      .replace(/^\s*\/\/.*$/gm, '') // Remove single-line comments (only full line comments)
       .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
       .replace(/\s+/g, ' ') // Collapse whitespace
       .replace(/\s*{\s*/g, '{') // Clean braces

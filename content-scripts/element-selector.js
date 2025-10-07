@@ -19,9 +19,7 @@ class ElementSelector {
     this.createOverlay();
     this.attachEventListeners();
     
-    // Disable page interactions
-    document.body.style.pointerEvents = 'none';
-    this.overlay.style.pointerEvents = 'auto';
+    console.log('🎯 Element selector activated successfully');
   }
 
   deactivate() {
@@ -31,8 +29,7 @@ class ElementSelector {
     this.removeOverlay();
     this.removeEventListeners();
     
-    // Re-enable page interactions
-    document.body.style.pointerEvents = '';
+    console.log('🎯 Element selector deactivated');
   }
 
   createOverlay() {
@@ -45,9 +42,10 @@ class ElementSelector {
       left: 0;
       width: 100vw;
       height: 100vh;
-      background: rgba(0, 0, 0, 0.3);
+      background: rgba(0, 0, 0, 0.1);
       z-index: 999999;
       cursor: crosshair;
+      pointer-events: auto;
     `;
 
     // Create highlight box
@@ -150,38 +148,50 @@ class ElementSelector {
     this.handleClick = this.onClick.bind(this);
     this.handleKeyDown = this.onKeyDown.bind(this);
 
-    this.overlay.addEventListener('mousemove', this.handleMouseMove);
-    this.overlay.addEventListener('click', this.handleClick);
+    // Listen on document instead of overlay for better element detection
+    document.addEventListener('mousemove', this.handleMouseMove, true);
+    document.addEventListener('click', this.handleClick, true);
     document.addEventListener('keydown', this.handleKeyDown);
+    
+    console.log('🎯 Event listeners attached to document');
   }
 
   removeEventListeners() {
-    if (this.overlay) {
-      this.overlay.removeEventListener('mousemove', this.handleMouseMove);
-      this.overlay.removeEventListener('click', this.handleClick);
-    }
+    document.removeEventListener('mousemove', this.handleMouseMove, true);
+    document.removeEventListener('click', this.handleClick, true);
     document.removeEventListener('keydown', this.handleKeyDown);
+    
+    console.log('🎯 Event listeners removed from document');
   }
 
   onMouseMove(e) {
+    console.log('🎯 Mouse move at:', e.clientX, e.clientY);
     const element = this.getElementFromPoint(e.clientX, e.clientY);
+    console.log('🎯 Element from point:', element?.tagName, element?.className, element?.id);
+    
     if (!element || element === document.body || element === document.documentElement) {
+      console.log('🎯 Invalid element, hiding highlight');
       this.hideHighlight();
       return;
     }
 
+    console.log('🎯 Highlighting element on mousemove:', element.tagName, element.className);
     this.highlightElement(element);
   }
 
   onClick(e) {
+    console.log('🎯 Element selector click detected', e);
     e.preventDefault();
     e.stopPropagation();
 
     const element = this.getElementFromPoint(e.clientX, e.clientY);
+    console.log('🎯 Element found:', element);
     if (!element || element === document.body || element === document.documentElement) {
+      console.log('🎯 Invalid element, ignoring click');
       return;
     }
 
+    console.log('🎯 Selecting element:', element.tagName, element.className);
     this.selectElement(element);
   }
 
@@ -193,14 +203,24 @@ class ElementSelector {
   }
 
   getElementFromPoint(x, y) {
-    // Temporarily hide overlay to get element underneath
-    this.overlay.style.display = 'none';
-    this.highlightBox.style.display = 'none';
+    console.log('🎯 getElementFromPoint called at:', x, y);
+    
+    // Temporarily hide highlight and overlay elements to get real element underneath
+    const elementsToHide = [
+      this.overlay,
+      this.highlightBox,
+      this.infoBox,
+      document.getElementById('convert-selector-banner')
+    ].filter(Boolean);
+    
+    // Hide our UI elements
+    elementsToHide.forEach(el => el.style.visibility = 'hidden');
     
     const element = document.elementFromPoint(x, y);
+    console.log('🎯 Found element:', element?.tagName, element?.className, element?.id);
     
-    this.overlay.style.display = 'block';
-    this.highlightBox.style.display = 'block';
+    // Show our UI elements again
+    elementsToHide.forEach(el => el.style.visibility = 'visible');
     
     return element;
   }
@@ -250,20 +270,25 @@ class ElementSelector {
   }
 
   async selectElement(element) {
+    console.log('🎯 selectElement called with:', element);
     this.selectedElement = element;
     
     // Capture element data
+    console.log('🎯 Capturing element data...');
     const elementData = await this.captureElementData(element);
+    console.log('🎯 Element data captured:', elementData);
     
     // Deactivate selector
     this.deactivate();
     
     // Send to extension
+    console.log('🎯 Calling onSelect callback:', !!this.onSelect);
     if (this.onSelect) {
       this.onSelect(elementData);
     }
 
     // Send message to background
+    console.log('🎯 Sending ELEMENT_SELECTED message');
     chrome.runtime.sendMessage({
       type: 'ELEMENT_SELECTED',
       data: elementData
@@ -344,18 +369,48 @@ class ElementSelector {
       // Scroll element into view
       element.scrollIntoView({ block: 'center', behavior: 'instant' });
       
-      // Wait a moment for scroll
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Wait a moment for scroll to complete
+      await new Promise(resolve => setTimeout(resolve, 300));
       
-      // Use Chrome's capture API
-      const screenshot = await new Promise((resolve) => {
-        chrome.runtime.sendMessage({
-          type: 'CAPTURE_ELEMENT_SCREENSHOT',
-          rect: element.getBoundingClientRect()
-        }, resolve);
+      // Get element bounds after scroll
+      const rect = element.getBoundingClientRect();
+      console.log('🎯 Element bounds after scroll:', {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        right: rect.right,
+        bottom: rect.bottom
       });
       
-      return screenshot;
+      // Also get viewport info for debugging
+      const viewport = {
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight
+      };
+      console.log('🎯 Viewport info:', viewport);
+      
+      // Use Chrome's capture API
+      const response = await chrome.runtime.sendMessage({
+        type: 'CAPTURE_ELEMENT_SCREENSHOT',
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height
+        },
+        viewport: viewport
+      });
+      
+      if (response.success) {
+        console.log('🎯 Element screenshot captured successfully');
+        return response.screenshot;
+      } else {
+        console.warn('Element screenshot failed:', response.error);
+        return null;
+      }
     } catch (error) {
       console.warn('Element screenshot failed:', error);
       return null;
@@ -430,15 +485,30 @@ let elementSelector = null;
 
 // Listen for messages from extension
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('🎯 Element selector received message:', message);
+  
+  if (message.type === 'PING_ELEMENT_SELECTOR') {
+    sendResponse({ success: true });
+    return;
+  }
+  
   if (message.type === 'START_ELEMENT_SELECTION') {
+    console.log('🎯 Starting element selection...');
     if (!elementSelector) {
       elementSelector = new ElementSelector();
     }
     
+    if (elementSelector.active) {
+      console.log('🎯 Element selector already active, deactivating first');
+      elementSelector.deactivate();
+    }
+    
     elementSelector.activate((elementData) => {
+      console.log('🎯 Element selected, sending response:', elementData);
       sendResponse({ success: true, data: elementData });
     });
     
+    console.log('🎯 Element selector activated, waiting for user click');
     return true; // Keep channel open for async response
   }
   
@@ -448,6 +518,81 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ success: true });
   }
+  
+  if (message.type === 'CROP_SCREENSHOT') {
+    console.log('🎯 Cropping screenshot for rect:', message.rect);
+    cropScreenshot(message.screenshot, message.rect, message.viewport).then(croppedScreenshot => {
+      sendResponse(croppedScreenshot);
+    });
+    return true; // Keep channel open for async response
+  }
 });
+
+// Function to crop screenshot to element bounds
+async function cropScreenshot(screenshotDataUrl, rect, viewport) {
+  try {
+    console.log('🎯 Cropping with rect:', rect, 'viewport:', viewport);
+    
+    // Create a canvas
+    const canvas = document.createElement('canvas');
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    
+    // Load the screenshot image
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = screenshotDataUrl;
+    });
+    
+    console.log('🎯 Original image size:', img.width, 'x', img.height);
+    console.log('🎯 Target canvas size:', width, 'x', height);
+    
+    // Calculate device pixel ratio for high-DPI displays
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    console.log('🎯 Device pixel ratio:', devicePixelRatio);
+    
+    // Adjust coordinates for device pixel ratio
+    const sourceX = Math.floor(rect.left * devicePixelRatio);
+    const sourceY = Math.floor(rect.top * devicePixelRatio);
+    const sourceWidth = Math.floor(rect.width * devicePixelRatio);
+    const sourceHeight = Math.floor(rect.height * devicePixelRatio);
+    
+    console.log('🎯 Adjusted source coords:', {
+      x: sourceX, y: sourceY, 
+      width: sourceWidth, height: sourceHeight
+    });
+    
+    // Ensure we don't go outside the image bounds
+    const clampedSourceX = Math.max(0, Math.min(sourceX, img.width - 1));
+    const clampedSourceY = Math.max(0, Math.min(sourceY, img.height - 1));
+    const clampedSourceWidth = Math.min(sourceWidth, img.width - clampedSourceX);
+    const clampedSourceHeight = Math.min(sourceHeight, img.height - clampedSourceY);
+    
+    console.log('🎯 Clamped source coords:', {
+      x: clampedSourceX, y: clampedSourceY,
+      width: clampedSourceWidth, height: clampedSourceHeight
+    });
+    
+    // Draw the cropped portion
+    ctx.drawImage(
+      img,
+      clampedSourceX, clampedSourceY, clampedSourceWidth, clampedSourceHeight,  // source rectangle
+      0, 0, width, height  // destination rectangle
+    );
+    
+    // Convert to data URL
+    const croppedDataUrl = canvas.toDataURL('image/png', 0.9);
+    console.log('🎯 Screenshot cropped successfully');
+    return croppedDataUrl;
+  } catch (error) {
+    console.error('Failed to crop screenshot:', error);
+    return null;
+  }
+}
 
 console.log('✅ Element selector loaded');

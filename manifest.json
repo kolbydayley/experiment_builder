@@ -16,6 +16,7 @@
     "<all_urls>",
     "https://api.openai.com/*",
     "https://chat.openai.com/*",
+    "https://api.anthropic.com/*",
     "https://api.convert.com/*"
   ],
   "background": {
@@ -37,6 +38,12 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "utils/feature-flags.js",
+        "utils/performance-monitor.js",
+        "utils/regression-test-suite.js",
+        "utils/selector-validator.js",
+        "utils/code-tester.js",
+        "utils/context-builder.js",
         "content-scripts/page-capture.js",
         "content-scripts/element-selector.js"
       ],
