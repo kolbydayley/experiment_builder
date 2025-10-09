@@ -903,13 +903,38 @@ CRITICAL CONSTRAINT: You will be given a list of valid CSS selectors. You MUST u
 When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that list is the ONLY source of valid selectors. Copy them character-by-character.`
       }];
 
-      // Temporarily disable screenshots to reduce token usage
-      // Use element database instead of vision for better token efficiency
+      // Build user message with screenshot for brand/style context
+      const userContent = [];
+
+      // Include full page screenshot (NOT selected element screenshot) for brand context
+      if (pageData.screenshot) {
+        userContent.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: pageData.screenshot.replace(/^data:image\/png;base64,/, '')
+          }
+        });
+        userContent.push({
+          type: 'text',
+          text: '📸 **FULL PAGE SCREENSHOT (BEFORE ANY CHANGES):**\nUse this screenshot to understand the page\'s brand identity, visual style, color palette, typography, and overall design language. Your generated code should match this existing style and feel cohesive with the page\'s visual identity. Pay attention to:\n- Brand colors and color harmony\n- Typography styles (font sizes, weights, hierarchy)\n- Button styles and UI patterns\n- Spacing and layout consistency\n- Visual tone and brand voice (professional, playful, minimal, etc.)\n\n'
+        });
+        logger.log('Including full page screenshot', 'for brand/style context');
+      } else {
+        logger.log('No screenshot available', 'proceeding with text-only mode');
+      }
+
+      // Add the main prompt
+      userContent.push({
+        type: 'text',
+        text: prompt
+      });
+
       messages.push({
         role: 'user',
-        content: prompt
+        content: userContent
       });
-      logger.log('Using text-only mode', 'optimized for token efficiency');
       
       // Get stored settings to use correct defaults
       const storedSettings = await chrome.storage.local.get(['settings']);
@@ -1698,12 +1723,45 @@ Generate JSON now.`;
   async callChatGPT(messages, authToken, model = 'gpt-4o-mini') {
     const resolvedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-4o-mini';
     console.log('Calling OpenAI Chat Completions.', { model: resolvedModel, messageCount: messages.length });
-    
+
+    // Convert Anthropic-format messages to OpenAI format
+    const convertedMessages = messages.map(msg => {
+      if (msg.role !== 'user' || typeof msg.content === 'string') {
+        return msg; // No conversion needed
+      }
+
+      // Convert array content from Anthropic format to OpenAI format
+      if (Array.isArray(msg.content)) {
+        const openAIContent = msg.content.map(item => {
+          if (item.type === 'image' && item.source) {
+            // Convert Anthropic image format to OpenAI format
+            const base64Data = item.source.data;
+            const mediaType = item.source.media_type || 'image/png';
+            return {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mediaType};base64,${base64Data}`,
+                detail: 'high'
+              }
+            };
+          }
+          return item; // Keep text items as-is
+        });
+
+        return {
+          role: msg.role,
+          content: openAIContent
+        };
+      }
+
+      return msg;
+    });
+
     // Use model-specific parameters for GPT-5 vs GPT-4 models
     const isGPT5Model = resolvedModel.startsWith('gpt-5');
     const requestBody = {
       model: resolvedModel,
-      messages: messages
+      messages: convertedMessages
     };
 
     if (isGPT5Model) {
@@ -2238,12 +2296,38 @@ Generate the complete, merged code now.`;
         content: systemMessage
       }];
 
-      // Temporarily disable screenshots to reduce token usage
+      // Build user message with screenshot for brand/style context
+      const userContent = [];
+
+      // Include full page screenshot for brand context in iterative changes
+      if (actualPageData?.screenshot) {
+        userContent.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: actualPageData.screenshot.replace(/^data:image\/png;base64,/, '')
+          }
+        });
+        userContent.push({
+          type: 'text',
+          text: '📸 **FULL PAGE SCREENSHOT (ORIGINAL STATE):**\nThis shows the page BEFORE any changes. Use it to maintain brand consistency and visual harmony as you make iterative changes.\n\n'
+        });
+        logger.log('Including full page screenshot in adjustment', 'for brand/style context');
+      } else {
+        logger.log('No screenshot available for adjustment', 'proceeding with text-only mode');
+      }
+
+      // Add the adjustment prompt
+      userContent.push({
+        type: 'text',
+        text: finalPrompt
+      });
+
       messages.push({
         role: 'user',
-        content: finalPrompt
+        content: userContent
       });
-      logger.log('Using text-only mode for adjustment', 'optimized for token efficiency');
 
       // Use unified AI call
       const aiSettings = {
