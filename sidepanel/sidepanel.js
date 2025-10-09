@@ -94,6 +94,26 @@ class UnifiedExperimentBuilder {
     // Build element description for display
     const elementDescription = this.getElementDescription(elementData);
 
+    // If selected from chat, add it as a chat message and context
+    if (this.selectingFromChat) {
+      console.log('📍 Element selected from chat context - adding to chat');
+
+      // Add element to chat history
+      this.addElementToChatMessage(elementData);
+
+      // Re-open chat drawer
+      this.openChatDrawer();
+
+      // Reset flag
+      this.selectingFromChat = false;
+
+      // Show status
+      this.showStatus(`✅ Element added to chat: ${elementDescription}`, 'success', 3000);
+
+      return; // Don't do the normal element selection flow
+    }
+
+    // Normal (non-chat) element selection flow
     // Show success status in persistent status bar
     this.showStatus(`✅ Element selected: ${elementDescription}`, 'success', 3000);
 
@@ -332,10 +352,26 @@ class UnifiedExperimentBuilder {
 
   updateWorkAreaForState(state) {
     console.log(`🔄 Switching to state: ${state}`);
-    
+
     // Hide all work states
     const workStates = document.querySelectorAll('.work-state');
     workStates.forEach(el => el.classList.add('hidden'));
+
+    // Explicitly hide build-actions when leaving building state
+    if (state !== 'building') {
+      const buildActions = document.querySelector('.build-actions');
+      if (buildActions) {
+        buildActions.style.display = 'none';
+        console.log('✅ build-actions explicitly hidden');
+      }
+    } else {
+      // Show build-actions when in building state
+      const buildActions = document.querySelector('.build-actions');
+      if (buildActions) {
+        buildActions.style.display = '';
+        console.log('✅ build-actions shown');
+      }
+    }
 
     // Show current state
     const currentStateEl = document.getElementById(`${state}State`);
@@ -644,16 +680,22 @@ class UnifiedExperimentBuilder {
     const chatSelectElementBtn = document.getElementById('chatSelectElementBtn');
     if (chatSelectElementBtn) {
       chatSelectElementBtn.addEventListener('click', () => {
+        // Mark that we're selecting from chat context
+        this.selectingFromChat = true;
         this.closeChatDrawer();
-        this.startElementSelection();
+        this.activateElementSelector();
       });
     }
 
-    // Clear chat button
-    const chatClearBtn = document.getElementById('chatClearBtn');
-    if (chatClearBtn) {
-      chatClearBtn.addEventListener('click', () => this.clearChatHistory());
+    // Remove attachment button
+    const chatRemoveAttachment = document.getElementById('chatRemoveAttachment');
+    if (chatRemoveAttachment) {
+      chatRemoveAttachment.addEventListener('click', () => {
+        this.removeElementAttachment();
+      });
     }
+
+    // Chat clear button removed - chat history is maintained for context
 
     // Activity log toggle
     const closeActivityLog = document.getElementById('closeActivityLog');
@@ -995,6 +1037,10 @@ class UnifiedExperimentBuilder {
 
       if (result?.variations?.length) {
         this.generatedCode = result;
+        // Clear button loading state BEFORE switching workflows to prevent empty button flash
+        this.setButtonLoading('generateBtn', false);
+        this.chatState.sending = false;
+
         this.updateWorkflowState('results');
         this.displayGeneratedCode(result);
         this.showStatus(`✨ Generated ${result.variations.length} variation${result.variations.length > 1 ? 's' : ''} successfully`, 'success', 4000);
@@ -1004,6 +1050,11 @@ class UnifiedExperimentBuilder {
         if (result.usage) {
           console.log('📊 Usage data from generation:', result.usage);
           this.updateCostDisplay(result.usage);
+        }
+
+        // If chat-initiated, add AI summary of changes to chat
+        if (this.chatInitiated) {
+          this.addAISummaryToChat(result, generationData.description);
         }
 
         // Auto-launch comprehensive testing pipeline (only if enabled in settings)
@@ -1019,22 +1070,26 @@ class UnifiedExperimentBuilder {
 
     } catch (error) {
       console.error('Generation failed:', error);
+      this.setButtonLoading('generateBtn', false);
+      this.chatState.sending = false;
       this.showStatus('Generation failed: ' + error.message, 'error', 5000);
       this.addActivity('Generation failed: ' + error.message, 'error');
       this.showError(error.message);
-    } finally {
-      this.setButtonLoading('generateBtn', false);
-      this.chatState.sending = false;
     }
   }
 
   async callAIGeneration(data) {
     console.log('🤖 Starting AI generation with data:', data);
-    
+
     try {
+      // Update status
+      this.updateTypingStatus('Analyzing');
+
       // Use background service worker for AI generation (proper approach for Manifest V3)
       console.log('🔗 Calling background service worker for AI generation...');
-      
+
+      this.updateTypingStatus('Generating');
+
       // Add timeout to prevent infinite hanging
       const messagePromise = chrome.runtime.sendMessage({
         type: 'GENERATE_CODE',
@@ -1074,7 +1129,8 @@ class UnifiedExperimentBuilder {
       if (error.message.includes('authentication') || error.message.includes('token') || error.message.includes('API key')) {
         // Authentication error - offer to set up API key
         this.showAPIKeySetupDialog();
-        throw new Error('OpenAI API key required. Click the settings button to add your API key.');
+        const provider = this.settings.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
+        throw new Error(`${provider} API key required. Click the settings button to add your API key.`);
       } else if (error.message.includes('timed out')) {
         // Timeout error
         throw new Error(error.message + ' Try using rule-based generation instead or check your API key.');
@@ -1336,20 +1392,26 @@ document.body.insertBefore(banner, document.body.firstChild);
     grid.innerHTML = codeData.variations.map((variation, idx) => `
       <div class="variation-card" data-variation="${variation.number}">
         <div class="variation-header">
-          <h4 class="variation-title">${variation.name}</h4>
-          <span class="variation-badge ${variation.testStatus || 'pending'}">${this.getStatusBadge(variation)}</span>
+          <div class="variation-title-group">
+            <h4 class="variation-title">${variation.name}</h4>
+            <span class="variation-badge ${variation.testStatus || 'pending'}">${this.getStatusBadge(variation)}</span>
+          </div>
         </div>
-        <div class="variation-description">
-          ${variation.description || 'Generated variation with custom styling and behavior'}
-        </div>
-        <div class="variation-actions">
-          <button class="var-action-btn var-action-secondary" data-variation="${variation.number}" data-action="preview">
+        ${variation.description ? `<div class="variation-description">${variation.description}</div>` : ''}
+        <div class="variation-footer">
+          <div class="variation-stats">
+            <span class="stat-item">
+              <span class="stat-label">CSS</span>
+              <span class="stat-value">${variation.css ? `${variation.css.length} chars` : 'None'}</span>
+            </span>
+            <span class="stat-item">
+              <span class="stat-label">JS</span>
+              <span class="stat-value">${variation.js ? `${variation.js.length} chars` : 'None'}</span>
+            </span>
+          </div>
+          <button class="var-action-btn var-action-primary" data-variation="${variation.number}" data-action="preview">
             <span class="var-action-icon">👁️</span>
-            <span class="var-action-text">Preview</span>
-          </button>
-          <button class="var-action-btn var-action-primary" data-variation="${variation.number}" data-action="test">
-            <span class="var-action-icon">🧪</span>
-            <span class="var-action-text">Test</span>
+            <span class="var-action-text">Preview on Page</span>
           </button>
         </div>
       </div>
@@ -1426,7 +1488,7 @@ document.body.insertBefore(banner, document.body.firstChild);
 
     const messageEl = document.createElement('div');
     messageEl.className = `chat-message ${role}`;
-    
+
     if (role === 'assistant') {
       messageEl.innerHTML = `
         <div class="assistant-avatar">🤖</div>
@@ -1437,13 +1499,41 @@ document.body.insertBefore(banner, document.body.firstChild);
         <div class="message-content user-message">${this.escapeHtml(content)}</div>
       `;
     }
-    
+
     container.appendChild(messageEl);
     container.scrollTop = container.scrollHeight;
   }
 
-  async processChatMessage(message) {
+  addElementToChatMessage(elementData) {
+    console.log('✅ Attaching element to next chat message:', elementData);
+
+    // Store element as pending attachment
+    this.pendingElementAttachment = elementData;
+
+    // Build element description
+    const elementDescription = this.getElementDescription(elementData);
+
+    // Show attachment preview
+    const attachmentPreview = document.getElementById('chatAttachmentPreview');
+    const attachmentLabel = document.getElementById('chatAttachmentLabel');
+
+    if (attachmentPreview && attachmentLabel) {
+      const displayText = elementData.text ? elementData.text.substring(0, 40) + (elementData.text.length > 40 ? '...' : '') : 'No text';
+      attachmentLabel.textContent = `${elementData.tag}${elementData.id ? `#${elementData.id}` : ''} - "${displayText}"`;
+      attachmentPreview.classList.remove('hidden');
+    }
+
+    // Focus chat input so user can describe what they want to do with this element
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+      chatInput.focus();
+      chatInput.placeholder = `Describe what you want to do with this ${elementData.tag}...`;
+    }
+  }
+
+  async processChatMessage(message, elementAttachment = null) {
     this.chatState.sending = true;
+    this.chatInitiated = true; // Track that this is a chat-initiated operation
     this.addActivity(`Processing: ${message.substring(0, 50)}...`, 'info');
 
     // Show typing indicator
@@ -1453,26 +1543,58 @@ document.body.insertBefore(banner, document.body.firstChild);
       // Check if we have generated code (conversation context)
       if (this.generatedCode) {
         // This is a refinement request
-        await this.processRefinementRequest(message);
+        await this.processRefinementRequest(message, elementAttachment);
       } else {
         // This is an initial generation request
-        await this.processInitialRequest(message);
+        await this.processInitialRequest(message, elementAttachment);
       }
+
+      // NOTE: Don't hide typing indicator here if testing is running
+      // The testing pipeline will handle hiding it when complete
     } catch (error) {
       console.error('Chat processing failed:', error);
-      this.addChatMessage('assistant', `Sorry, I encountered an error: ${error.message}`);
+
+      // Add error message to chat
+      let errorMessage = `Sorry, I encountered an error: ${error.message}`;
+      if (error.message.includes('API key')) {
+        errorMessage += '\n\nPlease check your API settings by clicking the ⚙️ button.';
+      } else if (error.message.includes('Network')) {
+        errorMessage += '\n\nPlease check your internet connection and try again.';
+      }
+
+      this.addChatMessageToDrawer('assistant', errorMessage);
       this.addActivity('Chat error: ' + error.message, 'error');
-    } finally {
+
+      // Hide indicator on error
       this.hideTypingIndicator();
       this.chatState.sending = false;
+      this.chatInitiated = false;
     }
   }
 
-  async processInitialRequest(message) {
+  async processInitialRequest(message, elementAttachment = null) {
+    // Initialize chat history if not exists
+    if (!this.chatHistory) {
+      this.chatHistory = [];
+    }
+
+    // Add user message to history (with element if attached)
+    const historyEntry = {
+      role: 'user',
+      content: message,
+      timestamp: Date.now()
+    };
+
+    if (elementAttachment) {
+      historyEntry.elementData = elementAttachment;
+    }
+
+    this.chatHistory.push(historyEntry);
+
     // If we're in fresh state, move to building and populate description
     if (this.workflowState === 'fresh') {
       this.updateWorkflowState('building');
-      
+
       // Populate the description field
       const descField = document.getElementById('primaryDescription');
       if (descField) {
@@ -1485,7 +1607,7 @@ document.body.insertBefore(banner, document.body.firstChild);
       await this.generateExperimentFromChat(message);
     } else {
       // Offer to capture page or continue without it
-      this.addChatMessage('assistant', `I'd love to help you with: "${message}". 
+      this.addChatMessage('assistant', `I'd love to help you with: "${message}".
 
 I can work in two ways:
 1. **Capture the current page** first for context-aware code generation
@@ -1501,25 +1623,63 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     }
   }
 
-  async processRefinementRequest(message) {
+  async processRefinementRequest(message, elementAttachment = null) {
     // Add user's refinement request to conversation
-    this.conversation.push({
+    if (!this.chatHistory) {
+      this.chatHistory = [];
+    }
+
+    const historyEntry = {
       role: 'user',
       content: message,
       timestamp: Date.now()
-    });
+    };
+
+    if (elementAttachment) {
+      historyEntry.elementData = elementAttachment;
+    }
+
+    this.chatHistory.push(historyEntry);
 
     this.addChatMessageToDrawer('assistant', 'Let me refine the code based on your feedback...');
     this.addActivity(`Refining code: ${message.substring(0, 50)}...`, 'info');
 
-    // Build full conversation context including original request
+    // Build full conversation context including original request, chat history, and current code
     const originalRequest = document.getElementById('primaryDescription')?.value || '';
-    const fullContext = `ORIGINAL REQUEST:\n${originalRequest}\n\nREFINEMENT REQUEST:\n${message}\n\nPlease update the code to incorporate this refinement while maintaining all previous changes.`;
 
-    // Update description to include refinement
+    // Build chat history context including selected elements
+    const chatContext = this.chatHistory.map(msg => {
+      let contextString = `${msg.role.toUpperCase()}: ${msg.content}`;
+
+      // If this message has associated element data, include it
+      if (msg.elementData) {
+        const el = msg.elementData;
+        contextString += `\n  Selected Element: ${el.tag}`;
+        if (el.id) contextString += `#${el.id}`;
+        if (el.classes && el.classes.length > 0) contextString += `.${el.classes.join('.')}`;
+        if (el.text) contextString += `\n  Text: "${el.text.substring(0, 100)}"`;
+        if (el.selector) contextString += `\n  Selector: ${el.selector}`;
+      }
+
+      return contextString;
+    }).join('\n\n');
+
+    // Build current code context
+    let currentCodeContext = '';
+    if (this.generatedCode && this.generatedCode.variations) {
+      currentCodeContext = '\n\nCURRENT GENERATED CODE:\n';
+      this.generatedCode.variations.forEach((v, i) => {
+        currentCodeContext += `\n--- ${v.name} ---\n`;
+        if (v.css) currentCodeContext += `CSS:\n${v.css}\n`;
+        if (v.js) currentCodeContext += `JS:\n${v.js}\n`;
+      });
+    }
+
+    const fullContext = `ORIGINAL REQUEST:\n${originalRequest}\n\nCHAT CONVERSATION:\n${chatContext}${currentCodeContext}\n\nPlease update the code to incorporate the latest refinement while maintaining all previous changes.`;
+
+    // Update description to include full context
     const descField = document.getElementById('primaryDescription');
-    if (descField && originalRequest) {
-      // Keep original request visible but add refinement context
+    if (descField) {
       descField.value = fullContext;
     }
 
@@ -1530,9 +1690,16 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     // Regenerate with full context
     try {
       await this.generateExperiment();
-      this.addChatMessageToDrawer('assistant', `✅ Code updated! I've incorporated your refinement: "${message}"`);
+      this.addChatMessage('assistant', `✅ Code updated! I've incorporated your refinement: "${message}"`);
+
+      // Add AI response to chat history
+      this.chatHistory.push({
+        role: 'assistant',
+        content: `Code updated with refinement: ${message}`,
+        timestamp: Date.now()
+      });
     } catch (error) {
-      this.addChatMessageToDrawer('assistant', `Sorry, I had trouble refining the code: ${error.message}`);
+      this.addChatMessage('assistant', `Sorry, I had trouble refining the code: ${error.message}`);
     } finally {
       // Restore original state
       this.chatState.sending = wasSending;
@@ -1894,13 +2061,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     }
   }
 
-  clearChatHistory() {
-    const container = document.getElementById('chatMessages');
-    if (container) {
-      container.innerHTML = '';
-      this.addActivity('Chat conversation cleared', 'info');
-    }
-  }
+  // clearChatHistory() removed - chat history is maintained for AI context
 
   // Legacy method names for compatibility
   openChatModal() {
@@ -1925,7 +2086,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       subtitleText = 'Let\'s get started with your experiment';
       suggestions = [
         { text: '📸 Capture this page', action: () => { this.closeChatModal(); this.capturePage(); } },
-        { text: '🎯 Select an element', action: () => { this.closeChatModal(); this.startElementSelection(); } },
+        { text: '🎯 Select an element', action: () => { this.closeChatModal(); this.activateElementSelector(); } },
         { text: '📋 Browse templates', action: () => { this.closeChatModal(); this.showTemplates(); } }
       ];
     } else if (this.workflowState === 'building') {
@@ -1976,8 +2137,11 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
     const message = input.value.trim();
 
-    // Add user message to chat
-    this.addChatMessageToDrawer('user', message);
+    // Check if there's a pending element attachment
+    const attachedElement = this.pendingElementAttachment;
+
+    // Add user message to chat (with element attachment if present)
+    this.addChatMessageToDrawer('user', message, attachedElement);
 
     // Clear input
     input.value = '';
@@ -1987,14 +2151,85 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       charCount.textContent = '0/2000';
     }
 
+    // Hide attachment preview
+    this.removeElementAttachment();
+
     // Show typing indicator
     this.showTypingIndicator();
 
     // Process message (integrate with existing chat logic)
-    this.processChatMessage(message);
+    // Pass the element attachment along
+    this.processChatMessage(message, attachedElement);
   }
 
-  addChatMessageToDrawer(role, content) {
+  removeElementAttachment() {
+    this.pendingElementAttachment = null;
+    const attachmentPreview = document.getElementById('chatAttachmentPreview');
+    if (attachmentPreview) {
+      attachmentPreview.classList.add('hidden');
+    }
+
+    // Reset input placeholder
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+      chatInput.placeholder = 'Ask me anything about this experiment...';
+    }
+  }
+
+  addAISummaryToChat(codeResult, userRequest) {
+    // Generate a plain language summary of what was changed
+    const variationCount = codeResult.variations?.length || 0;
+
+    if (variationCount === 0) return;
+
+    let summary = `✅ I've created ${variationCount} variation${variationCount > 1 ? 's' : ''} based on your request.\n\n`;
+
+    // Analyze changes for each variation
+    codeResult.variations.forEach((variation, index) => {
+      summary += `**${variation.name}:**\n`;
+
+      const changes = [];
+
+      // Analyze CSS changes
+      if (variation.css) {
+        if (variation.css.includes('background')) changes.push('background styling');
+        if (variation.css.includes('color')) changes.push('text colors');
+        if (variation.css.includes('font')) changes.push('typography');
+        if (variation.css.includes('display: none') || variation.css.includes('visibility')) changes.push('element visibility');
+        if (variation.css.includes('width') || variation.css.includes('height')) changes.push('dimensions');
+        if (variation.css.includes('margin') || variation.css.includes('padding')) changes.push('spacing');
+        if (variation.css.includes('border')) changes.push('borders');
+      }
+
+      // Analyze JS changes
+      if (variation.js) {
+        if (variation.js.includes('textContent') || variation.js.includes('innerHTML')) changes.push('text content');
+        if (variation.js.includes('addEventListener')) changes.push('interactivity');
+        if (variation.js.includes('createElement')) changes.push('new elements');
+        if (variation.js.includes('remove(') || variation.js.includes('removeChild')) changes.push('element removal');
+        if (variation.js.includes('setAttribute')) changes.push('attributes');
+      }
+
+      if (changes.length > 0) {
+        summary += `• Modified: ${changes.join(', ')}\n`;
+      }
+
+      if (index < variationCount - 1) summary += '\n';
+    });
+
+    // Add to chat
+    this.addChatMessageToDrawer('assistant', summary);
+
+    // Add to chat history
+    if (!this.chatHistory) this.chatHistory = [];
+    this.chatHistory.push({
+      role: 'assistant',
+      content: summary,
+      timestamp: Date.now()
+    });
+  }
+
+  addChatMessageToDrawer(role, content, elementAttachment = null) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
 
@@ -2007,7 +2242,29 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
     const messageContent = document.createElement('div');
     messageContent.className = 'message-content';
-    messageContent.innerHTML = `<p>${content}</p>`;
+
+    // Format content with basic markdown support
+    let formattedContent = this.escapeHtml(content);
+    // Bold: **text**
+    formattedContent = formattedContent.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Newlines to <br>
+    formattedContent = formattedContent.replace(/\n/g, '<br>');
+
+    // If there's an element attachment, show it before the message
+    if (elementAttachment) {
+      const elementBadge = `
+        <div class="message-element-badge">
+          <span class="element-icon">🎯</span>
+          <div class="element-info">
+            <div class="element-tag">${elementAttachment.tag}${elementAttachment.id ? `#${elementAttachment.id}` : ''}${elementAttachment.classes && elementAttachment.classes.length > 0 ? `.${elementAttachment.classes[0]}` : ''}</div>
+            <div class="element-text">${elementAttachment.text ? this.escapeHtml(elementAttachment.text.substring(0, 50)) + (elementAttachment.text.length > 50 ? '...' : '') : 'No text'}</div>
+          </div>
+        </div>
+      `;
+      messageContent.innerHTML = elementBadge + `<div>${formattedContent}</div>`;
+    } else {
+      messageContent.innerHTML = `<div>${formattedContent}</div>`;
+    }
 
     messageEl.appendChild(avatar);
     messageEl.appendChild(messageContent);
@@ -2020,12 +2277,33 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     }
   }
 
-  showTypingIndicator() {
+  showTypingIndicator(status = 'Thinking') {
     const indicator = document.getElementById('typingIndicator');
     if (indicator) {
       indicator.classList.remove('hidden');
 
+      // Update status text
+      const statusEl = document.getElementById('typingStatus');
+      if (statusEl) {
+        statusEl.textContent = status;
+      }
+
       // Scroll to show indicator
+      const messagesContainer = document.getElementById('chatMessagesContainer');
+      if (messagesContainer) {
+        setTimeout(() => {
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }, 50);
+      }
+    }
+  }
+
+  updateTypingStatus(status) {
+    const statusEl = document.getElementById('typingStatus');
+    if (statusEl) {
+      statusEl.textContent = status;
+
+      // Scroll to ensure visible
       const messagesContainer = document.getElementById('chatMessagesContainer');
       if (messagesContainer) {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -2105,7 +2383,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
   populateCommands() {
     const commands = [
       { name: '📸 Capture Full Page', icon: '📸', action: () => { this.closeCommandPalette(); this.capturePage(); } },
-      { name: '🎯 Select Element', icon: '🎯', action: () => { this.closeCommandPalette(); this.startElementSelection(); } },
+      { name: '🎯 Select Element', icon: '🎯', action: () => { this.closeCommandPalette(); this.activateElementSelector(); } },
       { name: '🚀 Generate & Preview', icon: '🚀', action: () => { this.closeCommandPalette(); this.generateExperiment(); } },
       { name: '🧪 Run Visual QA', icon: '🧪', action: () => { this.closeCommandPalette(); this.runVisualQAForAllVariations(); } },
       { name: '🔄 Regenerate Code', icon: '🔄', action: () => { this.closeCommandPalette(); this.regenerateAllCode(); } },
@@ -2250,12 +2528,14 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       textSpan.style.display = 'none';
       if (loadingSpan) {
         loadingSpan.classList.remove('hidden');
+        loadingSpan.style.display = 'flex'; // Explicitly show loading state
       }
     } else {
       button.disabled = false;
       textSpan.style.display = '';
       if (loadingSpan) {
         loadingSpan.classList.add('hidden');
+        loadingSpan.style.display = 'none'; // Explicitly hide loading state
       }
     }
   }
@@ -2396,13 +2676,18 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     this.showStatus('Starting automatic code validation...', 'loading');
     this.addActivity('🔍 Starting automatic code validation...', 'info');
 
+    // Update chat typing indicator if chat-initiated
+    if (this.chatInitiated) {
+      this.updateTypingStatus('Running validation tests...');
+    }
+
     // Initialize testing status
     this.updateTestingStatus('initializing');
-    
+
     let passedCount = 0;
     let failedCount = 0;
     const totalCount = (codeData.variations || []).length;
-    
+
     // Run tests for each variation
     for (const variation of codeData.variations || []) {
       try {
@@ -2414,7 +2699,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         // Continue testing other variations
       }
     }
-    
+
     // Update final status based on results
     const qaStatusEl = document.getElementById('qaStatus');
 
@@ -2427,6 +2712,17 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         qaStatusEl.textContent = '✅';
         qaStatusEl.title = 'All tests passed';
       }
+
+      // Update chat status if chat-initiated
+      if (this.chatInitiated) {
+        this.updateTypingStatus('Complete ✅');
+        // Hide indicator after short delay
+        setTimeout(() => {
+          this.hideTypingIndicator();
+          this.chatState.sending = false;
+          this.chatInitiated = false;
+        }, 1500);
+      }
     } else if (passedCount > 0) {
       this.updateTestingStatus('partial');
       this.showStatus(`Testing completed: ${passedCount} passed, ${failedCount} failed`, 'warning', 5000);
@@ -2436,6 +2732,16 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         qaStatusEl.textContent = '⚠️';
         qaStatusEl.title = `${passedCount} passed, ${failedCount} failed`;
       }
+
+      // Update chat status if chat-initiated
+      if (this.chatInitiated) {
+        this.updateTypingStatus('Completed with warnings ⚠️');
+        setTimeout(() => {
+          this.hideTypingIndicator();
+          this.chatState.sending = false;
+          this.chatInitiated = false;
+        }, 1500);
+      }
     } else {
       this.updateTestingStatus('failed');
       this.showStatus(`All ${totalCount} variations failed testing`, 'error', 5000);
@@ -2444,6 +2750,16 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       if (qaStatusEl) {
         qaStatusEl.textContent = '❌';
         qaStatusEl.title = 'All tests failed';
+      }
+
+      // Update chat status if chat-initiated
+      if (this.chatInitiated) {
+        this.updateTypingStatus('Tests failed ❌');
+        setTimeout(() => {
+          this.hideTypingIndicator();
+          this.chatState.sending = false;
+          this.chatInitiated = false;
+        }, 1500);
       }
     }
   }
@@ -2488,6 +2804,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       console.error(`Testing failed for ${testName}:`, error);
       this.updateVariationTestStatus(variation.number, 'failed');
       this.addActivity(`❌ ${testName} - Tests failed: ${error.message}`, 'error');
+      throw error; // Re-throw to let launchAutomaticTesting count it as failed
     }
   }
 
@@ -2650,6 +2967,11 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     this.showStatus(`🔍 Running Visual QA analysis on ${variation.name}...`, 'loading');
     this.addActivity(`📸 Visual QA validation - ${variation.name}`, 'info');
 
+    // Update chat typing indicator if chat-initiated
+    if (this.chatInitiated) {
+      this.updateTypingStatus(`Running Visual QA on ${variation.name}...`);
+    }
+
     // Capture screenshot after code injection
     const afterResponse = await chrome.runtime.sendMessage({
       type: 'CAPTURE_AFTER_INJECTION',
@@ -2693,6 +3015,11 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     while (iteration <= maxIterations) {
       console.log(`[Visual QA] Starting iteration ${iteration}/${maxIterations}`);
       this.updateStatus(`🔍 Visual QA iteration ${iteration}/${maxIterations}...`, 'loading');
+
+      // Update chat typing indicator if chat-initiated
+      if (this.chatInitiated) {
+        this.updateTypingStatus(`Visual QA iteration ${iteration}/${maxIterations}...`);
+      }
 
       try {
         // Run QA check
@@ -2994,11 +3321,19 @@ Would you like me to capture the current page first? You can also click "📸 Ca
             Remove
           </button>
         </div>
-        <textarea 
-          id="variation${variation.id}Description" 
+        <textarea
+          id="variation${variation.id}Description"
           placeholder="Describe what's different about this variation..."
-          rows="2"
+          rows="3"
         >${variation.description}</textarea>
+        <div class="builder-tools">
+          <button class="tool-btn select-element-btn" data-variation-id="${variation.id}" title="Select page element">
+            🎯 Select Element
+          </button>
+          <button class="tool-btn upload-design-btn" data-variation-id="${variation.id}" title="Upload design file">
+            📁 Upload Design
+          </button>
+        </div>
       </div>
     `).join('');
 
@@ -3018,6 +3353,20 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         if (variation) {
           variation.description = e.target.value;
         }
+      });
+    });
+
+    // Bind select element buttons
+    additionalVariations.querySelectorAll('.select-element-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.activateElementSelector();
+      });
+    });
+
+    // Bind upload design buttons
+    additionalVariations.querySelectorAll('.upload-design-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.openDesignFileUpload();
       });
     });
   }
@@ -3092,21 +3441,72 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     console.log('✅ Template selector displayed in main workflow');
   }
 
-  showInlineTemplateSelector() {
-    const templates = [
-      'Change button color and size for better conversion',
-      'Add urgency banner at the top of the page',  
-      'Modify headline to be more compelling',
-      'Add social proof testimonials section',
-      'Create a sticky call-to-action button',
-      'Add exit-intent popup modal',
-      'Simplify the checkout form fields',
-      'Add product comparison table'
-    ];
+  async showInlineTemplateSelector() {
+    // Load templates from storage including template order
+    const result = await chrome.storage.local.get(['customTemplates', 'hiddenTemplates', 'templateOrder']);
+    const customTemplates = result.customTemplates || {};
+    const hiddenTemplates = result.hiddenTemplates || [];
+    const templateOrder = result.templateOrder || [];
+
+    // Merge built-in templates with custom templates
+    const allTemplatesUnfiltered = {
+      ...DEFAULT_TEMPLATES,  // Built-in templates from default-templates.js
+      ...customTemplates     // Custom templates (can override built-in)
+    };
+
+    // Filter out hidden templates
+    const allTemplates = {};
+    for (const [id, template] of Object.entries(allTemplatesUnfiltered)) {
+      if (!hiddenTemplates.includes(id)) {
+        allTemplates[id] = template;
+      }
+    }
+
+    // Sort templates by templateOrder if it exists
+    let sortedTemplateEntries;
+    if (templateOrder.length > 0) {
+      // Create a map for quick lookup
+      const templateMap = new Map(Object.entries(allTemplates));
+
+      // Build sorted array based on templateOrder
+      sortedTemplateEntries = templateOrder
+        .filter(id => templateMap.has(id)) // Only include templates that exist
+        .map(id => [id, templateMap.get(id)]);
+
+      // Add any templates not in the order at the end
+      for (const [id, template] of Object.entries(allTemplates)) {
+        if (!templateOrder.includes(id)) {
+          sortedTemplateEntries.push([id, template]);
+        }
+      }
+    } else {
+      // No custom order - use default object order
+      sortedTemplateEntries = Object.entries(allTemplates);
+    }
 
     // Create template selector overlay
     const overlay = document.createElement('div');
     overlay.className = 'template-selector-overlay';
+
+    const templateHTML = sortedTemplateEntries.length > 0
+      ? sortedTemplateEntries.map(([id, template]) => {
+          const isCustom = customTemplates.hasOwnProperty(id);
+          return `
+            <div class="template-item" data-template-id="${id}">
+              <div class="template-icon">${template.icon}</div>
+              <div class="template-content">
+                <div class="template-title">
+                  ${template.name}
+                  ${isCustom ? '<span class="template-badge custom">Custom</span>' : '<span class="template-badge builtin">Built-in</span>'}
+                </div>
+                <div class="template-description-small">${template.description}</div>
+                <div class="template-variations-count">${template.variations.length} variation${template.variations.length === 1 ? '' : 's'}</div>
+              </div>
+            </div>
+          `;
+        }).join('')
+      : '<div class="empty-state">No templates available. Create templates in Settings.</div>';
+
     overlay.innerHTML = `
       <div class="template-selector-modal">
         <div class="template-header">
@@ -3114,12 +3514,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
           <button class="close-btn" id="closeTemplateSelector">×</button>
         </div>
         <div class="template-list">
-          ${templates.map((template, index) => `
-            <div class="template-item" data-template="${template}">
-              <div class="template-title">${template}</div>
-              <div class="template-preview">Click to use this template</div>
-            </div>
-          `).join('')}
+          ${templateHTML}
         </div>
       </div>
     `;
@@ -3135,28 +3530,64 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
       const templateItem = e.target.closest('.template-item');
       if (templateItem) {
-        const templateText = templateItem.dataset.template;
-        this.insertTemplateIntoDescription(templateText);
-        overlay.remove();
+        const templateId = templateItem.dataset.templateId;
+        const template = allTemplates[templateId];
+        if (template) {
+          this.insertTemplateIntoDescription(template);
+          overlay.remove();
+        }
       }
     });
   }
 
-  insertTemplateIntoDescription(templateText) {
+  insertTemplateIntoDescription(template) {
     const descField = document.getElementById('primaryDescription');
-    if (descField) {
-      // Simply insert the template text - clean and simple
+    if (!descField) return;
+
+    // If template has multiple variations, create separate variation fields
+    if (template.variations.length > 1) {
+      // Get the instruction text (supports both 'instructions' and 'description' for backwards compatibility)
+      const firstVariationText = template.variations[0].instructions || template.variations[0].description || '';
+
+      // First variation goes in primary field
+      descField.value = firstVariationText;
+
+      // Reset variations array to match template
+      this.variations = [{ id: 1, name: 'Variation 1', description: firstVariationText }];
+
+      // Add remaining variations
+      for (let i = 1; i < template.variations.length; i++) {
+        const variation = template.variations[i];
+        const newId = i + 1;
+        const variationText = variation.instructions || variation.description || '';
+
+        this.variations.push({
+          id: newId,
+          name: variation.name || `Variation ${newId}`,
+          description: variationText
+        });
+      }
+
+      // Re-render the variations UI
+      this.renderVariationBuilder();
+
+      this.addActivity(`Template "${template.name}" added with ${template.variations.length} variations`, 'success');
+    } else {
+      // Single variation - just insert the text (supports both field names)
+      const templateText = template.variations[0]?.instructions || template.variations[0]?.description || '';
       const currentValue = descField.value.trim();
+
       if (currentValue) {
         descField.value = currentValue + '\n\n' + templateText;
       } else {
         descField.value = templateText;
       }
-      
-      // Focus the field
-      descField.focus();
-      this.addActivity(`Template added: ${templateText.substring(0, 40)}...`, 'success');
+
+      this.addActivity(`Template added: ${template.name}`, 'success');
     }
+
+    // Focus the field
+    descField.focus();
   }
 
   openDesignFileUpload() {
@@ -3208,17 +3639,65 @@ Would you like me to capture the current page first? You can also click "📸 Ca
   addDesignToDescription(file) {
     const descField = document.getElementById('primaryDescription');
     if (descField) {
-      // Just store the uploaded file data - don't clutter the field
-      // The file is already stored in this.uploadedDesignFile
-      
+      // Show preview
+      this.showDesignFilePreview(file, this.uploadedDesignFile.data);
+
       // Update placeholder if field is empty
       if (!descField.value.trim()) {
         descField.placeholder = `Describe changes based on uploaded design "${file.name}"...`;
       }
-      
+
       // Focus the field for user input
       descField.focus();
     }
+  }
+
+  showDesignFilePreview(file, base64Data) {
+    const preview = document.getElementById('designFilePreview');
+    const image = document.getElementById('designFileImage');
+    const filename = document.getElementById('designFileName');
+
+    if (!preview || !image || !filename) return;
+
+    // Show preview
+    preview.classList.remove('hidden');
+
+    // Set image source (only for image files)
+    if (file.type.startsWith('image/')) {
+      image.src = base64Data;
+      image.classList.remove('hidden');
+    } else {
+      // For non-image files, hide the image and show file icon
+      image.classList.add('hidden');
+    }
+
+    // Set filename
+    filename.textContent = file.name;
+
+    // Setup remove button
+    const removeBtn = document.getElementById('removeDesignFile');
+    if (removeBtn) {
+      removeBtn.onclick = () => this.removeDesignFile();
+    }
+  }
+
+  removeDesignFile() {
+    // Clear stored file
+    this.uploadedDesignFile = null;
+
+    // Hide preview
+    const preview = document.getElementById('designFilePreview');
+    if (preview) {
+      preview.classList.add('hidden');
+    }
+
+    // Reset placeholder
+    const descField = document.getElementById('primaryDescription');
+    if (descField && !descField.value.trim()) {
+      descField.placeholder = 'Example: Make the call-to-action button red and 20% larger...';
+    }
+
+    this.addActivity('Design file removed', 'info');
   }
 
   fileToBase64(file) {

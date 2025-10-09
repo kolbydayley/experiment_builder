@@ -6,12 +6,6 @@ class SettingsManager {
     this.init();
   }
 
-  async init() {
-    await this.loadSettings();
-    this.setupEventListeners();
-    await this.renderAPIKeys();
-  }
-
   async loadSettings() {
     try {
       const result = await chrome.storage.local.get(['settings', 'convertApiKeys']);
@@ -197,12 +191,19 @@ class SettingsManager {
           </div>
         </div>
         <div class="api-key-actions">
-          <button class="btn btn-small btn-danger" onclick="settingsManager.deleteAPIKey('${key.id}')">
+          <button class="btn btn-small btn-danger api-key-delete-btn" data-key-id="${key.id}">
             Delete
           </button>
         </div>
       </div>
     `).join('');
+
+    // Add event listeners for delete buttons
+    container.querySelectorAll('.api-key-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.deleteAPIKey(btn.dataset.keyId);
+      });
+    });
   }
 
   async saveOpenAIKey() {
@@ -420,15 +421,25 @@ class SettingsManager {
 
   async loadTemplates() {
     try {
-      const result = await chrome.storage.local.get(['customTemplates']);
+      const result = await chrome.storage.local.get(['customTemplates', 'hiddenTemplates', 'templateOrder']);
       this.customTemplates = result.customTemplates || {};
+      this.hiddenTemplates = result.hiddenTemplates || [];
+      this.templateOrder = result.templateOrder || [];
 
       // Merge built-in templates with custom templates
       // Built-in templates from default-templates.js are available as DEFAULT_TEMPLATES
-      this.allTemplates = {
+      const allTemplates = {
         ...DEFAULT_TEMPLATES,  // Built-in templates
         ...this.customTemplates  // Custom templates (can override built-in)
       };
+
+      // Filter out hidden templates
+      this.allTemplates = {};
+      for (const [id, template] of Object.entries(allTemplates)) {
+        if (!this.hiddenTemplates.includes(id)) {
+          this.allTemplates[id] = template;
+        }
+      }
 
       this.renderTemplates();
     } catch (error) {
@@ -458,47 +469,146 @@ class SettingsManager {
       return;
     }
 
-    container.innerHTML = Object.entries(this.allTemplates).map(([id, template]) => {
+    // Get template IDs in the correct order
+    const templateIds = Object.keys(this.allTemplates);
+    const orderedIds = this.getSortedTemplateIds(templateIds);
+
+    container.innerHTML = orderedIds.map((id) => {
+      const template = this.allTemplates[id];
       const isBuiltIn = DEFAULT_TEMPLATES.hasOwnProperty(id);
       const isCustom = this.customTemplates.hasOwnProperty(id);
 
       return `
-        <div class="template-item">
+        <div class="template-item" draggable="true" data-template-id="${id}">
+          <div class="drag-handle" title="Drag to reorder">⋮⋮</div>
           <div class="template-info">
             <div class="template-header">
               <span style="font-size: 18px;">${template.icon}</span>
               <span class="template-name">${template.name}</span>
-              ${isBuiltIn && !isCustom ? '<span class="variation-tag" style="background: #28a745;">Built-in</span>' : ''}
-              ${isCustom ? '<span class="variation-tag" style="background: #007bff;">Custom</span>' : ''}
               <span class="variation-tag">${template.variations.length} variation${template.variations.length === 1 ? '' : 's'}</span>
-            </div>
-            <div class="template-description">${template.description}</div>
-            <div class="template-variations">
-              ${template.variations.map(v => `<span class="variation-tag">${v.name}</span>`).join('')}
             </div>
           </div>
           <div class="template-actions">
-            ${isCustom ? `
-              <button class="btn btn-primary btn-small" onclick="settingsManager.editTemplate('${id}')">
-                Edit
-              </button>
-            ` : `
-              <button class="btn btn-primary btn-small" onclick="settingsManager.duplicateTemplate('${id}')">
-                Copy to Custom
-              </button>
-            `}
-            <button class="btn btn-primary btn-small" onclick="settingsManager.exportTemplate('${id}')">
+            <button class="btn btn-primary btn-small template-edit-btn" data-template-id="${id}">
+              Edit
+            </button>
+            <button class="btn btn-primary btn-small template-export-btn" data-template-id="${id}">
               Export
             </button>
-            ${isCustom ? `
-              <button class="btn btn-danger btn-small" onclick="settingsManager.deleteTemplate('${id}')">
-                Delete
-              </button>
-            ` : ''}
+            <button class="btn btn-danger btn-small template-delete-btn" data-template-id="${id}" data-is-built-in="${isBuiltIn && !isCustom}">
+              Delete
+            </button>
           </div>
         </div>
       `;
     }).join('');
+
+    // Add event listeners using delegation (only if not already attached)
+    if (!this.templateListenersAttached) {
+      this.attachTemplateEventListeners(container);
+      this.setupDragAndDrop(container);
+      this.templateListenersAttached = true;
+    }
+  }
+
+  getSortedTemplateIds(templateIds) {
+    // Use saved order, then add any new templates at the end
+    const ordered = [];
+    const remaining = [...templateIds];
+
+    // Add templates in saved order
+    for (const id of this.templateOrder) {
+      if (remaining.includes(id)) {
+        ordered.push(id);
+        remaining.splice(remaining.indexOf(id), 1);
+      }
+    }
+
+    // Add any new templates that weren't in the saved order
+    return [...ordered, ...remaining];
+  }
+
+  async saveTemplateOrder(orderedIds) {
+    this.templateOrder = orderedIds;
+    await chrome.storage.local.set({ templateOrder: orderedIds });
+  }
+
+  setupDragAndDrop(container) {
+    let draggedElement = null;
+
+    container.addEventListener('dragstart', (e) => {
+      const item = e.target.closest('.template-item');
+      if (item) {
+        draggedElement = item;
+        item.classList.add('dragging');
+      }
+    });
+
+    container.addEventListener('dragend', (e) => {
+      const item = e.target.closest('.template-item');
+      if (item) {
+        item.classList.remove('dragging');
+        draggedElement = null;
+      }
+    });
+
+    container.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const afterElement = this.getDragAfterElement(container, e.clientY);
+      const dragging = document.querySelector('.dragging');
+
+      if (afterElement == null) {
+        container.appendChild(dragging);
+      } else {
+        container.insertBefore(dragging, afterElement);
+      }
+    });
+
+    container.addEventListener('drop', (e) => {
+      e.preventDefault();
+
+      // Get the new order
+      const items = [...container.querySelectorAll('.template-item')];
+      const newOrder = items.map(item => item.dataset.templateId);
+
+      // Save the new order
+      this.saveTemplateOrder(newOrder);
+    });
+  }
+
+  getDragAfterElement(container, y) {
+    const draggableElements = [...container.querySelectorAll('.template-item:not(.dragging)')];
+
+    return draggableElements.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+
+      if (offset < 0 && offset > closest.offset) {
+        return { offset: offset, element: child };
+      } else {
+        return closest;
+      }
+    }, { offset: Number.NEGATIVE_INFINITY }).element;
+  }
+
+  attachTemplateEventListeners(container) {
+    // Use event delegation for dynamically created buttons
+    container.addEventListener('click', (e) => {
+      const target = e.target.closest('button');
+      if (!target) return;
+
+      const templateId = target.dataset.templateId;
+      if (!templateId) return;
+
+      if (target.classList.contains('template-edit-btn')) {
+        this.editTemplate(templateId);
+      } else if (target.classList.contains('template-export-btn')) {
+        this.exportTemplate(templateId);
+      } else if (target.classList.contains('template-delete-btn')) {
+        const isBuiltIn = target.dataset.isBuiltIn === 'true';
+        this.deleteTemplate(templateId, isBuiltIn);
+      }
+    });
   }
 
   showAddTemplateForm() {
@@ -517,7 +627,6 @@ class SettingsManager {
   clearTemplateForm() {
     document.getElementById('templateId').value = '';
     document.getElementById('templateName').value = '';
-    document.getElementById('templateDescription').value = '';
     document.getElementById('templateIcon').value = '';
     document.getElementById('variationsContainer').innerHTML = '';
   }
@@ -525,13 +634,13 @@ class SettingsManager {
   addVariationForm() {
     const container = document.getElementById('variationsContainer');
     const variationCount = container.children.length + 1;
-    
+
     const variationForm = document.createElement('div');
     variationForm.className = 'variation-form';
     variationForm.innerHTML = `
       <div class="variation-header">
         <span class="variation-number">Variation ${variationCount}</span>
-        <button type="button" class="remove-variation-btn" onclick="this.parentElement.parentElement.remove()">
+        <button type="button" class="remove-variation-btn">
           Remove
         </button>
       </div>
@@ -544,7 +653,13 @@ class SettingsManager {
         <textarea class="variation-instructions" placeholder="Describe what changes this variation should make..." required></textarea>
       </div>
     `;
-    
+
+    // Add event listener for remove button
+    const removeBtn = variationForm.querySelector('.remove-variation-btn');
+    removeBtn.addEventListener('click', () => {
+      variationForm.remove();
+    });
+
     container.appendChild(variationForm);
   }
 
@@ -552,10 +667,9 @@ class SettingsManager {
     try {
       const templateId = document.getElementById('templateId').value.trim();
       const templateName = document.getElementById('templateName').value.trim();
-      const templateDescription = document.getElementById('templateDescription').value.trim();
       const templateIcon = document.getElementById('templateIcon').value.trim();
 
-      if (!templateId || !templateName || !templateDescription || !templateIcon) {
+      if (!templateId || !templateName || !templateIcon) {
         this.showAlert('Please fill in all required fields', 'error');
         return;
       }
@@ -581,7 +695,7 @@ class SettingsManager {
       for (const form of variationForms) {
         const name = form.querySelector('.variation-name').value.trim();
         const instructions = form.querySelector('.variation-instructions').value.trim();
-        
+
         if (!name || !instructions) {
           this.showAlert('Please fill in all variation fields', 'error');
           return;
@@ -593,7 +707,6 @@ class SettingsManager {
       // Save template
       const template = {
         name: templateName,
-        description: templateDescription,
         icon: templateIcon,
         variations: variations,
         created: new Date().toISOString(),
@@ -612,17 +725,29 @@ class SettingsManager {
     }
   }
 
-  async deleteTemplate(templateId) {
+  async deleteTemplate(templateId, isBuiltIn = false) {
     if (!confirm('Are you sure you want to delete this template?')) {
       return;
     }
 
     try {
-      delete this.customTemplates[templateId];
-      await chrome.storage.local.set({ customTemplates: this.customTemplates });
-      
+      if (isBuiltIn) {
+        // For built-in templates, add to hidden list (permanent delete)
+        const result = await chrome.storage.local.get(['hiddenTemplates']);
+        const hiddenTemplates = result.hiddenTemplates || [];
+
+        if (!hiddenTemplates.includes(templateId)) {
+          hiddenTemplates.push(templateId);
+          await chrome.storage.local.set({ hiddenTemplates });
+        }
+      } else {
+        // For custom templates, actually delete from storage
+        delete this.customTemplates[templateId];
+        await chrome.storage.local.set({ customTemplates: this.customTemplates });
+      }
+
       this.showAlert('Template deleted successfully', 'success');
-      this.renderTemplates();
+      this.loadTemplates();
     } catch (error) {
       console.error('Failed to delete template:', error);
       this.showAlert('Failed to delete template', 'error');
@@ -655,6 +780,54 @@ class SettingsManager {
     chrome.storage.local.set({ customTemplates: this.customTemplates });
     this.showAlert('Template copied to custom templates', 'success');
     this.loadTemplates(); // Reload to refresh allTemplates
+  }
+
+  duplicateTemplateAndEdit(templateId) {
+    // Get template from allTemplates (built-in template)
+    const template = this.allTemplates[templateId];
+    if (!template) return;
+
+    const newId = `${templateId}-custom`;
+    let counter = 1;
+    let finalId = newId;
+
+    // Check both custom and built-in to ensure unique ID
+    while (this.allTemplates[finalId]) {
+      finalId = `${newId}-${counter}`;
+      counter++;
+    }
+
+    // Normalize variations to use 'instructions' for consistency
+    const normalizedVariations = template.variations.map(v => ({
+      name: v.name,
+      instructions: v.instructions || v.description || ''
+    }));
+
+    // Save to customTemplates (not built-in)
+    this.customTemplates[finalId] = {
+      ...template,
+      id: finalId,
+      name: template.name, // Keep the same name for editing
+      variations: normalizedVariations,
+      created: new Date().toISOString()
+    };
+
+    // Hide the original built-in template since we're creating a custom version
+    const hiddenTemplates = this.hiddenTemplates || [];
+    if (!hiddenTemplates.includes(templateId)) {
+      hiddenTemplates.push(templateId);
+    }
+
+    // Save both customTemplates and hiddenTemplates
+    chrome.storage.local.set({
+      customTemplates: this.customTemplates,
+      hiddenTemplates: hiddenTemplates
+    });
+
+    this.loadTemplates().then(() => {
+      // Now edit the newly created custom template
+      this.editTemplate(finalId);
+    });
   }
 
   exportTemplate(templateId) {
@@ -753,7 +926,16 @@ class SettingsManager {
   }
 
   editTemplate(templateId) {
-    const template = this.customTemplates[templateId];
+    // Check if it's a custom template first
+    let template = this.customTemplates[templateId];
+
+    // If not custom, check if it's a built-in template that needs to be copied
+    if (!template && this.allTemplates[templateId]) {
+      // This is a built-in template - create an editable copy
+      this.duplicateTemplateAndEdit(templateId);
+      return;
+    }
+
     if (!template) return;
 
     const modal = document.getElementById('templateEditModal');
@@ -763,10 +945,6 @@ class SettingsManager {
       <div class="form-group">
         <label>Template Name</label>
         <input type="text" id="editTemplateName" value="${template.name}">
-      </div>
-      <div class="form-group">
-        <label>Description</label>
-        <input type="text" id="editTemplateDescription" value="${template.description}">
       </div>
       <div class="form-group">
         <label>Icon</label>
@@ -779,7 +957,7 @@ class SettingsManager {
             <div class="variation-form">
               <div class="variation-header">
                 <span class="variation-number">Variation ${index + 1}</span>
-                <button type="button" class="remove-variation-btn" onclick="this.parentElement.parentElement.remove()">
+                <button type="button" class="remove-variation-btn remove-edit-variation-btn">
                   Remove
                 </button>
               </div>
@@ -789,38 +967,58 @@ class SettingsManager {
               </div>
               <div class="form-group">
                 <label>Instructions</label>
-                <textarea class="variation-instructions">${variation.instructions}</textarea>
+                <textarea class="variation-instructions">${variation.instructions || variation.description || ''}</textarea>
               </div>
             </div>
           `).join('')}
         </div>
-        <button type="button" class="btn btn-primary btn-small" onclick="settingsManager.addEditVariationForm()">
+        <button type="button" class="btn btn-primary btn-small" id="addEditVariationBtn">
           Add Variation
         </button>
       </div>
       <div style="display: flex; gap: 12px; margin-top: 20px;">
-        <button class="btn btn-primary" onclick="settingsManager.saveEditedTemplate('${templateId}')">
+        <button class="btn btn-primary" id="saveEditedTemplateBtn">
           Save Changes
         </button>
-        <button class="btn btn-danger" onclick="settingsManager.hideEditModal()">
+        <button class="btn btn-danger" id="cancelEditTemplateBtn">
           Cancel
         </button>
       </div>
     `;
-    
+
+    // Add event listeners
+    document.getElementById('addEditVariationBtn').addEventListener('click', () => {
+      this.addEditVariationForm();
+    });
+
+    document.getElementById('saveEditedTemplateBtn').addEventListener('click', () => {
+      this.saveEditedTemplate(templateId);
+    });
+
+    document.getElementById('cancelEditTemplateBtn').addEventListener('click', () => {
+      this.hideEditModal();
+    });
+
+    // Add event listeners for existing remove buttons
+    document.querySelectorAll('.remove-edit-variation-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.target.closest('.variation-form').remove();
+      });
+    });
+
     modal.style.display = 'block';
   }
 
   addEditVariationForm() {
     const container = document.getElementById('editVariationsContainer');
     const variationCount = container.children.length + 1;
-    
+
     const variationForm = document.createElement('div');
     variationForm.className = 'variation-form';
     variationForm.innerHTML = `
       <div class="variation-header">
         <span class="variation-number">Variation ${variationCount}</span>
-        <button type="button" class="remove-variation-btn" onclick="this.parentElement.parentElement.remove()">
+        <button type="button" class="remove-variation-btn">
           Remove
         </button>
       </div>
@@ -833,17 +1031,25 @@ class SettingsManager {
         <textarea class="variation-instructions" placeholder="Instructions for this variation" required></textarea>
       </div>
     `;
-    
+
+    // Add event listener for remove button
+    const removeBtn = variationForm.querySelector('.remove-variation-btn');
+    removeBtn.addEventListener('click', () => {
+      variationForm.remove();
+    });
+
     container.appendChild(variationForm);
   }
 
   async saveEditedTemplate(templateId) {
     try {
+      console.log('Saving template:', templateId);
+      console.log('Current customTemplates:', this.customTemplates);
+
       const name = document.getElementById('editTemplateName').value.trim();
-      const description = document.getElementById('editTemplateDescription').value.trim();
       const icon = document.getElementById('editTemplateIcon').value.trim();
 
-      if (!name || !description || !icon) {
+      if (!name || !icon) {
         this.showAlert('Please fill in all required fields', 'error');
         return;
       }
@@ -859,7 +1065,7 @@ class SettingsManager {
       for (const form of variationForms) {
         const varName = form.querySelector('.variation-name').value.trim();
         const instructions = form.querySelector('.variation-instructions').value.trim();
-        
+
         if (!varName || !instructions) {
           this.showAlert('Please fill in all variation fields', 'error');
           return;
@@ -868,21 +1074,23 @@ class SettingsManager {
         variations.push({ name: varName, instructions });
       }
 
-      // Update template
+      // Create or update template
+      const existingTemplate = this.customTemplates[templateId] || {};
       this.customTemplates[templateId] = {
-        ...this.customTemplates[templateId],
+        ...existingTemplate,
+        id: templateId,
         name,
-        description,
         icon,
         variations,
         modified: new Date().toISOString()
       };
 
+      console.log('Saving to storage:', this.customTemplates[templateId]);
       await chrome.storage.local.set({ customTemplates: this.customTemplates });
-      
+
       this.showAlert('Template updated successfully', 'success');
       this.hideEditModal();
-      this.renderTemplates();
+      await this.loadTemplates(); // Reload templates from storage
     } catch (error) {
       console.error('Failed to update template:', error);
       this.showAlert('Failed to update template', 'error');

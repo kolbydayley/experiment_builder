@@ -114,22 +114,38 @@
                         </div>
 
                         <div class="variation-builder" id="variationBuilder">
+                            <!-- Global Templates Button -->
+                            <div class="global-tools">
+                                <button class="tool-btn tool-btn-templates" id="templatesBtn" title="Browse templates">
+                                    📋 Use Template
+                                </button>
+                            </div>
+
                             <div class="primary-variation">
-                                <label for="primaryDescription">What changes do you want to make?</label>
-                                <textarea 
-                                    id="primaryDescription" 
+                                <label for="primaryDescription">Variation 1</label>
+                                <textarea
+                                    id="primaryDescription"
                                     placeholder="Example: Make the call-to-action button red and 20% larger..."
                                     rows="3"
                                 ></textarea>
+
+                                <!-- Design File Preview -->
+                                <div class="design-file-preview hidden" id="designFilePreview">
+                                    <div class="preview-content">
+                                        <img id="designFileImage" src="" alt="Design preview" class="preview-image">
+                                        <div class="preview-info">
+                                            <span class="preview-filename" id="designFileName"></span>
+                                            <button class="preview-remove" id="removeDesignFile" title="Remove file">×</button>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="builder-tools">
                                     <button class="tool-btn" id="selectElementBtn" title="Select page element">
                                         🎯 Select Element
                                     </button>
                                     <button class="tool-btn" id="uploadDesignBtn" title="Upload design file">
                                         📁 Upload Design
-                                    </button>
-                                    <button class="tool-btn" id="templatesBtn" title="Browse templates">
-                                        📋 Templates
                                     </button>
                                 </div>
                             </div>
@@ -156,46 +172,65 @@
                 <!-- State: Generated Results -->
                 <div class="work-state hidden" id="resultsState" data-state="results">
                     <div class="results-interface">
-                        <!-- Redesigned Results Header -->
-                        <div class="results-header-v2">
-                            <div class="results-header-top">
-                                <div class="results-title-section">
-                                    <div class="results-icon">✨</div>
-                                    <div class="results-title-content">
-                                        <h2>Code Generated Successfully</h2>
-                                        <p class="results-subtitle">Your variations are ready to test and deploy</p>
-                                    </div>
-                                </div>
-                                <div class="results-stats">
-                                    <div class="stat-item">
-                                        <span class="stat-value" id="variationCount">0</span>
-                                        <span class="stat-label">Variations</span>
-                                    </div>
-                                    <div class="stat-item">
-                                        <span class="stat-value" id="qaStatus">⏳</span>
-                                        <span class="stat-label">QA Status</span>
-                                    </div>
-                                </div>
+                        <!-- Success Banner -->
+                        <div class="results-success-banner">
+                            <div class="success-icon-wrapper">
+                                <div class="success-icon">✨</div>
                             </div>
-
-                            <div class="results-header-actions">
-                                <button class="action-btn action-btn-secondary" id="editDescriptionBtn">
-                                    <span class="action-icon">✏️</span>
-                                    <span class="action-text">Edit Request</span>
-                                </button>
-                                <button class="action-btn action-btn-secondary" id="regenerateBtn">
-                                    <span class="action-icon">🔄</span>
-                                    <span class="action-text">Regenerate</span>
-                                </button>
-                                <button class="action-btn action-btn-primary" id="exportBtn">
-                                    <span class="action-icon">📤</span>
-                                    <span class="action-text">Export Code</span>
-                                </button>
+                            <div class="success-content">
+                                <h2 class="success-title">Code Generated Successfully</h2>
+                                <p class="success-subtitle">Your variations are ready to test and deploy to Convert.com</p>
                             </div>
                         </div>
 
-                        <div class="variations-grid" id="variationsGrid">
-                            <!-- Generated variations will appear here -->
+                        <!-- Quick Stats Bar -->
+                        <div class="results-stats-bar">
+                            <div class="stat-card">
+                                <div class="stat-info">
+                                    <span class="stat-value" id="variationCount">0</span>
+                                    <span class="stat-label">Variations</span>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-info">
+                                    <span class="stat-value" id="qaStatus">⏳</span>
+                                    <span class="stat-label">QA Status</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Action Bar -->
+                        <div class="results-action-bar">
+                            <button class="result-action-btn secondary" id="editDescriptionBtn" title="Edit your request and regenerate">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                </svg>
+                                <span>Edit Request</span>
+                            </button>
+                            <button class="result-action-btn secondary" id="regenerateBtn" title="Regenerate with same request">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="23 4 23 10 17 10"></polyline>
+                                    <polyline points="1 20 1 14 7 14"></polyline>
+                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                                </svg>
+                                <span>Regenerate</span>
+                            </button>
+                            <button class="result-action-btn primary" id="exportBtn" title="Export code to clipboard or Convert.com">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="7 10 12 15 17 10"></polyline>
+                                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                                </svg>
+                                <span>Export Code</span>
+                            </button>
+                        </div>
+
+                        <!-- Variations Grid -->
+                        <div class="variations-container">
+                            <div class="variations-grid" id="variationsGrid">
+                                <!-- Generated variations will appear here -->
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -352,10 +387,13 @@
                 <!-- Typing Indicator -->
                 <div class="typing-indicator hidden" id="typingIndicator">
                     <div class="typing-avatar">🤖</div>
-                    <div class="typing-dots">
-                        <div class="typing-dot"></div>
-                        <div class="typing-dot"></div>
-                        <div class="typing-dot"></div>
+                    <div class="typing-content">
+                        <div class="typing-status" id="typingStatus">Thinking</div>
+                        <div class="typing-dots">
+                            <div class="typing-dot"></div>
+                            <div class="typing-dot"></div>
+                            <div class="typing-dot"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -383,12 +421,6 @@
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <circle cx="12" cy="12" r="3"></circle>
-                            </svg>
-                        </button>
-                        <button type="button" class="chat-action-btn" id="chatClearBtn" title="Clear conversation">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="3 6 5 6 21 6"></polyline>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                             </svg>
                         </button>
                         <button type="submit" class="chat-send-btn" id="chatSendBtn" title="Send message">
@@ -452,6 +484,7 @@
     <script src="../utils/code-quality-monitor.js"></script>
     <script src="../utils/chatgpt-api.js"></script>
     <script src="../utils/code-formatter.js"></script>
+    <script src="../utils/default-templates.js"></script>
 
     <!-- Main Application (NO workspace-v2.js - consolidated into sidepanel.js) -->
     <script src="sidepanel.js"></script>

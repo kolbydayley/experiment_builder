@@ -120,6 +120,7 @@ class ElementSelector {
 
     // Cancel button
     document.getElementById('convert-cancel-selection').addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       this.cancel();
     });
@@ -151,7 +152,7 @@ class ElementSelector {
     // Listen on document instead of overlay for better element detection
     document.addEventListener('mousemove', this.handleMouseMove, true);
     document.addEventListener('click', this.handleClick, true);
-    document.addEventListener('keydown', this.handleKeyDown);
+    document.addEventListener('keydown', this.handleKeyDown, true);
     
     console.log('🎯 Event listeners attached to document');
   }
@@ -159,7 +160,7 @@ class ElementSelector {
   removeEventListeners() {
     document.removeEventListener('mousemove', this.handleMouseMove, true);
     document.removeEventListener('click', this.handleClick, true);
-    document.removeEventListener('keydown', this.handleKeyDown);
+    document.removeEventListener('keydown', this.handleKeyDown, true);
     
     console.log('🎯 Event listeners removed from document');
   }

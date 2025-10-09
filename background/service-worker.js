@@ -4,6 +4,7 @@ console.log('🚀 Service Worker Loading - Convert.com Experiment Builder (Fixed
 class ServiceWorker {
   constructor() {
     console.log('🔧 ServiceWorker constructor called');
+    this.serviceWorkerStartTime = Date.now(); // Track when service worker started
     this.initializeExtension();
     this.maxLogEntries = 200;
     this.recentLogs = [];
@@ -1155,20 +1156,28 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
       });
     }
 
-    // Extract selectors from generated code
-    const extractSelectorsFromCode = (code) => {
-      if (!code) return [];
+    // Extract CSS selectors from CSS code only
+    const extractCSSSelectors = (css) => {
+      if (!css) return [];
       const selectors = [];
 
       // Extract from CSS (selector before {)
-      const cssMatches = code.matchAll(/([^{}]+)\s*\{/g);
+      const cssMatches = css.matchAll(/([^{}]+)\s*\{/g);
       for (const match of cssMatches) {
         const selector = match[1].trim().split(',').map(s => s.trim());
         selectors.push(...selector);
       }
 
-      // Extract from waitForElement calls
-      const jsMatches = code.matchAll(/waitForElement\s*\(\s*['"`]([^'"`]+)['"`]/g);
+      return selectors;
+    };
+
+    // Extract JS selectors from JS code only (from waitForElement calls)
+    const extractJSSelectors = (js) => {
+      if (!js) return [];
+      const selectors = [];
+
+      // Extract from waitForElement calls only
+      const jsMatches = js.matchAll(/waitForElement\s*\(\s*['"`]([^'"`]+)['"`]/g);
       for (const match of jsMatches) {
         selectors.push(match[1]);
       }
@@ -1178,8 +1187,8 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
 
     // Check each variation
     parsedCode.variations?.forEach((variation, idx) => {
-      const cssSelectors = extractSelectorsFromCode(variation.css);
-      const jsSelectors = extractSelectorsFromCode(variation.js);
+      const cssSelectors = extractCSSSelectors(variation.css);
+      const jsSelectors = extractJSSelectors(variation.js);
 
       [...cssSelectors, ...jsSelectors].forEach(selector => {
         // Remove pseudo-classes/elements for comparison
@@ -1254,27 +1263,30 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
       const originalCount = topElements.length;
       const selectedSelector = selectedElement.selector;
 
-      // Keep only elements that are descendants of the selected element
-      // Check if selector starts with selected selector or contains it as parent
-      topElements = topElements.filter(el => {
-        // Don't filter out the selected element itself
-        if (el.selector === selectedSelector) return true;
+      // Only filter if we have enough elements (>= 5)
+      // Small element databases should not be filtered
+      if (originalCount >= 5) {
+        // Keep only elements that are descendants of the selected element
+        const filteredElements = topElements.filter(el => {
+          // Always keep the selected element itself
+          if (el.selector === selectedSelector) return true;
 
-        // Check if this element's selector indicates it's a child
-        // For example: "#hero > button" is child of "#hero"
-        // Or "div.hero button" is child of "div.hero"
-        return el.selector && el.selector.includes(selectedSelector);
-      });
+          // Check if element selector indicates it's within the selected scope
+          // This works for selectors like "#parent .child" or "#parent > .child"
+          const selectorParts = el.selector?.split(/[\s>+~]/);
+          return selectorParts && selectorParts.some(part => part.includes(selectedSelector.replace(/^#/, '')));
+        });
 
-      console.log(`🔍 Filtered elements to selected scope: ${originalCount} → ${topElements.length} elements`);
-      console.log(`  📍 Scope: ${selectedSelector}`);
-
-      // If filtering removed everything, keep original list (safety fallback)
-      if (topElements.length === 0) {
-        console.warn('⚠️ Filtering removed all elements - using full list');
-        topElements = pageData.elementDatabase?.elements
-          ?.slice(0, 35)
-          .map(element => this.compactElementData(element)) || [];
+        // Only use filtered results if we still have elements
+        if (filteredElements.length > 0) {
+          topElements = filteredElements;
+          console.log(`🔍 Filtered elements to selected scope: ${originalCount} → ${topElements.length} elements`);
+          console.log(`  📍 Scope: ${selectedSelector}`);
+        } else {
+          console.log(`🔍 Filter would remove all elements - keeping full list (${originalCount} elements)`);
+        }
+      } else {
+        console.log(`🔍 Element database too small (${originalCount}) - skipping scope filtering`);
       }
     }
 
@@ -1604,23 +1616,86 @@ Generate JSON now.`;
 
     let response;
     try {
+      // Verify service worker context is still valid
+      try {
+        await chrome.storage.local.get(['settings']); // Quick context check
+      } catch (contextError) {
+        throw new Error('Service worker context is invalid. Please reload the extension.');
+      }
+
+      const requestBodyString = JSON.stringify(requestBody);
+      const requestBodySize = requestBodyString.length;
+
       console.log('🌐 Making API request to Anthropic...', {
         url: 'https://api.anthropic.com/v1/messages',
         model: model,
         hasApiKey: !!apiKey,
-        apiKeyLength: apiKey ? apiKey.length : 0
+        apiKeyLength: apiKey ? apiKey.length : 0,
+        timestamp: new Date().toISOString(),
+        requestBodySize: requestBodySize
       });
 
-      response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify(requestBody)
-      });
+      // Check if request is too large (Chrome fetch limit is ~10MB, but we want to stay well under)
+      const MAX_REQUEST_SIZE = 5 * 1024 * 1024; // 5MB limit
+      if (requestBodySize > MAX_REQUEST_SIZE) {
+        console.error(`❌ Request body too large: ${(requestBodySize / 1024 / 1024).toFixed(2)}MB (max: ${MAX_REQUEST_SIZE / 1024 / 1024}MB)`);
+        throw new Error(`Request too large (${(requestBodySize / 1024 / 1024).toFixed(2)}MB). Try capturing fewer elements or using a simpler description.`);
+      }
+
+      // Warn if request is getting large
+      if (requestBodySize > 1 * 1024 * 1024) { // 1MB
+        console.warn(`⚠️ Large request: ${(requestBodySize / 1024 / 1024).toFixed(2)}MB - this may be slow or fail`);
+      }
+
+      // Add a small delay to prevent rapid-fire requests that might be blocked
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Validate service worker context before fetch
+      try {
+        await chrome.storage.local.get(['contextCheck']);
+        console.log('✅ Service worker context is valid');
+      } catch (contextError) {
+        console.error('❌ Service worker context invalid:', contextError);
+        throw new Error('Service worker context lost. Please reload the extension.');
+      }
+
+      console.log('🔄 About to make fetch request...');
+      const fetchStartTime = Date.now();
+
+      try {
+        response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: requestBodyString // Use pre-stringified body
+        });
+
+        const fetchDuration = Date.now() - fetchStartTime;
+        console.log(`✅ Fetch completed in ${fetchDuration}ms`);
+      } catch (innerFetchError) {
+        const fetchDuration = Date.now() - fetchStartTime;
+        console.error(`❌ Fetch failed after ${fetchDuration}ms`);
+        console.error('Error name:', innerFetchError.name);
+        console.error('Error message:', innerFetchError.message);
+        console.error('Error type:', typeof innerFetchError);
+        console.error('Error toString:', innerFetchError.toString());
+
+        // Check if this is a CORS error vs network error
+        if (innerFetchError.message === 'Failed to fetch') {
+          console.error('🔍 This is a "Failed to fetch" error - possible causes:');
+          console.error('  1. Network connectivity issue');
+          console.error('  2. CORS blocking (unlikely with manifest permissions)');
+          console.error('  3. API endpoint down');
+          console.error('  4. Service worker permissions lost');
+          console.error('  5. Browser extension was recently reloaded');
+        }
+
+        throw innerFetchError;
+      }
 
       console.log('📡 API Response received:', {
         status: response.status,
@@ -1632,18 +1707,28 @@ Generate JSON now.`;
       console.error('🚨 Network Error Details:', {
         message: fetchError.message,
         name: fetchError.name,
-        stack: fetchError.stack
+        stack: fetchError.stack,
+        timestamp: new Date().toISOString()
       });
 
       // Provide specific error messages for common issues
       if (fetchError.message.includes('Failed to fetch')) {
+        // Try to determine if this is a service worker issue
+        const timeSinceStart = Date.now() - (this.serviceWorkerStartTime || Date.now());
+        const possibleCauses = [
+          'Your internet connection',
+          'Extension permissions (reload extension if needed)',
+          'No firewall blocking api.anthropic.com'
+        ];
+
+        if (timeSinceStart > 300000) { // 5 minutes
+          possibleCauses.push('Service worker may need restart - try reloading the extension');
+        }
+
         throw new Error('Network error: Unable to connect to Anthropic API. Please check:\n' +
-                       '1. Your internet connection\n' +
-                       '2. Extension permissions (reload extension if needed)\n' +
-                       '3. API key is valid in settings\n' +
-                       '4. No firewall blocking api.anthropic.com');
+                       possibleCauses.map((c, i) => `${i + 1}. ${c}`).join('\n'));
       }
-      
+
       throw new Error(`Network error: ${fetchError.message}`);
     }
 
@@ -2587,14 +2672,16 @@ Generate the complete, merged code now.`;
             key
           });
 
+          let timeoutId;
           const timeoutPromise = new Promise((resolve) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
               logger.error('Content script message timeout', 'No response after 5 seconds');
               resolve({ success: false, error: 'Content script timeout - no response received', timeout: true });
             }, 5000);
           });
 
           cssResult = await Promise.race([messagePromise, timeoutPromise]);
+          clearTimeout(timeoutId); // Clear timeout if message succeeded
           logger.log('Content script response for CSS', JSON.stringify(cssResult));
           logger.log('CSS result analysis',
             `type=${typeof cssResult}, ` +
