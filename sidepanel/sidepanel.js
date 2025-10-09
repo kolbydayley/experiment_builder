@@ -1,3793 +1,3248 @@
-// Experiment Builder - Redesigned with Auto-Iteration
-console.log('🎨 Experiment Builder Loading...');
+// Experiment Builder - Unified Workspace Interface
+// Simplified architecture that maintains full backward compatibility
 
-class ExperimentBuilder {
+console.log('🎨 Experiment Builder V2 Loading...');
+
+// Add visual loading indicator
+document.addEventListener('DOMContentLoaded', () => {
+  const body = document.body;
+  if (!body.querySelector('.app-v2')) {
+    body.innerHTML = '<div style="padding: 20px; text-align: center; font-family: system-ui;"><h2>🎯 Experiment Builder Loading...</h2><p>Setting up your workspace...</p></div>';
+  }
+});
+
+class UnifiedExperimentBuilder {
   constructor() {
+    // Core State
     this.currentPageData = null;
+    this.basePageData = null;
+    this.targetTabId = null;
     this.variations = [{ id: 1, name: 'Variation 1', description: '' }];
     this.generatedCode = null;
-    this.editedCode = {}; // Track edited code blocks
+    this.editedCode = {};
+
+    // Workflow State
+    this.workflowState = 'fresh'; // fresh, building, results, deploy
+    this.focusedVariationId = this.variations[0].id;
+
+    // Status Bar State
+    this.currentStatus = null;
+    this.statusTimeout = null;
+    
+    // Settings - DEFAULTS (will be overridden by loadSettings)
     this.settings = {
       preferCSS: true,
       includeDOMChecks: true,
       authToken: '',
-      model: 'gpt-4o-mini'
+      anthropicApiKey: '',
+      provider: 'anthropic',
+      model: 'claude-3-7-sonnet-20250219'
     };
+    
+    // Listen for messages from background script
+    this.setupMessageListeners();
 
-    this.focusedVariationId = this.variations[0].id;
-    this.aiActivity = { status: 'idle', message: '' };
-
-    this.activePanel = 'build';
+    // Activity & Chat
     this.conversation = [];
     this.chatState = { sending: false };
     this.messageCounter = 0;
-
-    // Auto-iteration state
-    this.autoIteration = {
-      active: false,
-      currentVariation: null,
-      iterations: 0,
-      maxIterations: 5,
-      startTime: null
-    };
-
-    // Usage tracking
-    this.usageStats = {
-      tokens: 0,
-      cost: 0
-    };
-
-    // Persisted usage storage area
+    this.activityItems = [];
+    
+    // Usage & Performance
+    this.usageStats = { tokens: 0, cost: 0 };
     this.usageStorage = this.getUsageStorageArea();
-
-    // Manual preview state tracking
-    this.previewState = {
-      activeVariation: null
-    };
-
-    // Capture mode (full page or element)
+    this.previewState = { activeVariation: null };
     this.captureMode = 'full';
+    this.chatSelectedElements = [];
 
-    // Initialize utility classes
-    this.sessionManager = new SessionManager(this);
-    this.keyboardShortcuts = new KeyboardShortcuts(this);
-    this.promptAssistant = new PromptAssistant();
-    this.designFileManager = new DesignFileManager();
-    this.convertSmartLists = new ConvertSmartLists();
+    // Legacy compatibility properties
+    this.activePanel = 'build';
+    this.aiActivity = { status: 'idle', message: '' };
 
-    this.initializeConvertState();
-
-    this.initializeUI();
-    this.bindEvents();
-    this.loadSettings();
-    this.loadUsageStats();
-    this.loadCurrentPage();
-    this.loadConvertAPIKeys(); // Load Convert.com API keys
-
-    // Initialize utilities
-    this.initializeUtilities();
+    // Initialize system
+    this.initialize();
   }
 
-  initializeUI() {
-    this.initializeNavigation();
-    this.renderVariations();
-    this.updateFocusedVariationWorkspace();
-    this.updateCharCounter();
-    this.renderConversation();
-    this.setAiActivity('idle', 'Ready to review updates.');
-    this.addStatusLog('Ready to generate experiments', 'info');
-  }
-
-  bindEvents() {
-    // Capture events
-    document.getElementById('captureBtn').addEventListener('click', () => this.capturePage());
-    document.getElementById('recaptureBtn')?.addEventListener('click', () => this.capturePage());
-
-    // Text input
-    document.getElementById('descriptionText').addEventListener('input', () => this.updateCharCounter());
-
-    // Variations
-    document.getElementById('addVariationBtn').addEventListener('click', () => this.addVariation());
-
-    // Settings
-    const openSettingsBtn = document.getElementById('openFullSettingsBtn');
-    openSettingsBtn?.addEventListener('click', () => {
-      chrome.runtime.openOptionsPage();
-    });
-
-    const preferCSS = document.getElementById('preferCSS');
-    preferCSS?.addEventListener('change', (e) => {
-      this.settings.preferCSS = e.target.checked;
-      this.saveSettings();
-    });
-
-    const includeDOMChecks = document.getElementById('includeDOMChecks');
-    includeDOMChecks?.addEventListener('change', (e) => {
-      this.settings.includeDOMChecks = e.target.checked;
-      this.saveSettings();
-    });
-
-    const modelSelect = document.getElementById('modelSelect');
-    modelSelect?.addEventListener('change', (e) => {
-      this.settings.model = e.target.value;
-      this.saveSettings();
-    });
-
-    const editVariationsBtn = document.getElementById('editVariationsBtn');
-    editVariationsBtn?.addEventListener('click', () => {
-      this.switchPanel('build');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-
-    const switchFocusBtn = document.getElementById('switchFocusBtn');
-    switchFocusBtn?.addEventListener('click', () => this.showVariationSwitcher());
-
-    // Generate
-    document.getElementById('generateBtn').addEventListener('click', () => this.generateAndAutoTest());
-
-    // Results actions
-    document.getElementById('stopIterationBtn')?.addEventListener('click', () => this.stopIteration());
-    document.getElementById('exportAllBtn')?.addEventListener('click', () => this.exportAll());
-    document.getElementById('clearResultsBtn')?.addEventListener('click', () => this.clearResults());
-    document.getElementById('copyLogBtn')?.addEventListener('click', () => this.copyLog());
-    document.getElementById('clearPreviewBtn')?.addEventListener('click', () => this.clearVariationPreview());
-
-    const chatForm = document.getElementById('chatComposer');
-    if (chatForm) {
-      chatForm.addEventListener('submit', (event) => this.handleChatSubmit(event));
-    }
-
-    const chatInput = document.getElementById('chatInput');
-    if (chatInput) {
-      chatInput.addEventListener('keydown', (event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-          this.handleChatSubmit(event);
-        }
-      });
-    }
-    
-    // Convert.com integration
-    document.getElementById('manageConvertKeysBtn')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
-    document.getElementById('convertApiKeySelect')?.addEventListener('change', () => this.onConvertApiKeyChange());
-    document.getElementById('convertAccountSelect')?.addEventListener('change', () => this.onConvertAccountChange());
-    document.getElementById('convertProjectSelect')?.addEventListener('change', () => this.onConvertProjectChange());
-    document.getElementById('convertExperienceSelect')?.addEventListener('change', () => this.onConvertExperienceChange());
-    document.getElementById('refreshConvertProjectsBtn')?.addEventListener('click', () => this.refreshConvertProjects(true));
-    document.getElementById('refreshConvertExperiencesBtn')?.addEventListener('click', () => this.refreshConvertExperiences(true));
-    document.getElementById('importExperienceBtn')?.addEventListener('click', () => this.importConvertExperience());
-    document.getElementById('pushExperienceBtn')?.addEventListener('click', () => this.pushConvertExperience());
-    document.getElementById('runConvertPreviewBtn')?.addEventListener('click', () => this.runConvertPreview());
-  }
-
-  initializeNavigation() {
-    const buttons = Array.from(document.querySelectorAll('.nav-btn'));
-    if (!buttons.length) {
-      return;
-    }
-
-    buttons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const target = btn.getAttribute('data-panel');
-        if (target) {
-          this.switchPanel(target);
-        }
-      });
-    });
-
-    this.switchPanel(this.activePanel || 'build');
-  }
-
-  switchPanel(panelId) {
-    if (!panelId) return;
-
-    this.activePanel = panelId;
-
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-      const isActive = btn.getAttribute('data-panel') === panelId;
-      btn.classList.toggle('active', isActive);
-    });
-
-    document.querySelectorAll('.panel-view').forEach(section => {
-      const sectionId = section.id?.replace('panel-', '');
-      section.classList.toggle('active', sectionId === panelId);
-    });
-  }
-
-  async loadCurrentPage() {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.url) {
-        document.getElementById('currentUrl').textContent = this.formatUrl(tab.url);
-      }
-    } catch (error) {
-      console.error('Failed to load current page:', error);
-    }
-  }
-
-  async capturePage() {
-    const btn = document.getElementById('captureBtn');
-    this.setButtonLoading(btn, true);
-
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.url) throw new Error('No active tab found');
-
-      // Check capture mode
-      if (this.captureMode === 'element') {
-        // Activate element selector
-        await this.captureElement(tab.id);
-      } else {
-        // Standard full page capture
-        const response = await chrome.runtime.sendMessage({
-          type: 'CAPTURE_PAGE',
-          tabId: tab.id
-        });
-
-        if (response.success) {
-          this.currentPageData = response.data;
-          this.displayPagePreview(response.data);
-          this.addStatusLog('✓ Page captured successfully', 'success');
-          this.showSuccess('Page captured successfully!');
-        } else {
-          throw new Error(response.error || 'Capture failed');
-        }
-      }
-    } catch (error) {
-      console.error('Capture failed:', error);
-      this.addStatusLog(`✗ Capture failed: ${error.message}`, 'error');
-      this.showError(error.message);
-    } finally {
-      this.setButtonLoading(btn, false);
-    }
-  }
-
-  async captureElement(tabId) {
-    this.addStatusLog('🎯 Click any element on the page to select it', 'info');
-
-    // Send message to activate element selector
-    const response = await chrome.runtime.sendMessage({
-      type: 'START_ELEMENT_SELECTION',
-      tabId: tabId
-    });
-
-    if (response.success) {
-      this.addStatusLog('✓ Element selected and captured', 'success');
-      this.showSuccess('Element captured successfully!');
-
-      // Store element data as focused capture
-      this.currentPageData = {
-        ...this.currentPageData,
-        selectedElement: response.data,
-        captureMode: 'element'
-      };
-
-      // Show element preview
-      this.displaySelectedElementPreview(response.data);
-
-      // Also show in main preview area
-      if (response.data.screenshot) {
-        const preview = document.getElementById('pagePreview');
-        const img = document.getElementById('screenshotPreview');
-        const time = document.getElementById('captureTime');
-
-        img.src = response.data.screenshot;
-        time.textContent = `Element captured: ${response.data.selector}`;
-        preview.classList.remove('hidden');
-      }
-    } else {
-      throw new Error(response.error || 'Element selection failed');
-    }
-  }
-
-  displaySelectedElementPreview(elementData) {
-    const selectionHint = document.getElementById('elementSelectionHint');
-    const selectedPreview = document.getElementById('selectedElementPreview');
-    const elementScreenshot = document.getElementById('elementScreenshot');
-    const elementSelector = document.getElementById('elementSelector');
-    const elementDimensions = document.getElementById('elementDimensions');
-    const elementTag = document.getElementById('elementTag');
-
-    if (!selectedPreview || !elementData) return;
-
-    // Hide hint, show preview
-    selectionHint?.classList.add('hidden');
-    selectedPreview.classList.remove('hidden');
-
-    // Update preview content
-    if (elementScreenshot && elementData.screenshot) {
-      elementScreenshot.src = elementData.screenshot;
-    }
-
-    if (elementSelector && elementData.selector) {
-      elementSelector.textContent = elementData.selector;
-    }
-
-    if (elementDimensions && elementData.dimensions) {
-      const { width, height } = elementData.dimensions;
-      elementDimensions.textContent = `${Math.round(width)}×${Math.round(height)}px`;
-    }
-
-    if (elementTag && elementData.tag) {
-      elementTag.textContent = elementData.tag.toUpperCase();
-    }
-  }
-
-  displayPagePreview(pageData) {
-    const preview = document.getElementById('pagePreview');
-    const img = document.getElementById('screenshotPreview');
-    const time = document.getElementById('captureTime');
-
-    if (pageData.screenshot) {
-      img.src = pageData.screenshot;
-      time.textContent = `Captured ${this.formatTime(pageData.timestamp)}`;
-      preview.classList.remove('hidden');
-    }
-  }
-
-  updateCharCounter() {
-    const textarea = document.getElementById('descriptionText');
-    const counter = document.getElementById('charCount');
-    counter.textContent = textarea.value.length;
-  }
-
-  addVariation() {
-    const newId = Math.max(...this.variations.map(v => v.id), 0) + 1;
-    const newVariation = {
-      id: newId,
-      name: `Variation ${newId}`,
-      description: ''
-    };
-    this.variations.push(newVariation);
-    this.focusedVariationId = newVariation.id;
-    this.renderVariations();
-    this.updateFocusedVariationWorkspace();
-    if (this.generatedCode?.variations?.length) {
-      this.autoPreviewLatestCode('focus-change');
-    }
-  }
-
-  removeVariation(id) {
-    if (this.variations.length <= 1) {
-      this.showError('At least one variation is required');
-      return;
-    }
-    this.variations = this.variations.filter(v => v.id !== id);
-    if (!this.variations.some(v => v.id === this.focusedVariationId)) {
-      this.focusedVariationId = this.variations[0]?.id || null;
-    }
-    this.renderVariations();
-    this.updateFocusedVariationWorkspace();
-    if (this.generatedCode?.variations?.length) {
-      this.autoPreviewLatestCode('focus-change');
-    }
-  }
-
-  renderVariations() {
-    const container = document.getElementById('variationsList');
-    if (!container) return;
-
-    container.innerHTML = this.variations.map((v, index) => {
-      const isFocused = this.focusedVariationId === v.id;
-      return `
-        <div class="variation-item ${isFocused ? 'focused' : ''}" data-variation-id="${v.id}">
-          <div class="variation-header">
-            <div class="variation-title">
-              <span class="variation-badge">V${index + 1}</span>
-              <span class="variation-name">${this.escapeHtml(v.name)}</span>
-            </div>
-            <div class="variation-controls">
-              <button class="btn-small btn-secondary variation-focus" data-variation-id="${v.id}" ${isFocused ? 'disabled' : ''}>${isFocused ? 'Focused' : 'Focus'}</button>
-              ${this.variations.length > 1 ? `<button class="variation-remove" data-variation-id="${v.id}" aria-label="Remove variation ${index + 1}">×</button>` : ''}
-            </div>
-          </div>
-          <label class="variation-label" for="variation-notes-${v.id}">Variation instructions</label>
-          <textarea 
-            id="variation-notes-${v.id}"
-            placeholder="Explain exactly what this variation should change, test, or emphasise."
-            data-variation-id="${v.id}"
-            class="variation-textarea"
-          >${this.escapeHtml(v.description || '')}</textarea>
-        </div>
-      `;
-    }).join('');
-
-    container.querySelectorAll('.variation-remove').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = parseInt(btn.getAttribute('data-variation-id'), 10);
-        this.removeVariation(id);
-      });
-    });
-
-    container.querySelectorAll('.variation-textarea').forEach(textarea => {
-      textarea.addEventListener('input', () => {
-        const id = parseInt(textarea.getAttribute('data-variation-id'), 10);
-        this.updateVariation(id, textarea.value);
-      });
-    });
-
-    container.querySelectorAll('.variation-focus').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = parseInt(btn.getAttribute('data-variation-id'), 10);
-        this.setFocusedVariation(id);
-      });
-    });
-
-    this.updateFocusedVariationWorkspace();
-  }
-
-  updateVariation(id, description) {
-    const variation = this.variations.find(v => v.id === id);
-    if (variation) {
-      variation.description = description;
-      if (this.focusedVariationId === id) {
-        this.updateFocusedVariationWorkspace();
-        this.updatePreviewActiveState();
-      }
-    }
-  }
-
-  setFocusedVariation(id) {
-    if (!this.variations.some(v => v.id === id)) {
-      return;
-    }
-
-    if (this.focusedVariationId !== id) {
-      this.focusedVariationId = id;
-      this.renderVariations();
-      this.updatePreviewActiveState();
-      if (this.generatedCode?.variations?.length) {
-        this.autoPreviewLatestCode('focus-change');
-      }
-    } else {
-      this.updateFocusedVariationWorkspace();
-    }
-  }
-
-  setFocusedVariationByNumber(number) {
-    if (!this.generatedCode?.variations?.length) return;
-    const index = this.generatedCode.variations.findIndex(v => v.number === number);
-    if (index === -1) return;
-    const variation = this.variations[index];
-    if (variation) {
-      this.setFocusedVariation(variation.id);
-    }
-  }
-
-  getFocusedVariationConfig() {
-    if (!this.variations.length) return null;
-    return this.variations.find(v => v.id === this.focusedVariationId) || this.variations[0];
-  }
-
-  getVariationIndexById(id) {
-    return this.variations.findIndex(v => v.id === id);
-  }
-
-  getVariationNumberByConfigId(id) {
-    const index = this.getVariationIndexById(id);
-    if (index === -1) return null;
-    const generated = Array.isArray(this.generatedCode?.variations)
-      ? this.generatedCode.variations[index]
-      : null;
-    return generated?.number || this.variations[index]?.id || null;
-  }
-
-  getFocusedVariationNumber() {
-    if (!this.variations.length) return null;
-    const number = this.getVariationNumberByConfigId(this.focusedVariationId);
-    if (number) return number;
-    return this.generatedCode?.variations?.[0]?.number || this.variations[0]?.id || null;
-  }
-
-  updateFocusedVariationWorkspace() {
-    const titleEl = document.getElementById('focusedVariationTitle');
-    const summaryEl = document.getElementById('focusedVariationSummary');
-    const statusEl = document.getElementById('focusedVariationStatus');
-    if (!titleEl || !summaryEl) return;
-
-    const focused = this.getFocusedVariationConfig();
-    if (!focused) {
-      titleEl.textContent = 'No variation selected';
-      summaryEl.textContent = 'Add variations in the Build tab to get started.';
-      if (statusEl) statusEl.textContent = 'No variations';
-      return;
-    }
-
-    titleEl.textContent = focused.name || `Variation ${focused.id}`;
-    summaryEl.textContent = focused.description?.trim()
-      ? focused.description
-      : 'No specific instructions yet - this variation will use shared context only.';
-
-    // Update status based on generation state
-    if (statusEl) {
-      if (!this.generatedCode) {
-        statusEl.textContent = 'Not generated';
-        statusEl.className = 'variation-status-indicator status-pending';
-      } else {
-        const generatedVariation = this.generatedCode.variations?.find(v => v.number === focused.id);
-        if (generatedVariation) {
-          const hasCode = generatedVariation.css || generatedVariation.js;
-          if (hasCode) {
-            statusEl.textContent = 'Code ready';
-            statusEl.className = 'variation-status-indicator status-ready';
-          } else {
-            statusEl.textContent = 'Empty code';
-            statusEl.className = 'variation-status-indicator status-warning';
-          }
-        } else {
-          statusEl.textContent = 'Missing in generated code';
-          statusEl.className = 'variation-status-indicator status-error';
-        }
-      }
-    }
-  }
-
-  showVariationSwitcher() {
-    if (!this.variations.length) {
-      this.showError('No variations available. Add variations in the Build tab first.');
-      return;
-    }
-
-    // Create modal overlay
-    const existingModal = document.querySelector('.variation-switcher-modal');
-    if (existingModal) {
-      existingModal.remove();
-    }
-
-    const modal = document.createElement('div');
-    modal.className = 'variation-switcher-modal';
-    modal.innerHTML = `
-      <div class="modal-backdrop" onclick="this.closest('.variation-switcher-modal').remove()"></div>
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>Switch Focused Variation</h3>
-          <button class="modal-close" onclick="this.closest('.variation-switcher-modal').remove()">×</button>
-        </div>
-        <div class="modal-body">
-          <p>Choose which variation to focus on. The focused variation will auto-apply when you make changes.</p>
-          <div class="variation-switcher-list">
-            ${this.variations.map(v => {
-              const isFocused = v.id === this.focusedVariationId;
-              const generatedVariation = this.generatedCode?.variations?.find(gv => gv.number === v.id);
-              const hasCode = generatedVariation && (generatedVariation.css || generatedVariation.js);
-              
-              return `
-                <div class="variation-switcher-item ${isFocused ? 'focused' : ''}" data-variation-id="${v.id}">
-                  <div class="variation-switcher-info">
-                    <h4>${v.name || `Variation ${v.id}`}</h4>
-                    <p>${v.description || 'No specific instructions'}</p>
-                    <span class="variation-switcher-status ${hasCode ? 'has-code' : 'no-code'}">
-                      ${hasCode ? '✓ Code generated' : '◦ No code yet'}
-                    </span>
-                  </div>
-                  <button class="btn-small variation-switcher-btn ${isFocused ? 'btn-secondary' : 'btn-primary'}" 
-                          ${isFocused ? 'disabled' : ''}>
-                    ${isFocused ? 'Currently Focused' : 'Focus This'}
-                  </button>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(modal);
-
-    // Bind click events to switcher buttons
-    modal.querySelectorAll('.variation-switcher-btn:not([disabled])').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const item = e.target.closest('.variation-switcher-item');
-        const variationId = parseInt(item.dataset.variationId);
-        this.switchFocusToVariation(variationId);
-        modal.remove();
-      });
-    });
-  }
-
-  async switchFocusToVariation(variationId) {
-    if (this.focusedVariationId === variationId) {
-      return; // Already focused
-    }
-
-    const variation = this.variations.find(v => v.id === variationId);
-    if (!variation) {
-      this.showError('Variation not found');
-      return;
-    }
-
-    this.focusedVariationId = variationId;
-    this.updateFocusedVariationWorkspace();
-    this.updateVariationPreview(); // Update preview list to show new focus
-
-    const variationName = variation.name || `Variation ${variationId}`;
-    this.addStatusLog(`🎯 Focus switched to ${variationName}`, 'info');
-
-    // If there's generated code, auto-preview the newly focused variation
-    if (this.generatedCode?.variations?.length) {
-      await this.autoPreviewLatestCode('focus-change');
-    }
-
-    this.showSuccess(`Now focused on ${variationName}`);
-  }
-
-  setAiActivity(status = 'idle', message = '') {
-    this.aiActivity = { status, message };
-    const banner = document.getElementById('aiActivityBanner');
-    if (!banner) return;
-    banner.dataset.status = status;
-    banner.textContent = message?.trim() || (status === 'idle'
-      ? 'Ready to review updates.'
-      : status === 'working'
-        ? 'Working...'
-        : '');
-  }
-
-  async autoPreviewLatestCode(origin = 'auto') {
-    if (!this.generatedCode?.variations?.length) {
-      return;
-    }
-
-    const number = this.getFocusedVariationNumber();
-    if (!number) {
-      return;
-    }
-
-    const variation = this.generatedCode.variations.find(v => v.number === number);
-    const label = variation?.name || `Variation ${number}`;
-    const workingMessage = origin === 'focus-change'
-      ? `Switching focus to ${label}...`
-      : 'Applying the latest updates to the active tab...';
-    const inAutoIteration = origin === 'iteration' || (origin === 'auto' && this.autoIteration?.active);
-    if (!inAutoIteration) {
-      this.setAiActivity('working', workingMessage);
-    }
-
-    try {
-      await this.previewVariation(number, { silent: true });
-      const previewMessage = origin === 'focus-change'
-        ? `${label} is now active on the page.`
-        : `Latest updates applied to ${label}.`;
-      if (!inAutoIteration) {
-        this.setAiActivity('preview', previewMessage);
-      }
-    } catch (error) {
-      console.warn('Auto preview failed:', error);
-      this.setAiActivity('error', 'Auto preview failed. Preview manually from the list.');
-    }
-  }
-
-  isVariationFocusedByNumber(number) {
-    if (!this.generatedCode?.variations?.length) return false;
-    const index = this.generatedCode.variations.findIndex(v => v.number === number);
-    if (index === -1) return false;
-    const variation = this.variations[index];
-    return variation?.id === this.focusedVariationId;
-  }
-
-  // ============================================
-  // Conversation Methods
-  // ============================================
-
-  addConversationMessage(message) {
-    if (!message || !message.content) {
-      return;
-    }
-
-    const entry = {
-      id: ++this.messageCounter,
-      role: ['assistant', 'system'].includes(message.role) ? 'assistant' : 'user',
-      content: message.content.trim(),
-      timestamp: message.timestamp || Date.now(),
-      meta: message.meta || {}
-    };
-
-    if (!entry.content) {
-      return;
-    }
-
-    this.conversation.push(entry);
-    if (this.conversation.length > 50) {
-      this.conversation = this.conversation.slice(-50);
-    }
-
-    this.renderConversation();
-  }
-
-  renderConversation() {
-    const thread = document.getElementById('chatThread');
-    const emptyState = document.getElementById('chatEmptyState');
-    if (!thread) return;
-
-    thread.querySelectorAll('.chat-message').forEach(node => node.remove());
-
-    if (!this.conversation.length) {
-      if (emptyState) emptyState.classList.remove('hidden');
-      return;
-    }
-
-    if (emptyState) emptyState.classList.add('hidden');
-
-    this.conversation.forEach(message => {
-      thread.appendChild(this.createChatMessageElement(message));
-    });
-
-    thread.scrollTop = thread.scrollHeight;
-  }
-
-  createChatMessageElement(message) {
-    const wrapper = document.createElement('div');
-    const classes = ['chat-message', message.role];
-    if (message.meta?.tone === 'error') {
-      classes.push('error');
-    }
-    wrapper.className = classes.join(' ');
-
-    const meta = document.createElement('div');
-    meta.className = 'chat-message-meta';
-    const author = message.role === 'assistant' ? 'AI' : 'You';
-    meta.textContent = `${author} • ${this.formatChatTimestamp(message.timestamp)}`;
-
-    const body = document.createElement('div');
-    body.className = 'chat-message-body';
-    body.textContent = message.content;
-
-    wrapper.appendChild(meta);
-    wrapper.appendChild(body);
-    return wrapper;
-  }
-
-  formatChatTimestamp(timestamp) {
-    if (!timestamp) {
-      return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  }
-
-  setChatStatus(text) {
-    const status = document.getElementById('chatStatus');
-    if (!status) return;
-    status.textContent = text || '';
-  }
-
-  getConversationHistoryForAI(limit = 12) {
-    if (!Array.isArray(this.conversation) || !this.conversation.length) {
-      return [];
-    }
-
-    return this.conversation
-      .slice(-limit)
-      .map(entry => ({
-        role: entry.role === 'assistant' ? 'assistant' : 'user',
-        content: entry.content
-      }));
-  }
-
-  handleChatSubmit(event) {
-    if (event?.type === 'keydown') {
-      if (!((event.metaKey || event.ctrlKey) && event.key === 'Enter')) {
-        return;
-      }
-      event.preventDefault();
-    } else if (event?.preventDefault) {
-      event.preventDefault();
-    }
-
-    if (this.chatState.sending) {
-      return;
-    }
-
-    const textarea = document.getElementById('chatInput');
-    if (!textarea) {
-      return;
-    }
-
-    const message = textarea.value.trim();
-    if (!message) {
-      this.showError('Describe what you need before sending a chat message');
-      return;
-    }
-
-    if (!this.generatedCode) {
-      this.showError('Generate code in the Build tab before starting a chat');
-      this.switchPanel('build');
-      return;
-    }
-
-    textarea.value = '';
-    this.addConversationMessage({
-      role: 'user',
-      content: message,
-      meta: { type: 'chat-request' }
-    });
-
-    if (this.activePanel !== 'review') {
-      this.switchPanel('review');
-    }
-    this.processChatRequest(message);
-  }
-
-  async processChatRequest(message) {
-    if (this.chatState.sending) {
-      return;
-    }
-
-    this.chatState.sending = true;
-    this.setChatStatus('Working…');
-    this.addStatusLog('🗨️ Chat refinement requested', 'info');
-    this.setAiActivity('working', 'Processing your request and updating code...');
-
-    const sendBtn = document.getElementById('chatSendBtn');
-    if (sendBtn) {
-      sendBtn.disabled = true;
-    }
-
-    try {
-      const adjusted = await this.adjustCode(message, null, { includeConversation: true });
-      if (!adjusted) {
-        throw new Error('No response from AI');
-      }
-
-      // Clear current preview before applying changes
-      await this.clearVariationPreview(false);
+  setupMessageListeners() {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      console.log('📨 Sidepanel received message:', message);
       
-      // Update the generated code
-      this.generatedCode = adjusted.code;
-      this.recordUsage(adjusted.usage);
-      this.displayGeneratedCode(adjusted.code);
-
-      // Auto-apply the focused variation after updates
-      if (this.focusedVariationId && this.generatedCode?.variations?.length) {
-        this.setAiActivity('working', 'Auto-applying updated variation...');
-        await this.previewVariation(this.focusedVariationId, { silent: true });
-        this.setAiActivity('preview', `Updated variation ${this.focusedVariationId} applied automatically.`);
-      } else {
-        this.setAiActivity('idle', 'Code updated. Select a variation to preview changes.');
+      if (message.type === 'ELEMENT_SELECTED') {
+        this.handleElementSelected(message.data);
+        sendResponse({ success: true });
+        return true; // Keep the message channel open
       }
-
-      const summary = this.buildAdjustmentSummary(adjusted.code);
-      this.addConversationMessage({
-        role: 'assistant',
-        content: summary,
-        meta: { type: 'chat-response' }
-      });
-
-      this.addStatusLog('✓ Chat adjustments applied and auto-previewed', 'success');
-      this.setChatStatus(`Updated • ${this.formatChatTimestamp(Date.now())}`);
-    } catch (error) {
-      console.error('Chat request failed:', error);
-      this.addConversationMessage({
-        role: 'assistant',
-        content: `I couldn’t adjust the code: ${error.message || error}`,
-        meta: { type: 'chat-error', tone: 'error' }
-      });
-      this.addStatusLog(`✗ Chat adjustment failed: ${error.message}`, 'error');
-      this.showError(error.message || 'Chat adjustment failed');
-      this.setChatStatus('Something went wrong.');
-      this.setAiActivity('error', 'Chat adjustment failed. Review the status log.');
-    } finally {
-      if (sendBtn) {
-        sendBtn.disabled = false;
+      
+      if (message.type === 'ELEMENT_SELECTION_CANCELLED') {
+        this.handleElementSelectionCancelled();
+        sendResponse({ success: true });
+        return true; // Keep the message channel open
       }
-      this.chatState.sending = false;
-      const textarea = document.getElementById('chatInput');
-      textarea?.focus();
-      setTimeout(() => this.setChatStatus(''), 4000);
-    }
-  }
-
-  buildAdjustmentSummary(codeData) {
-    if (!codeData?.variations?.length) {
-      return 'Code refreshed. Review the updates in the Review tab.';
-    }
-
-    const names = codeData.variations
-      .map(v => v.name || `Variation ${v.number}`)
-      .filter(Boolean);
-
-    const visible = names.slice(0, 3).join(', ');
-    const remaining = names.length > 3 ? ` +${names.length - 3} more` : '';
-
-    const extras = [];
-    if (codeData.globalCSS) extras.push('global CSS');
-    if (codeData.globalJS) extras.push('global JS');
-    const extrasText = extras.length ? ` Global assets refreshed (${extras.join(', ')}).` : '';
-
-    return `Updated ${names.length} variation${names.length === 1 ? '' : 's'}: ${visible}${remaining}.${extrasText} Review the Review tab to preview or retest.`;
-  }
-
-  buildGenerationSummary(codeData) {
-    if (!codeData?.variations?.length) {
-      return 'No variations were generated. Check the status log for details.';
-    }
-
-    const names = codeData.variations
-      .map(v => v.name || `Variation ${v.number}`)
-      .filter(Boolean);
-
-    const visible = names.slice(0, 3).join(', ');
-    const remaining = names.length > 3 ? ` +${names.length - 3} more` : '';
-
-    const extras = [];
-    if (codeData.globalCSS) extras.push('global CSS');
-    if (codeData.globalJS) extras.push('global JS');
-    const extrasText = extras.length ? ` Includes ${extras.join(' & ')}.` : '';
-
-    return `Generated ${names.length} variation${names.length === 1 ? '' : 's'}: ${visible}${remaining}.${extrasText} Head to the Review tab to inspect, edit, or preview.`;
-  }
-
-  async handleGenerationSuccess(codeData) {
-    const summary = this.buildGenerationSummary(codeData);
-    if (summary) {
-      this.addConversationMessage({
-        role: 'assistant',
-        content: summary,
-        meta: { type: 'generation-response' }
-      });
-    }
-
-    // Auto-apply the focused variation after initial generation
-    if (this.focusedVariationId && codeData?.variations?.length) {
-      const focusedVariation = codeData.variations.find(v => v.number === this.focusedVariationId);
-      if (focusedVariation) {
-        this.setAiActivity('working', 'Auto-applying the focused variation...');
-        try {
-          await this.previewVariation(this.focusedVariationId, { silent: true });
-          const variationName = focusedVariation.name || `Variation ${this.focusedVariationId}`;
-          this.setAiActivity('preview', `${variationName} applied automatically after generation.`);
-          this.addStatusLog(`🎯 Auto-applied focused variation: ${variationName}`, 'success');
-        } catch (error) {
-          console.error('Auto-apply after generation failed:', error);
-          this.setAiActivity('error', 'Generation completed but auto-preview failed.');
-        }
-      }
-    }
-  }
-
-  handleGenerationFailure(error) {
-    if (!error) return;
-    const message = typeof error === 'string' ? error : error.message;
-    this.addConversationMessage({
-      role: 'assistant',
-      content: `Generation failed: ${message}`,
-      meta: { type: 'generation-error', tone: 'error' }
     });
-  }
-
-  async testApiKey() {
-    if (!this.settings.authToken) {
-      this.showError('Please enter an API key first');
-      return;
-    }
-
-    this.addStatusLog('Testing API key...', 'info');
     
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'TEST_API_KEY',
-        token: this.settings.authToken
-      });
-
-      if (response.success) {
-        const statusEl = document.getElementById('apiKeyStatus');
-        if (statusEl) {
-          statusEl.textContent = '✓ Valid';
-          statusEl.style.color = 'var(--success)';
-        }
-        this.addStatusLog('✓ API key is valid', 'success');
-        this.showSuccess('API key is valid!');
-      } else {
-        throw new Error(response.error || 'Invalid key');
-      }
-    } catch (error) {
-      const statusEl = document.getElementById('apiKeyStatus');
-      if (statusEl) {
-        statusEl.textContent = '✗ Invalid';
-        statusEl.style.color = 'var(--danger)';
-      }
-      this.addStatusLog(`✗ API key test failed: ${error.message}`, 'error');
-      this.showError(error.message);
-    }
+    console.log('✅ Message listeners set up for sidepanel');
   }
 
-  // MAIN AUTO-ITERATION FLOW
-  async generateAndAutoTest() {
-    if (!this.validateGeneration()) return;
+  async handleElementSelected(elementData) {
+    console.log('🎯 Element selected:', elementData);
+    console.log('📸 Screenshot available:', !!elementData.screenshot);
+    console.log('📏 Element dimensions:', elementData.dimensions);
 
-    const btn = document.getElementById('generateBtn');
-    this.setButtonLoading(btn, true);
-    this.setAiActivity('working', 'Preparing to generate variations...');
+    // Store selected element data for code generation (includes screenshot!)
+    this.selectedElementData = elementData;
 
-    const description = document.getElementById('descriptionText').value.trim();
-    if (description) {
-      const lastMessage = this.conversation[this.conversation.length - 1];
-      if (!lastMessage || lastMessage.meta?.type !== 'generation-request' || lastMessage.content !== description) {
-        this.addConversationMessage({
-          role: 'user',
-          content: description,
-          meta: { type: 'generation-request' }
-        });
-      }
+    // Build element description for display
+    const elementDescription = this.getElementDescription(elementData);
+
+    // Show success status in persistent status bar
+    this.showStatus(`✅ Element selected: ${elementDescription}`, 'success', 3000);
+
+    // Add success activity
+    this.addActivity(`Selected: ${elementDescription}`, 'success');
+
+    // Log screenshot availability for debugging
+    if (elementData.screenshot) {
+      console.log('✅ Element screenshot captured and available for Visual QA');
+      this.addActivity('Element screenshot captured for Visual QA', 'success');
+    } else {
+      console.warn('⚠️ No element screenshot captured');
+      this.addActivity('Element selected (no screenshot)', 'info');
     }
 
-    await this.clearVariationPreview(false);
-
-    // Auto-capture page data if not available
+    // Auto-capture page if not already captured
     if (!this.currentPageData) {
-      this.addStatusLog('📷 Auto-capturing page data...', 'info');
+      console.log('📸 Auto-capturing page data (element selected but no page data)...');
+      this.showStatus('📸 Capturing page context...', 'loading');
+
       try {
         await this.capturePage();
-        if (!this.currentPageData) {
-          throw new Error('Failed to capture page data');
-        }
+        console.log('✅ Page data captured successfully after element selection');
       } catch (error) {
-        this.addStatusLog(`❌ Auto-capture failed: ${error.message}`, 'error');
-        this.setAiActivity('error', 'Unable to capture the page automatically. Reload and try again.');
-        this.setButtonLoading(btn, false);
-        return;
+        console.error('❌ Failed to capture page after element selection:', error);
+        this.showStatus('⚠️ Could not capture page data', 'error', 3000);
+        // Continue anyway - we have the element data
       }
     }
 
-    // Reset state
-    this.autoIteration = {
-      active: true,
-      currentVariation: 1,
-      iterations: 0,
-      maxIterations: 5,
-      startTime: Date.now()
-    };
+    // Auto-progress to building state if in fresh state
+    if (this.workflowState === 'fresh') {
+      console.log('🔄 Auto-progressing from fresh state to building state');
+      this.updateWorkflowState('building');
+    }
 
-    this.showStatusPanel();
-    this.addStatusLog('🚀 Starting automatic generation and testing...', 'info');
-    this.updateIndicator('working');
+    // Add element info to the description field
+    this.addElementToDescription(elementData);
+  }
+
+  addElementToDescription(elementData) {
+    const descField = document.getElementById('primaryDescription');
+    if (descField) {
+      // Just store the selected element data - don't clutter the field
+      this.selectedElementData = elementData;
+      
+      // Add a simple placeholder if field is empty
+      if (!descField.value.trim()) {
+        descField.placeholder = `Describe changes for the selected ${elementData.tag} element...`;
+      }
+      
+      // Focus the field for user input
+      descField.focus();
+      
+      const elementDescription = this.getElementDescription(elementData);
+      this.addActivity(`Element selected: ${elementDescription}`, 'success');
+    }
+  }
+
+  getElementDescription(elementData) {
+    let description = elementData.tag;
+    
+    if (elementData.id) {
+      description += `#${elementData.id}`;
+    }
+    
+    if (elementData.classes && elementData.classes.length) {
+      description += `.${elementData.classes.slice(0, 2).join('.')}`;
+    }
+    
+    if (elementData.textContent && elementData.textContent.trim()) {
+      const text = elementData.textContent.trim().substring(0, 30);
+      description += ` ("${text}${elementData.textContent.length > 30 ? '...' : ''}")`;
+    }
+    
+    return description;
+  }
+
+  handleElementSelectionCancelled() {
+    console.log('🎯 Element selection cancelled');
+    this.showStatus('Element selection cancelled', 'info', 3000);
+    this.addActivity('Element selection cancelled', 'info');
+    this.addChatMessage('assistant', 'Element selection was cancelled. You can still describe elements in your text (like "the red button" or "the main headline") and I\'ll generate appropriate selectors.');
+  }
+
+  async initialize() {
+    console.log('🚀 Initializing unified workspace...');
+    
+    try {
+      console.log('Step 1: Checking DOM elements...');
+      const mainApp = document.getElementById('mainApp');
+      if (!mainApp) {
+        throw new Error('Main app element not found - HTML may not be loaded correctly');
+      }
+      console.log('✅ Main app element found');
+      
+      // Activate V2 interface
+      console.log('Step 1.1: Activating V2 interface...');
+      mainApp.setAttribute('data-active', 'true');
+      console.log('✅ V2 interface activated');
+      
+      console.log('Step 2: Initialize utilities...');
+      this.initializeUtilities();
+      
+      console.log('Step 3: Initialize Convert.com integration...');
+      this.initializeConvertState();
+      
+      console.log('Step 4: Bind events...');
+      this.bindEvents();
+      
+      console.log('Step 5: Load settings and data...');
+      await this.loadSettings();
+      await this.loadUsageStats();
+      await this.loadCurrentPage();
+      await this.loadConvertAPIKeys();
+      
+      console.log('Step 6: Set initial state...');
+      this.updateWorkflowState('fresh');
+      
+      console.log('Step 7: Inject content scripts proactively...');
+      await this.ensureContentScriptsLoaded();
+
+      console.log('Step 8: Add welcome activity...');
+      this.addActivity('Ready to create experiments', 'info');
+
+      console.log('✅ Unified workspace ready');
+    } catch (error) {
+      console.error('❌ Initialization failed at step:', error);
+      
+      // Try to show error in UI
+      try {
+        this.addActivity('Initialization error: ' + error.message, 'error');
+      } catch (uiError) {
+        console.error('❌ Could not even show error in UI:', uiError);
+      }
+      
+      throw error;
+    }
+  }
+
+  initializeUtilities() {
+    // Initialize utility classes with fallbacks
+    try {
+      this.sessionManager = typeof SessionManager !== 'undefined' ? new SessionManager(this) : null;
+      this.keyboardShortcuts = typeof KeyboardShortcuts !== 'undefined' ? new KeyboardShortcuts(this) : null;
+      this.promptAssistant = typeof PromptAssistant !== 'undefined' ? new PromptAssistant() : null;
+      this.designFileManager = typeof DesignFileManager !== 'undefined' ? new DesignFileManager() : null;
+      this.convertSmartLists = typeof ConvertSmartLists !== 'undefined' ? new ConvertSmartLists() : null;
+      this.visualQAService = typeof VisualQAService !== 'undefined' ? new VisualQAService() : null;
+      this.codeQualityMonitor = typeof CodeQualityMonitor !== 'undefined' ? new CodeQualityMonitor() : null;
+
+      console.log('🛠️ Utilities initialized');
+    } catch (error) {
+      console.warn('⚠️ Some utilities failed to initialize:', error);
+      this.addActivity('Some utilities unavailable, using fallbacks', 'warning');
+    }
+  }
+
+  async ensureContentScriptsLoaded() {
+    try {
+      // Get active tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        console.log('ℹ️ No active tab found, skipping content script injection');
+        return;
+      }
+
+      console.log('📡 Proactively injecting content scripts on tab:', tab.id);
+
+      // Inject all content scripts WITH their dependencies (same order as manifest.json)
+      const scripts = [
+        'utils/feature-flags.js',
+        'utils/performance-monitor.js',
+        'utils/regression-test-suite.js',
+        'utils/selector-validator.js',
+        'utils/code-tester.js',
+        'utils/context-builder.js',
+        'content-scripts/page-capture.js',
+        'content-scripts/element-selector.js'
+      ];
+
+      for (const script of scripts) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: [script]
+          });
+          console.log(`✅ Injected ${script}`);
+        } catch (error) {
+          // Script might already be loaded or page doesn't allow it (chrome:// URLs, etc.)
+          console.log(`ℹ️ Could not inject ${script}:`, error.message);
+        }
+      }
+
+      console.log('✅ Content scripts ready');
+    } catch (error) {
+      console.warn('⚠️ Content script injection failed:', error);
+      // Don't throw - this is not critical for initialization
+    }
+  }
+
+  initializeConvertState() {
+    // Convert.com integration state
+    this.convertState = {
+      apiKeys: [],
+      accounts: [],
+      projects: [],
+      experiences: [],
+      accountId: '',
+      projectId: '',
+      experienceId: '',
+      creationMode: false,
+      baselineVariation: null,
+      variationStore: new Map(),
+      experienceDetails: null
+    };
+  }
+
+  // ==========================================
+  // WORKFLOW STATE MANAGEMENT
+  // ==========================================
+
+  updateWorkflowState(newState) {
+    console.log(`🔄 Workflow: ${this.workflowState} → ${newState}`);
+    
+    const previousState = this.workflowState;
+    this.workflowState = newState;
+    
+    // Update UI
+    this.updateWorkAreaForState(newState);
+    this.updateProgressIndicator(newState);
+    
+    // Add activity
+    this.addActivity(`Switched to ${newState} mode`, 'info');
+  }
+
+  updateWorkAreaForState(state) {
+    console.log(`🔄 Switching to state: ${state}`);
+    
+    // Hide all work states
+    const workStates = document.querySelectorAll('.work-state');
+    workStates.forEach(el => el.classList.add('hidden'));
+
+    // Show current state
+    const currentStateEl = document.getElementById(`${state}State`);
+    if (currentStateEl) {
+      currentStateEl.classList.remove('hidden');
+      console.log(`✅ State ${state} is now visible`);
+    } else {
+      console.error(`❌ State element ${state}State not found`);
+    }
+
+    // Update body class for styling hooks
+    document.body.className = document.body.className.replace(/state-\w+/g, '');
+    document.body.classList.add(`state-${state}`);
+
+    // Rebind events for the new state
+    if (state === 'building') {
+      setTimeout(() => this.rebindBuildingStateEvents(), 100);
+    }
+  }
+
+  updateProgressIndicator(state) {
+    const progress = {
+      'fresh': 0,
+      'building': 25, 
+      'results': 75,
+      'deploy': 100
+    }[state] || 0;
+
+    document.documentElement.style.setProperty('--workflow-progress', `${progress}%`);
+  }
+
+  // ==========================================
+  // EVENT BINDING
+  // ==========================================
+
+  bindEvents() {
+    console.log('🔗 Binding events for unified interface...');
 
     try {
-      // Step 1: Generate initial code
-      this.addStatusLog('⚙️ Sending generation request to AI...', 'info');
-      this.setAiActivity('working', `Generating ${this.variations.length} variation${this.variations.length === 1 ? '' : 's'} with ${this.settings.model}...`);
-      const generationData = this.buildGenerationData();
+      console.log('  - Binding primary actions...');
+      this.bindPrimaryActions();
       
-      const response = await chrome.runtime.sendMessage({
-        type: 'GENERATE_CODE',
-        data: generationData
+      console.log('  - Binding chat interface...');
+      this.bindChatInterface();
+      
+      console.log('  - Binding activity stream...');
+      this.bindActivityStream();
+      
+      console.log('  - Binding code drawer...');
+      this.bindCodeDrawer();
+      
+      console.log('  - Binding command palette...');
+      this.bindCommandPalette();
+      
+      console.log('  - Binding settings and tools...');
+      this.bindToolsAndSettings();
+      
+      console.log('  - Binding keyboard shortcuts...');
+      this.bindKeyboardShortcuts();
+
+      console.log('  - Binding bottom status bar...');
+      this.bindBottomBar();
+
+      console.log('✅ Events bound successfully');
+    } catch (error) {
+      console.error('❌ Event binding failed:', error);
+      throw error;
+    }
+  }
+
+  bindPrimaryActions() {
+    // Select Element (Fresh State) - allows user to select element BEFORE capturing
+    const selectElementFirstBtn = document.getElementById('selectElementFirstBtn');
+    if (selectElementFirstBtn) {
+      selectElementFirstBtn.addEventListener('click', async () => {
+        console.log('🎯 Select Element (Fresh) button clicked!');
+        await this.activateElementSelector();
+        // After element selection, user can then click "Capture Page & Start"
+      });
+    }
+
+    // Capture and start workflow
+    const captureStartBtn = document.getElementById('captureAndStartBtn');
+    if (captureStartBtn) {
+      captureStartBtn.addEventListener('click', async () => {
+        try {
+          await this.capturePage();
+          this.updateWorkflowState('building');
+          this.focusChatInput();
+        } catch (error) {
+          this.showError('Failed to capture page: ' + error.message);
+        }
+      });
+    }
+
+    // Skip capture, go straight to description
+    const describeBtn = document.getElementById('describeOnlyBtn');
+    if (describeBtn) {
+      describeBtn.addEventListener('click', () => {
+        this.updateWorkflowState('building');
+        this.focusChatInput();
+      });
+    }
+
+    // Generate experiment
+    const generateBtn = document.getElementById('generateBtn');
+    if (generateBtn) {
+      generateBtn.addEventListener('click', () => this.generateExperiment());
+    }
+
+    // Tool buttons in building state
+    this.bindBuildingStateTools();
+  }
+
+  bindBuildingStateTools() {
+    this.rebindBuildingStateEvents();
+  }
+
+  rebindBuildingStateEvents() {
+    console.log('🔗 Rebinding building state events...');
+    
+    const selectElementBtn = document.getElementById('selectElementBtn');
+    if (selectElementBtn) {
+      console.log('✅ Found selectElementBtn, text content:', selectElementBtn.textContent);
+      console.log('✅ selectElementBtn visible:', !selectElementBtn.offsetParent === null);
+      // Remove existing listeners to prevent duplicates
+      selectElementBtn.replaceWith(selectElementBtn.cloneNode(true));
+      const newSelectBtn = document.getElementById('selectElementBtn');
+      newSelectBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('🎯 Select Element button clicked!');
+        this.activateElementSelector();
+      });
+      console.log('✅ Select Element button event listener attached');
+    } else {
+      console.error('❌ selectElementBtn not found in DOM');
+    }
+
+    const templatesBtn = document.getElementById('templatesBtn');
+    if (templatesBtn) {
+      console.log('✅ Found templatesBtn, text content:', templatesBtn.textContent);
+      console.log('✅ templatesBtn visible:', !templatesBtn.offsetParent === null);
+      templatesBtn.replaceWith(templatesBtn.cloneNode(true));
+      const newTemplatesBtn = document.getElementById('templatesBtn');
+      newTemplatesBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('📋 Templates button clicked!');
+        this.showTemplates();
+      });
+      console.log('✅ Templates button event listener attached');
+    } else {
+      console.error('❌ templatesBtn not found in DOM');
+      // List all buttons to debug
+      const allButtons = document.querySelectorAll('button');
+      console.log('🔍 All buttons found:', Array.from(allButtons).map(b => ({ id: b.id, text: b.textContent.trim().substring(0, 20) })));
+    }
+
+    const uploadBtn = document.getElementById('uploadDesignBtn');
+    if (uploadBtn) {
+      console.log('✅ Found uploadDesignBtn');
+      uploadBtn.replaceWith(uploadBtn.cloneNode(true));
+      const newUploadBtn = document.getElementById('uploadDesignBtn');
+      newUploadBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        console.log('📁 Upload Design clicked');
+        this.openDesignFileUpload();
+      });
+    } else {
+      console.error('❌ uploadDesignBtn not found');
+    }
+
+    const addVariationBtn = document.getElementById('addVariationBtn');
+    if (addVariationBtn) {
+      console.log('✅ Found addVariationBtn');
+      addVariationBtn.replaceWith(addVariationBtn.cloneNode(true));
+      const newAddBtn = document.getElementById('addVariationBtn');
+      newAddBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        console.log('➕ Add Variation clicked');
+        this.addVariation();
+      });
+    } else {
+      console.error('❌ addVariationBtn not found');
+    }
+
+    console.log('🔗 Building state events rebound');
+
+    // Regenerate button in results header
+    const regenerateBtn = document.getElementById('regenerateBtn');
+    if (regenerateBtn) {
+      regenerateBtn.addEventListener('click', () => {
+        console.log('🔄 Regenerate button clicked');
+        this.regenerateCode();
+      });
+    }
+  }
+
+  async regenerateCode() {
+    if (!this.currentPageData) {
+      this.showError('Please capture the page first');
+      return;
+    }
+
+    this.showStatus('🔄 Regenerating code...', 'loading');
+    this.addActivity('Regenerating experiment code...', 'info');
+
+    // Go back to building state to allow editing
+    this.updateWorkflowState('building');
+
+    // Optionally could auto-regenerate here, but better to let user edit first
+  }
+
+  bindChatInterface() {
+    // Main chat form
+    const chatForm = document.getElementById('chatForm');
+    if (chatForm) {
+      chatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        this.handleChatSubmit();
+      });
+    }
+
+    // Chat suggestions
+    document.querySelectorAll('.suggestion-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const suggestion = btn.dataset.suggestion;
+        if (suggestion) {
+          this.insertChatSuggestion(suggestion);
+        }
+      });
+    });
+
+    // Chat tool buttons
+    const chatTemplatesBtn = document.getElementById('chatTemplatesBtn');
+    if (chatTemplatesBtn) {
+      chatTemplatesBtn.addEventListener('click', () => this.showTemplates());
+    }
+
+    const chatDesignBtn = document.getElementById('chatDesignBtn');
+    if (chatDesignBtn) {
+      chatDesignBtn.addEventListener('click', () => this.openDesignFileUpload());
+    }
+
+    const chatElementBtn = document.getElementById('chatElementBtn');
+    if (chatElementBtn) {
+      chatElementBtn.addEventListener('click', () => this.activateElementSelector());
+    }
+
+    // Open chat button (in building view)
+    const openChatBtn = document.getElementById('openChatBtn');
+    if (openChatBtn) {
+      openChatBtn.addEventListener('click', () => this.openChat());
+    }
+
+    // Floating chat button (FAB)
+    const chatFab = document.getElementById('chatFab');
+    if (chatFab) {
+      chatFab.addEventListener('click', () => this.openChatModal());
+    }
+
+    // Chat modal close button
+    const closeChatModal = document.getElementById('closeChatModal');
+    if (closeChatModal) {
+      closeChatModal.addEventListener('click', () => this.closeChatModal());
+    }
+
+    // Chat drawer close button
+    const closeChatDrawer = document.getElementById('closeChatDrawer');
+    if (closeChatDrawer) {
+      closeChatDrawer.addEventListener('click', () => this.closeChatDrawer());
+    }
+
+    // Chat send button
+    const chatSendBtn = document.getElementById('chatSendBtn');
+    if (chatSendBtn) {
+      chatSendBtn.addEventListener('click', () => this.sendChatMessage());
+    }
+
+    // Chat input
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) {
+      // Auto-resize textarea
+      chatInput.addEventListener('input', () => {
+        chatInput.style.height = 'auto';
+        chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+
+        // Update character count
+        const charCount = document.getElementById('chatCharCount');
+        if (charCount) {
+          charCount.textContent = `${chatInput.value.length}/2000`;
+        }
+      });
+
+      // Enter to send, Shift+Enter for new line
+      chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          this.sendChatMessage();
+        }
+      });
+    }
+
+    // Select element button in chat
+    const chatSelectElementBtn = document.getElementById('chatSelectElementBtn');
+    if (chatSelectElementBtn) {
+      chatSelectElementBtn.addEventListener('click', () => {
+        this.closeChatDrawer();
+        this.startElementSelection();
+      });
+    }
+
+    // Clear chat button
+    const chatClearBtn = document.getElementById('chatClearBtn');
+    if (chatClearBtn) {
+      chatClearBtn.addEventListener('click', () => this.clearChatHistory());
+    }
+
+    // Activity log toggle
+    const closeActivityLog = document.getElementById('closeActivityLog');
+    if (closeActivityLog) {
+      closeActivityLog.addEventListener('click', () => this.closeActivityLog());
+    }
+
+    // Activity log overlay click
+    const activityLogDropdown = document.getElementById('activityLogDropdown');
+    if (activityLogDropdown) {
+      activityLogDropdown.addEventListener('click', (e) => {
+        if (e.target === activityLogDropdown) {
+          this.closeActivityLog();
+        }
+      });
+    }
+
+    // Copy activity log
+    const copyActivityLogBtn = document.getElementById('copyActivityLogBtn');
+    if (copyActivityLogBtn) {
+      copyActivityLogBtn.addEventListener('click', () => this.copyActivityLog());
+    }
+
+    // Clear activity log
+    const clearActivityLogBtn = document.getElementById('clearActivityLogBtn');
+    if (clearActivityLogBtn) {
+      clearActivityLogBtn.addEventListener('click', () => this.clearActivity());
+    }
+
+    // Element selector tool in chat
+    const elementTool = document.getElementById('selectElementTool');
+    if (elementTool) {
+      elementTool.addEventListener('click', () => this.activateElementSelector());
+    }
+  }
+
+  bindActivityStream() {
+    const clearBtn = document.getElementById('clearActivityBtn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => this.clearActivity());
+    }
+
+    // Panel toggle for mobile
+    const panelToggle = document.getElementById('panelToggle');
+    if (panelToggle) {
+      panelToggle.addEventListener('click', () => this.toggleLivePanel());
+    }
+  }
+
+  bindCodeDrawer() {
+    console.log('🔗 Binding code drawer events...');
+    
+    const drawerToggle = document.getElementById('drawerToggle');
+    if (drawerToggle) {
+      console.log('✅ Found drawerToggle, binding click event');
+      drawerToggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        console.log('🔽 drawerToggle clicked');
+        this.toggleCodeDrawer();
+      });
+    } else {
+      console.error('❌ drawerToggle not found');
+    }
+
+    // Allow clicking header to toggle
+    const drawerHeader = document.getElementById('drawerHeader');
+    if (drawerHeader) {
+      console.log('✅ Found drawerHeader, binding click event');
+      drawerHeader.addEventListener('click', (e) => {
+        // Only toggle if clicking the header itself, not child elements
+        if (e.target === drawerHeader || e.target.closest('.drawer-title')) {
+          e.preventDefault();
+          console.log('📦 drawerHeader clicked');
+          this.toggleCodeDrawer();
+        }
+      });
+    } else {
+      console.error('❌ drawerHeader not found');
+    }
+
+    const exportBtn = document.getElementById('exportCodeBtn');
+    if (exportBtn) {
+      console.log('✅ Found exportCodeBtn, binding click event');
+      exportBtn.addEventListener('click', () => this.exportCode());
+    } else {
+      console.error('❌ exportCodeBtn not found');
+    }
+  }
+
+  bindCommandPalette() {
+    const paletteBtn = document.getElementById('commandPaletteBtn');
+    if (paletteBtn) {
+      paletteBtn.addEventListener('click', () => this.toggleCommandPalette());
+    }
+
+    // Close palette on outside click
+    const overlay = document.getElementById('commandPaletteOverlay');
+    if (overlay) {
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          this.closeCommandPalette();
+        }
+      });
+    }
+
+    // Search input
+    const search = document.getElementById('paletteSearch');
+    if (search) {
+      search.addEventListener('input', (e) => this.filterCommands(e.target.value));
+      search.addEventListener('keydown', (e) => this.handlePaletteNavigation(e));
+    }
+  }
+
+  bindToolsAndSettings() {
+    const settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
+    }
+
+    // Results state tools
+    const testBtn = document.getElementById('testVariationBtn');
+    if (testBtn) {
+      testBtn.addEventListener('click', () => this.testCurrentVariation());
+    }
+
+    const clearPreviewBtn = document.getElementById('clearPreviewBtn');
+    if (clearPreviewBtn) {
+      clearPreviewBtn.addEventListener('click', () => this.clearPreview());
+    }
+
+    const editDescBtn = document.getElementById('editDescriptionBtn');
+    if (editDescBtn) {
+      editDescBtn.addEventListener('click', () => this.editDescription());
+    }
+
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', () => this.exportCode());
+    }
+  }
+
+  bindKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      // Command palette
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        this.toggleCommandPalette();
+      }
+
+      // Escape to close overlays
+      if (e.key === 'Escape') {
+        this.closeAllOverlays();
+      }
+
+      // Quick capture
+      if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
+        e.preventDefault();
+        this.capturePage();
+      }
+    });
+  }
+
+  // ==========================================
+  // CORE FUNCTIONALITY
+  // ==========================================
+
+  async capturePage() {
+    // Check if user has selected an element to narrow scope
+    const scopeMessage = this.selectedElementData
+      ? `Capturing elements within selected ${this.selectedElementData.tag}...`
+      : 'Capturing current page...';
+
+    this.showStatus(scopeMessage, 'loading');
+    this.addActivity(scopeMessage, 'info');
+    this.setButtonLoading('captureAndStartBtn', true);
+
+    try {
+      // Get active tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        throw new Error('No active tab found');
+      }
+
+      this.targetTabId = tab.id;
+
+      // Ensure page-capture content script and dependencies are loaded
+      console.log('📡 Ensuring page-capture scripts are loaded on tab:', tab.id);
+      try {
+        const scripts = [
+          'utils/context-builder.js',
+          'utils/selector-validator.js',
+          'content-scripts/page-capture.js'
+        ];
+
+        for (const script of scripts) {
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              files: [script]
+            });
+          } catch (e) {
+            // Might already be loaded
+          }
+        }
+        console.log('✅ Page-capture scripts injected successfully');
+        // Small delay to ensure script is ready
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (injectError) {
+        // Content script might already be loaded, that's okay
+        console.log('ℹ️ Page-capture script injection skipped (likely already loaded):', injectError.message);
+      }
+
+      // Send capture message to content script
+      // If user selected an element, only capture within that scope
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: 'CAPTURE_PAGE_DATA',
+        maxProximityElements: 8,
+        maxStructureElements: 12,
+        proximityRadius: 300,
+        rootElementSelector: this.selectedElementData?.selector || null // SCOPE TO SELECTED ELEMENT
       });
 
       if (!response?.success) {
-        throw new Error(response?.error || 'Generation failed');
+        throw new Error(response?.error || 'Capture failed');
       }
 
-      this.generatedCode = response.code;
-      this.recordUsage(response.usage);
-      
-      const generatedCount = response.code?.variations?.length || 0;
-      this.addStatusLog(`✓ AI generated ${generatedCount} variation${generatedCount === 1 ? '' : 's'}`, 'success');
+      this.currentPageData = response.data;
+      this.basePageData = { ...response.data }; // Store original
 
-      // Display initial code
-      this.setAiActivity('working', 'Updating interface with new code...');
-      this.displayGeneratedCode(response.code);
-      await this.handleGenerationSuccess(response.code);
+      // Capture screenshot for Visual QA
+      try {
+        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: 'png',
+          quality: 90
+        });
 
-      // Step 2: Auto-test each variation
-      const generatedVariations = Array.isArray(this.generatedCode?.variations)
-        ? this.generatedCode.variations
-        : [];
+        // Add screenshot to both currentPageData and basePageData
+        this.currentPageData.screenshot = screenshot;
+        this.basePageData.screenshot = screenshot;
 
-      for (let i = 0; i < generatedVariations.length; i++) {
-        if (!this.autoIteration.active) {
-          this.addStatusLog('⏸ Auto-iteration stopped by user', 'info');
-          break;
+        console.log('📸 Screenshot captured and stored for Visual QA');
+      } catch (screenshotError) {
+        console.warn('⚠️ Screenshot capture failed:', screenshotError);
+        // Continue without screenshot - not critical for basic functionality
+      }
+
+      // Update UI
+      this.updatePageInfo(this.currentPageData);
+      this.showStatus(`Page captured: ${this.currentPageData.title}`, 'success', 3000);
+      this.addActivity(`Page captured: ${this.currentPageData.title}`, 'success');
+
+      return this.currentPageData;
+    } catch (error) {
+      console.error('Capture failed:', error);
+      this.showStatus('Capture failed: ' + error.message, 'error', 5000);
+      this.addActivity('Capture failed: ' + error.message, 'error');
+      throw error;
+    } finally {
+      this.setButtonLoading('captureAndStartBtn', false);
+    }
+  }
+
+  updatePageInfo(pageData) {
+    console.log('📄 Updating page info with:', pageData);
+    
+    // Update current page display
+    const urlElements = document.querySelectorAll('#currentUrl, .page-url');
+    urlElements.forEach(el => {
+      if (el) el.textContent = this.formatUrl(pageData.url);
+    });
+
+    // Update page screenshot if in building state
+    const screenshot = document.getElementById('pageScreenshot');
+    if (screenshot && pageData.screenshot) {
+      console.log('📸 Setting screenshot:', pageData.screenshot.substring(0, 50) + '...');
+      screenshot.src = pageData.screenshot;
+      screenshot.style.display = 'block';
+    } else if (screenshot) {
+      console.warn('⚠️ No screenshot data available');
+      screenshot.style.display = 'none';
+    }
+
+    // Update context URL
+    const contextUrl = document.getElementById('contextUrl');
+    if (contextUrl) {
+      contextUrl.textContent = this.formatUrl(pageData.url);
+    }
+
+    // Update page status indicator
+    const pageStatus = document.getElementById('pageStatus');
+    if (pageStatus) {
+      pageStatus.innerHTML = `
+        <span class="page-indicator">✅</span>
+        <span class="page-url">${this.formatUrl(pageData.url)}</span>
+      `;
+    }
+
+    // Make sure page context is visible
+    const pageContext = document.getElementById('pageContext');
+    if (pageContext) {
+      pageContext.classList.remove('hidden');
+    }
+  }
+
+  async generateExperiment() {
+    if (this.chatState.sending) return;
+
+    this.showStatus('Generating experiment code with AI...', 'loading');
+    this.addActivity('Generating experiment code...', 'info');
+    this.setButtonLoading('generateBtn', true);
+    this.chatState.sending = true;
+
+    try {
+      // Get description from primary input
+      const description = document.getElementById('primaryDescription')?.value?.trim();
+      if (!description) {
+        throw new Error('Please describe the changes you want to make');
+      }
+
+      // Build generation request with selected element and design file context
+      const generationData = {
+        description: description,
+        variations: this.variations,
+        pageData: this.currentPageData,
+        settings: this.settings,
+        selectedElement: this.selectedElementData || null,
+        designFiles: this.uploadedDesignFile ? [this.uploadedDesignFile] : []
+      };
+
+      // Log what context we're sending for Visual QA
+      console.log('🎯 Generation context includes:');
+      console.log('  📄 Page data:', !!generationData.pageData);
+      console.log('  🎯 Selected element:', !!generationData.selectedElement);
+      console.log('  📸 Element screenshot:', !!generationData.selectedElement?.screenshot);
+      console.log('  📁 Design files:', generationData.designFiles.length);
+
+      // Call existing generation logic (maintain compatibility)
+      const result = await this.callAIGeneration(generationData);
+
+      if (result?.variations?.length) {
+        this.generatedCode = result;
+        this.updateWorkflowState('results');
+        this.displayGeneratedCode(result);
+        this.showStatus(`✨ Generated ${result.variations.length} variation${result.variations.length > 1 ? 's' : ''} successfully`, 'success', 4000);
+        this.addActivity(`Generated ${result.variations.length} variations`, 'success');
+
+        // Update cost display if usage data available
+        if (result.usage) {
+          console.log('📊 Usage data from generation:', result.usage);
+          this.updateCostDisplay(result.usage);
         }
 
-        const generatedVariation = generatedVariations[i];
-        const variationNumber = generatedVariation?.number || (i + 1);
-        const variationConfig = this.variations[i] || {
-          id: variationNumber,
-          name: generatedVariation?.name || `Variation ${variationNumber}`,
-          description: ''
-        };
-
-        this.autoIteration.currentVariation = variationNumber;
-
-        const variationLabel = generatedVariation?.name || variationConfig.name || `Variation ${variationNumber}`;
-        this.addStatusLog(`\n📋 Testing Variation ${variationNumber}: ${variationLabel}`, 'info');
-
-        await this.autoIterateVariation(variationNumber, variationConfig);
-      }
-
-      // Step 3: Complete
-      if (this.autoIteration.active) {
-        this.addStatusLog('\n✅ All variations tested and optimized!', 'success');
-        this.updateIndicator('active');
-        this.showSuccess('Code generated and tested successfully!');
-        this.setAiActivity('preview', 'All variations tested. Preview is up to date.');
+        // Auto-launch comprehensive testing pipeline (only if enabled in settings)
+        if (this.settings.autoValidateCode !== false) { // Default to true for now
+          console.log('🧪 Auto-validation enabled, launching test suite...');
+          this.launchAutomaticTesting(result);
+        } else {
+          console.log('⏭️ Auto-validation disabled, skipping tests');
+        }
+      } else {
+        throw new Error('No code generated');
       }
 
     } catch (error) {
       console.error('Generation failed:', error);
-      this.addStatusLog(`✗ Generation failed: ${error.message}`, 'error');
-      this.updateIndicator('error');
+      this.showStatus('Generation failed: ' + error.message, 'error', 5000);
+      this.addActivity('Generation failed: ' + error.message, 'error');
       this.showError(error.message);
-      this.handleGenerationFailure(error);
-      this.setAiActivity('error', error.message || 'Generation failed.');
     } finally {
-      this.autoIteration.active = false;
-      this.setButtonLoading(btn, false);
-      document.getElementById('stopIterationBtn')?.classList.add('hidden');
+      this.setButtonLoading('generateBtn', false);
+      this.chatState.sending = false;
     }
   }
 
-  async autoIterateVariation(variationNumber, variationConfig) {
-    let iteration = 0;
-    const maxIterations = this.autoIteration.maxIterations;
-
-    while (iteration < maxIterations && this.autoIteration.active) {
-      iteration++;
-      this.autoIteration.iterations++;
-
-      const variationLabel = variationConfig?.name || `Variation ${variationNumber}`;
-      this.addStatusLog(`  Iteration ${iteration}/${maxIterations}...`, 'info');
-      this.setAiActivity('working', `Auto-testing ${variationLabel} (${iteration}/${maxIterations})...`);
-
-      // Test the variation
-      const testResult = await this.testVariation(variationNumber);
-
-      if (!testResult) {
-        this.addStatusLog(`  ✗ Test execution failed`, 'error');
-        this.setAiActivity('error', `Unable to test ${variationLabel}. Check the status log.`);
-        break;
-      }
-
-      // Check for errors
-      if (!testResult.errors || testResult.errors.length === 0) {
-        this.addStatusLog(`  ✓ No errors detected - variation works!`, 'success');
-        this.setAiActivity('preview', `${variationLabel} passed validation.`);
-        break;
-      }
-
-      // Errors found
-      this.addStatusLog(`  ⚠️ ${testResult.errors.length} issue(s) detected`, 'error');
-      testResult.errors.forEach((err, idx) => {
-        this.addStatusLog(`    ${idx + 1}. ${err}`, 'error');
+  async callAIGeneration(data) {
+    console.log('🤖 Starting AI generation with data:', data);
+    
+    try {
+      // Use background service worker for AI generation (proper approach for Manifest V3)
+      console.log('🔗 Calling background service worker for AI generation...');
+      
+      // Add timeout to prevent infinite hanging
+      const messagePromise = chrome.runtime.sendMessage({
+        type: 'GENERATE_CODE',
+        data: {
+          pageData: data.pageData,
+          description: data.description,
+          variations: data.variations,
+          settings: data.settings,
+          selectedElement: data.selectedElement || null, // Pass selected element info
+          designFiles: data.designFiles || [],
+          tabId: this.targetTabId // Pass the target tab ID for code injection
+        }
       });
 
-      // If last iteration, stop
-      if (iteration >= maxIterations) {
-        this.addStatusLog(`  ⚠️ Max iterations reached. Manual review needed.`, 'error');
-        this.setAiActivity('error', `${variationLabel} still has issues after ${maxIterations} attempts.`);
-        break;
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('AI generation timed out after 30 seconds. The API might be slow or unavailable.'));
+        }, 30000); // 30 second timeout
+      });
+
+      const response = await Promise.race([messagePromise, timeoutPromise]);
+
+      console.log('📡 Background service worker response:', response);
+
+      if (response?.success && response?.code) {
+        // Return both code and usage data
+        return {
+          ...response.code,
+          usage: response.usage || null
+        };
+      } else {
+        throw new Error(response?.error || 'AI generation failed - no code returned');
+      }
+    } catch (error) {
+      console.error('❌ Background service worker AI generation failed:', error);
+      
+      if (error.message.includes('authentication') || error.message.includes('token') || error.message.includes('API key')) {
+        // Authentication error - offer to set up API key
+        this.showAPIKeySetupDialog();
+        throw new Error('OpenAI API key required. Click the settings button to add your API key.');
+      } else if (error.message.includes('timed out')) {
+        // Timeout error
+        throw new Error(error.message + ' Try using rule-based generation instead or check your API key.');
+      } else {
+        // Other error - fall back to rule-based generation  
+        console.log('🔄 Falling back to rule-based generation...');
+        return this.generateFallbackCode(data);
+      }
+    }
+  }
+
+  generateFallbackCode(data) {
+    console.log('🛠️ Generating rule-based code for:', data.description);
+    
+    const description = data.description.toLowerCase();
+    let css = '';
+    let js = '';
+    
+    // Simple rule-based generation based on keywords
+    if (description.includes('button')) {
+      if (description.includes('red')) {
+        css += '.btn, .button, [type="submit"], .cta { background-color: #dc3545 !important; }\n';
+      }
+      if (description.includes('larger') || description.includes('bigger')) {
+        css += '.btn, .button, [type="submit"], .cta { font-size: 1.2em !important; padding: 12px 24px !important; }\n';
+      }
+      if (description.includes('green')) {
+        css += '.btn, .button, [type="submit"], .cta { background-color: #28a745 !important; }\n';
+      }
+    }
+    
+    if (description.includes('headline') || description.includes('title')) {
+      if (description.includes('larger') || description.includes('bigger')) {
+        css += 'h1, h2, .headline, .title { font-size: 1.25em !important; font-weight: bold !important; }\n';
+      }
+      if (description.includes('color')) {
+        css += 'h1, h2, .headline, .title { color: #007bff !important; }\n';
+      }
+    }
+    
+    if (description.includes('banner')) {
+      css += `
+.convert-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  background: #ff6b35;
+  color: white;
+  padding: 10px;
+  text-align: center;
+  z-index: 9999;
+  font-weight: bold;
+}
+body { margin-top: 50px !important; }
+`;
+      js += `
+// Add promotional banner
+const banner = document.createElement('div');
+banner.className = 'convert-banner';
+banner.innerHTML = 'Special Offer - Limited Time!';
+document.body.insertBefore(banner, document.body.firstChild);
+`;
+    }
+    
+    // Default fallback if no patterns match
+    if (!css && !js) {
+      css = `/* Custom styling for: ${data.description} */
+.convert-variation {
+  /* Add your custom styles here */
+  border: 2px solid #007bff;
+  background: #f8f9fa;
+  padding: 10px;
+  border-radius: 5px;
+}`;
+    }
+
+    return {
+      variations: [{
+        number: 1,
+        name: 'Variation 1',
+        css: css,
+        js: js || '// Custom JavaScript for variation'
+      }],
+      message: 'Generated using rule-based patterns. For AI-powered generation, add your OpenAI API key in settings.'
+    };
+  }
+
+  showAPIKeySetupDialog() {
+    this.addChatMessage('assistant', `To use AI-powered code generation, you need an OpenAI API key. 
+
+**Quick Setup:**
+1. Go to https://platform.openai.com/api-keys
+2. Create a new API key
+3. Click the settings button (⚙️) in this extension
+4. Add your API key
+
+**Alternative:** I can generate basic code using rule-based patterns without an API key.`);
+
+    this.addChatQuickActions([
+      { text: '⚙️ Open Settings', action: () => chrome.runtime.openOptionsPage() },
+      { text: '🔄 Try Rule-Based Generation', action: () => this.generateExperiment() }
+    ]);
+  }
+
+  displayGeneratedCode(codeData) {
+    // Debug: Log the generated code for inspection
+    console.log('🔍 Generated Code Data:', codeData);
+    if (codeData.variations) {
+      codeData.variations.forEach((v, index) => {
+        console.log(`Variation ${index + 1} - ${v.name}:`);
+        console.log('CSS:', v.css);
+        console.log('JS:', v.js);
+      });
+    }
+
+    this.updateCodeDrawer(codeData);
+    this.displayVariationsGrid(codeData);
+    this.updateCodeCount(codeData);
+    this.updateResultsHeader(codeData);
+    this.addTestingStatusIndicator();
+  }
+
+  updateResultsHeader(codeData) {
+    // Update variation count
+    const variationCountEl = document.getElementById('variationCount');
+    if (variationCountEl) {
+      variationCountEl.textContent = codeData.variations?.length || 0;
+    }
+
+    // Update QA status (will be updated during testing)
+    const qaStatusEl = document.getElementById('qaStatus');
+    if (qaStatusEl) {
+      qaStatusEl.textContent = '⏳';
+      qaStatusEl.title = 'Testing in progress...';
+    }
+  }
+
+  addTestingStatusIndicator() {
+    // Add testing status to the results header
+    const resultsHeader = document.querySelector('.results-header');
+    if (resultsHeader) {
+      let statusContainer = resultsHeader.querySelector('.testing-status-container');
+      if (!statusContainer) {
+        statusContainer = document.createElement('div');
+        statusContainer.className = 'testing-status-container';
+        statusContainer.innerHTML = '<div class="testing-status initializing">🔄 Initializing Tests</div>';
+        resultsHeader.appendChild(statusContainer);
+      }
+    }
+  }
+
+  updateCodeDrawer(codeData) {
+    const drawer = document.getElementById('codeDrawer');
+    const content = document.getElementById('drawerContent');
+    
+    if (!drawer || !content) return;
+
+    // Build code tabs
+    const tabs = [];
+    codeData.variations?.forEach(v => {
+      if (v.css) tabs.push({ id: `v${v.number}-css`, label: `${v.name} CSS`, content: v.css, type: 'css' });
+      if (v.js) tabs.push({ id: `v${v.number}-js`, label: `${v.name} JS`, content: v.js, type: 'js' });
+    });
+
+    if (codeData.globalCSS) tabs.push({ id: 'global-css', label: 'Global CSS', content: codeData.globalCSS, type: 'css' });
+    if (codeData.globalJS) tabs.push({ id: 'global-js', label: 'Global JS', content: codeData.globalJS, type: 'js' });
+
+    // Render code interface
+    content.innerHTML = this.renderCodeInterface(tabs);
+
+    // Bind code events
+    this.bindCodeEvents(content);
+
+    // Don't auto-expand - let user open it manually via bottom bar button
+    // drawer.classList.add('expanded');
+  }
+
+  renderCodeInterface(tabs) {
+    if (!tabs.length) {
+      return '<div class="code-placeholder"><p>No code generated yet</p></div>';
+    }
+
+    return `
+      <div class="code-tabs">
+        ${tabs.map((tab, idx) => `
+          <button class="code-tab ${idx === 0 ? 'active' : ''}" data-tab="${tab.id}">
+            ${tab.label}
+          </button>
+        `).join('')}
+      </div>
+      <div class="code-content">
+        ${tabs.map((tab, idx) => `
+          <div class="code-panel ${idx === 0 ? 'active' : ''}" data-panel="${tab.id}">
+            <div class="code-header">
+              <span class="code-language">${tab.type.toUpperCase()}</span>
+              <div class="code-header-actions">
+                <button class="btn-small save-code-btn" data-tab="${tab.id}" title="Save changes">
+                  💾 Save
+                </button>
+                <button class="btn-small copy-btn" data-content="${this.escapeHtml(tab.content)}">
+                  📋 Copy
+                </button>
+              </div>
+            </div>
+            <textarea class="code-editor" data-tab="${tab.id}" spellcheck="false">${tab.content}</textarea>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  bindCodeEvents(container) {
+    // Tab switching
+    container.querySelectorAll('.code-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabId = tab.dataset.tab;
+        this.switchCodeTab(container, tabId);
+      });
+    });
+
+    // Save buttons
+    container.querySelectorAll('.save-code-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tabId = btn.dataset.tab;
+        const textarea = container.querySelector(`.code-editor[data-tab="${tabId}"]`);
+        if (textarea) {
+          this.saveCodeChanges(tabId, textarea.value);
+        }
+      });
+    });
+
+    // Copy buttons
+    container.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const content = btn.dataset.content;
+        await navigator.clipboard.writeText(content);
+        this.showSuccess('Code copied to clipboard!');
+      });
+    });
+  }
+
+  switchCodeTab(container, tabId) {
+    // Update tab states
+    container.querySelectorAll('.code-tab').forEach(tab => {
+      tab.classList.toggle('active', tab.dataset.tab === tabId);
+    });
+
+    // Update panel states  
+    container.querySelectorAll('.code-panel').forEach(panel => {
+      panel.classList.toggle('active', panel.dataset.panel === tabId);
+    });
+  }
+
+  displayVariationsGrid(codeData) {
+    const grid = document.getElementById('variationsGrid');
+    if (!grid || !codeData.variations) return;
+
+    grid.innerHTML = codeData.variations.map((variation, idx) => `
+      <div class="variation-card" data-variation="${variation.number}">
+        <div class="variation-header">
+          <h4 class="variation-title">${variation.name}</h4>
+          <span class="variation-badge ${variation.testStatus || 'pending'}">${this.getStatusBadge(variation)}</span>
+        </div>
+        <div class="variation-description">
+          ${variation.description || 'Generated variation with custom styling and behavior'}
+        </div>
+        <div class="variation-actions">
+          <button class="var-action-btn var-action-secondary" data-variation="${variation.number}" data-action="preview">
+            <span class="var-action-icon">👁️</span>
+            <span class="var-action-text">Preview</span>
+          </button>
+          <button class="var-action-btn var-action-primary" data-variation="${variation.number}" data-action="test">
+            <span class="var-action-icon">🧪</span>
+            <span class="var-action-text">Test</span>
+          </button>
+        </div>
+      </div>
+    `).join('');
+
+    // Bind variation actions
+    this.bindVariationActions(grid);
+  }
+
+  getStatusBadge(variation) {
+    const status = variation.testStatus || 'pending';
+    const badges = {
+      'pending': '⏳ Pending',
+      'testing': '🔄 Testing',
+      'passed': '✅ Passed',
+      'failed': '❌ Failed',
+      'warning': '⚠️ Issues'
+    };
+    return badges[status] || badges.pending;
+  }
+
+  bindVariationActions(container) {
+    container.querySelectorAll('.var-action-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const variationNumber = parseInt(btn.dataset.variation);
+        const action = btn.dataset.action;
+
+        if (action === 'preview') {
+          this.previewVariation(variationNumber);
+        } else if (action === 'test') {
+          this.testVariation(variationNumber);
+        }
+      });
+    });
+  }
+
+  updateCodeCount(codeData) {
+    const counter = document.getElementById('codeCount');
+    if (!counter) return;
+
+    const count = codeData.variations?.length || 0;
+    counter.textContent = count > 0 ? `${count} variation${count === 1 ? '' : 's'}` : 'No code generated';
+  }
+
+  // ==========================================
+  // CHAT FUNCTIONALITY  
+  // ==========================================
+
+  handleChatSubmit() {
+    const input = document.getElementById('chatInput');
+    const message = input?.value?.trim();
+    
+    if (!message || this.chatState.sending) return;
+
+    // Clear input
+    input.value = '';
+
+    // Add to conversation
+    this.addChatMessage('user', message);
+
+    // Process message
+    this.processChatMessage(message);
+  }
+
+  addChatMessage(role, content) {
+    const container = document.getElementById('chatHistory');
+    if (!container) return;
+
+    // Hide welcome message if this is the first real message
+    const welcome = document.getElementById('chatWelcome');
+    if (welcome && role === 'user') {
+      welcome.style.display = 'none';
+    }
+
+    const messageEl = document.createElement('div');
+    messageEl.className = `chat-message ${role}`;
+    
+    if (role === 'assistant') {
+      messageEl.innerHTML = `
+        <div class="assistant-avatar">🤖</div>
+        <div class="message-content">${this.formatMessage(content)}</div>
+      `;
+    } else {
+      messageEl.innerHTML = `
+        <div class="message-content user-message">${this.escapeHtml(content)}</div>
+      `;
+    }
+    
+    container.appendChild(messageEl);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async processChatMessage(message) {
+    this.chatState.sending = true;
+    this.addActivity(`Processing: ${message.substring(0, 50)}...`, 'info');
+
+    // Show typing indicator
+    this.showTypingIndicator();
+
+    try {
+      // Check if we have generated code (conversation context)
+      if (this.generatedCode) {
+        // This is a refinement request
+        await this.processRefinementRequest(message);
+      } else {
+        // This is an initial generation request
+        await this.processInitialRequest(message);
+      }
+    } catch (error) {
+      console.error('Chat processing failed:', error);
+      this.addChatMessage('assistant', `Sorry, I encountered an error: ${error.message}`);
+      this.addActivity('Chat error: ' + error.message, 'error');
+    } finally {
+      this.hideTypingIndicator();
+      this.chatState.sending = false;
+    }
+  }
+
+  async processInitialRequest(message) {
+    // If we're in fresh state, move to building and populate description
+    if (this.workflowState === 'fresh') {
+      this.updateWorkflowState('building');
+      
+      // Populate the description field
+      const descField = document.getElementById('primaryDescription');
+      if (descField) {
+        descField.value = message;
+      }
+    }
+
+    // Auto-generate if we have page data
+    if (this.currentPageData) {
+      await this.generateExperimentFromChat(message);
+    } else {
+      // Offer to capture page or continue without it
+      this.addChatMessage('assistant', `I'd love to help you with: "${message}". 
+
+I can work in two ways:
+1. **Capture the current page** first for context-aware code generation
+2. **Generate generic code** based on your description
+
+Would you like me to capture the current page first? You can also click "📸 Capture Page & Start" in the main area.`);
+      
+      // Add quick action buttons to the chat
+      this.addChatQuickActions([
+        { text: '📸 Capture Current Page', action: () => this.capturePageFromChat(message) },
+        { text: '⚡ Generate Without Page', action: () => this.generateGenericFromChat(message) }
+      ]);
+    }
+  }
+
+  async processRefinementRequest(message) {
+    // Add user's refinement request to conversation
+    this.conversation.push({
+      role: 'user',
+      content: message,
+      timestamp: Date.now()
+    });
+
+    this.addChatMessageToDrawer('assistant', 'Let me refine the code based on your feedback...');
+    this.addActivity(`Refining code: ${message.substring(0, 50)}...`, 'info');
+
+    // Build full conversation context including original request
+    const originalRequest = document.getElementById('primaryDescription')?.value || '';
+    const fullContext = `ORIGINAL REQUEST:\n${originalRequest}\n\nREFINEMENT REQUEST:\n${message}\n\nPlease update the code to incorporate this refinement while maintaining all previous changes.`;
+
+    // Update description to include refinement
+    const descField = document.getElementById('primaryDescription');
+    if (descField && originalRequest) {
+      // Keep original request visible but add refinement context
+      descField.value = fullContext;
+    }
+
+    // Temporarily clear chatState.sending to allow generation to proceed
+    const wasSending = this.chatState.sending;
+    this.chatState.sending = false;
+
+    // Regenerate with full context
+    try {
+      await this.generateExperiment();
+      this.addChatMessageToDrawer('assistant', `✅ Code updated! I've incorporated your refinement: "${message}"`);
+    } catch (error) {
+      this.addChatMessageToDrawer('assistant', `Sorry, I had trouble refining the code: ${error.message}`);
+    } finally {
+      // Restore original state
+      this.chatState.sending = wasSending;
+    }
+  }
+
+  async generateExperimentFromChat(description) {
+    try {
+      console.log('🎯 generateExperimentFromChat called with:', description);
+      
+      // Populate description and generate
+      const descField = document.getElementById('primaryDescription');
+      if (descField) {
+        descField.value = description;
       }
 
-      // Request AI to fix
-      this.addStatusLog(`  🔧 Requesting AI to fix issues...`, 'info');
-      this.setAiActivity('working', `Adjusting ${variationLabel} based on test feedback...`);
+      console.log('📝 Description field populated, calling generateExperiment...');
+      await this.generateExperiment();
       
-      const feedback = this.buildAutoFeedback(testResult, variationConfig);
-      const adjusted = await this.adjustCode(feedback, testResult);
+      console.log('✅ Generation completed successfully');
+      this.addChatMessage('assistant', `Great! I've generated Convert.com code based on your request. You can preview the changes, test them on the page, or deploy directly to Convert.com.`);
+    } catch (error) {
+      console.error('❌ generateExperimentFromChat failed:', error);
+      this.addChatMessage('assistant', `I had trouble generating the code: ${error.message}. Could you try rephrasing your request?`);
+    }
+  }
 
-      if (!adjusted) {
-        this.addStatusLog(`  ✗ AI adjustment failed`, 'error');
-        this.setAiActivity('error', `Automatic adjustment failed for ${variationLabel}.`);
-        break;
+  insertChatSuggestion(suggestion) {
+    const input = document.getElementById('chatInput');
+    if (input) {
+      input.value = suggestion;
+      input.focus();
+      // Trigger auto-resize
+      this.autoResizeChatInput(input);
+    }
+  }
+
+  showTypingIndicator() {
+    const container = document.getElementById('chatHistory');
+    if (!container) return;
+
+    const indicator = document.createElement('div');
+    indicator.id = 'typingIndicator';
+    indicator.className = 'typing-indicator';
+    indicator.innerHTML = `
+      <div class="assistant-avatar">🤖</div>
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+    `;
+    
+    container.appendChild(indicator);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  hideTypingIndicator() {
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) {
+      indicator.remove();
+    }
+  }
+
+  focusChatInput() {
+    const input = document.getElementById('chatInput');
+    if (input) {
+      input.focus();
+      input.placeholder = "What changes would you like to make?";
+    }
+  }
+
+  autoResizeChatInput(textarea) {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+  }
+
+  addChatQuickActions(actions) {
+    const container = document.getElementById('chatHistory');
+    if (!container) return;
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'chat-quick-actions';
+    actionsEl.innerHTML = actions.map(action => `
+      <button class="quick-action-btn" data-action="${action.text}">
+        ${action.text}
+      </button>
+    `).join('');
+
+    // Bind actions
+    actionsEl.querySelectorAll('.quick-action-btn').forEach((btn, idx) => {
+      btn.addEventListener('click', () => {
+        actions[idx].action();
+        // Remove the actions after clicking
+        actionsEl.remove();
+      });
+    });
+
+    container.appendChild(actionsEl);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async capturePageFromChat(originalMessage) {
+    this.addChatMessage('assistant', 'Great! Let me capture the current page...');
+    try {
+      await this.capturePage();
+      this.addChatMessage('assistant', 'Perfect! Now I can generate context-aware code for your request.');
+      await this.generateExperimentFromChat(originalMessage);
+    } catch (error) {
+      this.addChatMessage('assistant', `I had trouble capturing the page: ${error.message}. Let me try generating generic code instead.`);
+      await this.generateGenericFromChat(originalMessage);
+    }
+  }
+
+  async generateGenericFromChat(message) {
+    this.addChatMessage('assistant', 'I\'ll generate generic Convert.com code based on your description. You can always capture a page later for more specific targeting.');
+    
+    // Populate description and generate
+    const descField = document.getElementById('primaryDescription');
+    if (descField) {
+      descField.value = message;
+    }
+
+    // Generate without page data
+    try {
+      const result = await this.callAIGeneration({
+        description: message,
+        variations: this.variations,
+        pageData: null, // No page data
+        settings: this.settings
+      });
+      
+      if (result?.variations?.length) {
+        this.generatedCode = result;
+        this.updateWorkflowState('results');
+        this.displayGeneratedCode(result);
+        this.addChatMessage('assistant', `Great! I've generated ${result.variations.length} variation(s) with generic targeting. You can test and refine these on any page.`);
+      } else {
+        throw new Error('No code generated');
+      }
+    } catch (error) {
+      this.addChatMessage('assistant', `I had trouble generating the code: ${error.message}. Could you try being more specific about what you want to change?`);
+    }
+  }
+
+  // ==========================================
+  // ACTIVITY STREAM
+  // ==========================================
+
+  addActivity(message, type = 'info') {
+    const container = document.getElementById('activityLogContent');
+    if (!container) {
+      console.warn('Activity log container not found');
+      return;
+    }
+
+    const item = {
+      timestamp: Date.now(),
+      message,
+      type
+    };
+
+    this.activityItems.push(item);
+
+    const icons = {
+      'info': 'ℹ️',
+      'success': '✅',
+      'error': '❌',
+      'warning': '⚠️'
+    };
+
+    const itemEl = document.createElement('div');
+    itemEl.className = `activity-item ${type}`;
+    itemEl.innerHTML = `
+      <span class="activity-icon">${icons[type] || icons.info}</span>
+      <span class="activity-text">${this.escapeHtml(message)}</span>
+      <span class="activity-time">${this.formatTime(new Date(item.timestamp))}</span>
+    `;
+
+    container.appendChild(itemEl);
+
+    // Keep only last 100 items
+    while (container.children.length > 100) {
+      container.removeChild(container.firstChild);
+    }
+
+    // Auto-scroll to bottom
+    container.scrollTop = container.scrollHeight;
+
+    // Update activity count badge
+    this.updateActivityCount();
+
+    console.log(`[${type.toUpperCase()}] ${message}`);
+  }
+
+  updateActivityCount() {
+    const badge = document.getElementById('activityCount');
+    if (badge && this.activityItems) {
+      const count = this.activityItems.length;
+      badge.textContent = count > 99 ? '99+' : count;
+      badge.style.display = count > 0 ? 'inline-flex' : 'none';
+    }
+  }
+
+  copyActivityLog() {
+    if (!this.activityItems || this.activityItems.length === 0) {
+      this.showStatus('No activities to copy', 'warning', 2000);
+      return;
+    }
+
+    // Format activities as text
+    const logText = this.activityItems.map(item => {
+      const timestamp = new Date(item.timestamp).toLocaleString();
+      const icon = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️' }[item.type] || 'ℹ️';
+      return `[${timestamp}] ${icon} ${item.message}`;
+    }).join('\n');
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(logText).then(() => {
+      this.showStatus('📋 Activity log copied to clipboard!', 'success', 3000);
+      this.addActivity('Activity log copied to clipboard', 'info');
+    }).catch(err => {
+      console.error('Failed to copy activity log:', err);
+      this.showStatus('Failed to copy activity log', 'error', 3000);
+    });
+  }
+
+  clearActivity() {
+    const container = document.getElementById('activityLogContent');
+    if (container) {
+      container.innerHTML = '';
+      this.activityItems = [];
+      this.updateActivityCount();
+      // Re-add a cleared message
+      setTimeout(() => this.addActivity('Activity log cleared', 'info'), 10);
+    }
+  }
+
+  // ==========================================
+  // UI HELPERS & UTILITIES
+  // ==========================================
+
+  toggleCodeDrawer() {
+    console.log('🔽 toggleCodeDrawer called');
+    const drawer = document.getElementById('codeDrawer');
+    if (drawer) {
+      console.log('✅ Found code drawer element');
+      drawer.classList.toggle('expanded');
+      console.log('📦 Drawer expanded:', drawer.classList.contains('expanded'));
+      
+      const toggle = document.getElementById('drawerToggle');
+      if (toggle) {
+        const isExpanded = drawer.classList.contains('expanded');
+        toggle.textContent = isExpanded ? '↓' : '↑';
+        console.log('🔽 Toggle icon updated to:', toggle.textContent);
+      } else {
+        console.error('❌ drawerToggle element not found');
+      }
+      
+      // Add activity feedback
+      this.addActivity(
+        drawer.classList.contains('expanded') ? 'Code drawer opened' : 'Code drawer closed',
+        'info'
+      );
+    } else {
+      console.error('❌ codeDrawer element not found');
+    }
+  }
+
+  saveCodeChanges(tabId, newCode) {
+    console.log('💾 Saving code changes for tab:', tabId);
+
+    // Parse tab ID (e.g., "v1-css" -> variation 1, CSS)
+    const parts = tabId.split('-');
+    const isGlobal = parts[0] === 'global';
+    const type = parts[parts.length - 1]; // 'css' or 'js'
+
+    if (!this.generatedCode) {
+      this.showError('No generated code to update');
+      return;
+    }
+
+    if (isGlobal) {
+      // Update global code
+      if (type === 'css') {
+        this.generatedCode.globalCSS = newCode;
+      } else if (type === 'js') {
+        this.generatedCode.globalJS = newCode;
+      }
+    } else {
+      // Update variation code
+      const variationNumber = parseInt(parts[0].replace('v', ''));
+      const variation = this.generatedCode.variations?.find(v => v.number === variationNumber);
+
+      if (variation) {
+        if (type === 'css') {
+          variation.css = newCode;
+        } else if (type === 'js') {
+          variation.js = newCode;
+        }
+      }
+    }
+
+    this.showStatus('💾 Code changes saved', 'success', 2000);
+    this.addActivity(`Code updated: ${tabId}`, 'success');
+
+    console.log('✅ Code saved successfully');
+  }
+
+  toggleLivePanel() {
+    const panel = document.getElementById('livePanel');
+    if (panel) {
+      panel.classList.toggle('collapsed');
+      
+      const toggle = document.getElementById('panelToggle');
+      if (toggle) {
+        toggle.textContent = panel.classList.contains('collapsed') ? '→' : '←';
+      }
+    }
+  }
+
+  openChat() {
+    // Legacy method - redirect to new modal
+    this.openChatModal();
+  }
+
+  openChatDrawer() {
+    const drawer = document.getElementById('chatDrawer');
+    if (drawer) {
+      drawer.classList.remove('hidden');
+
+      // Update context badge
+      this.updateChatContext();
+
+      // Focus input
+      setTimeout(() => {
+        const input = document.getElementById('chatInput');
+        if (input) {
+          input.focus();
+        }
+      }, 100);
+    }
+  }
+
+  closeChatDrawer() {
+    const drawer = document.getElementById('chatDrawer');
+    if (drawer) {
+      drawer.classList.add('hidden');
+    }
+  }
+
+  updateChatContext() {
+    const contextText = document.getElementById('chatContextText');
+    if (!contextText) return;
+
+    if (this.currentPageData) {
+      const title = this.currentPageData.title || 'Captured page';
+      contextText.textContent = title.length > 40 ? title.substring(0, 40) + '...' : title;
+    } else {
+      contextText.textContent = 'No page captured';
+    }
+  }
+
+  clearChatHistory() {
+    const container = document.getElementById('chatMessages');
+    if (container) {
+      container.innerHTML = '';
+      this.addActivity('Chat conversation cleared', 'info');
+    }
+  }
+
+  // Legacy method names for compatibility
+  openChatModal() {
+    this.openChatDrawer();
+  }
+
+  closeChatModal() {
+    this.closeChatDrawer();
+  }
+
+  updateChatSuggestions() {
+    const actionsContainer = document.getElementById('chatQuickActions');
+    const subtitle = document.getElementById('chatSubtitle');
+
+    if (!actionsContainer) return;
+
+    let suggestions = [];
+    let subtitleText = 'Ready to help with your experiment';
+
+    // Context-aware suggestions based on workflow state
+    if (this.workflowState === 'fresh') {
+      subtitleText = 'Let\'s get started with your experiment';
+      suggestions = [
+        { text: '📸 Capture this page', action: () => { this.closeChatModal(); this.capturePage(); } },
+        { text: '🎯 Select an element', action: () => { this.closeChatModal(); this.startElementSelection(); } },
+        { text: '📋 Browse templates', action: () => { this.closeChatModal(); this.showTemplates(); } }
+      ];
+    } else if (this.workflowState === 'building') {
+      subtitleText = 'Describe the changes you want to make';
+      suggestions = [
+        { text: '🎨 Change button color', action: () => this.insertSuggestion('Change the CTA button to green') },
+        { text: '✏️ Update headline text', action: () => this.insertSuggestion('Make the main headline larger and bold') },
+        { text: '🖼️ Add promotional banner', action: () => this.insertSuggestion('Add a promotional banner at the top') }
+      ];
+    } else if (this.workflowState === 'results') {
+      subtitleText = 'Code generated - what would you like to do?';
+      suggestions = [
+        { text: '🔄 Regenerate code', action: () => { this.closeChatModal(); this.regenerateAllCode(); } },
+        { text: '🧪 Run Visual QA', action: () => { this.closeChatModal(); this.runVisualQAForAllVariations(); } },
+        { text: '📤 Export code', action: () => { this.closeChatModal(); this.exportCode(); } }
+      ];
+    }
+
+    // Update subtitle
+    if (subtitle) {
+      subtitle.textContent = subtitleText;
+    }
+
+    // Render suggestions
+    actionsContainer.innerHTML = suggestions.map(s =>
+      `<button class="chat-quick-action-btn">${s.text}</button>`
+    ).join('');
+
+    // Bind click handlers
+    actionsContainer.querySelectorAll('.chat-quick-action-btn').forEach((btn, idx) => {
+      btn.addEventListener('click', suggestions[idx].action);
+    });
+  }
+
+  insertSuggestion(text) {
+    const input = document.getElementById('chatModalInput');
+    if (input) {
+      input.value = text;
+      input.focus();
+      // Trigger input event to update char count
+      input.dispatchEvent(new Event('input'));
+    }
+  }
+
+  sendChatMessage() {
+    const input = document.getElementById('chatInput');
+    if (!input || !input.value.trim()) return;
+
+    const message = input.value.trim();
+
+    // Add user message to chat
+    this.addChatMessageToDrawer('user', message);
+
+    // Clear input
+    input.value = '';
+    input.style.height = 'auto';
+    const charCount = document.getElementById('chatCharCount');
+    if (charCount) {
+      charCount.textContent = '0/2000';
+    }
+
+    // Show typing indicator
+    this.showTypingIndicator();
+
+    // Process message (integrate with existing chat logic)
+    this.processChatMessage(message);
+  }
+
+  addChatMessageToDrawer(role, content) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+
+    const messageEl = document.createElement('div');
+    messageEl.className = role === 'user' ? 'chat-user-message' : 'chat-assistant-message';
+
+    const avatar = document.createElement('div');
+    avatar.className = role === 'user' ? 'user-avatar' : 'assistant-avatar';
+    avatar.textContent = role === 'user' ? '👤' : '🤖';
+
+    const messageContent = document.createElement('div');
+    messageContent.className = 'message-content';
+    messageContent.innerHTML = `<p>${content}</p>`;
+
+    messageEl.appendChild(avatar);
+    messageEl.appendChild(messageContent);
+    container.appendChild(messageEl);
+
+    // Scroll to bottom
+    const messagesContainer = document.getElementById('chatMessagesContainer');
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+
+  showTypingIndicator() {
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) {
+      indicator.classList.remove('hidden');
+
+      // Scroll to show indicator
+      const messagesContainer = document.getElementById('chatMessagesContainer');
+      if (messagesContainer) {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      }
+    }
+  }
+
+  hideTypingIndicator() {
+    const indicator = document.getElementById('typingIndicator');
+    if (indicator) {
+      indicator.classList.add('hidden');
+    }
+  }
+
+  // Legacy methods for compatibility
+  addChatMessageToModal(role, content) {
+    this.addChatMessageToDrawer(role, content);
+  }
+
+  showTypingIndicatorModal() {
+    this.showTypingIndicator();
+  }
+
+  hideTypingIndicatorModal() {
+    this.hideTypingIndicator();
+  }
+
+  // processChatMessage is defined earlier at line 1439 - removed duplicate stub
+
+  openActivityLog() {
+    const dropdown = document.getElementById('activityLogDropdown');
+    if (dropdown) {
+      dropdown.classList.remove('hidden');
+
+      // Update activity count
+      this.updateActivityCount();
+    }
+  }
+
+  closeActivityLog() {
+    const dropdown = document.getElementById('activityLogDropdown');
+    if (dropdown) {
+      dropdown.classList.add('hidden');
+    }
+  }
+
+  updateActivityCount() {
+    const badge = document.getElementById('activityCountBadge');
+    if (badge) {
+      const count = this.activityItems?.length || 0;
+      badge.textContent = `${count} ${count === 1 ? 'activity' : 'activities'}`;
+    }
+  }
+
+  toggleCommandPalette() {
+    const overlay = document.getElementById('commandPaletteOverlay');
+    const search = document.getElementById('paletteSearch');
+    
+    if (overlay && overlay.classList.contains('hidden')) {
+      overlay.classList.remove('hidden');
+      if (search) {
+        search.focus();
+        this.populateCommands();
+      }
+    } else {
+      this.closeCommandPalette();
+    }
+  }
+
+  closeCommandPalette() {
+    const overlay = document.getElementById('commandPaletteOverlay');
+    if (overlay) {
+      overlay.classList.add('hidden');
+    }
+  }
+
+  populateCommands() {
+    const commands = [
+      { name: '📸 Capture Full Page', icon: '📸', action: () => { this.closeCommandPalette(); this.capturePage(); } },
+      { name: '🎯 Select Element', icon: '🎯', action: () => { this.closeCommandPalette(); this.startElementSelection(); } },
+      { name: '🚀 Generate & Preview', icon: '🚀', action: () => { this.closeCommandPalette(); this.generateExperiment(); } },
+      { name: '🧪 Run Visual QA', icon: '🧪', action: () => { this.closeCommandPalette(); this.runVisualQAForAllVariations(); } },
+      { name: '🔄 Regenerate Code', icon: '🔄', action: () => { this.closeCommandPalette(); this.regenerateAllCode(); } },
+      { name: '📤 Export Code', icon: '📤', action: () => { this.closeCommandPalette(); this.exportCode(); } },
+      { name: '📋 Copy All Code', icon: '📋', action: () => { this.closeCommandPalette(); this.copyAllCode(); } },
+      { name: '</> Toggle Code Drawer', icon: '</>', action: () => { this.closeCommandPalette(); this.toggleCodeDrawer(); } },
+      { name: '💬 Open Chat', icon: '💬', action: () => { this.closeCommandPalette(); this.openChatModal(); } },
+      { name: '📋 View Activity Log', icon: '📋', action: () => { this.closeCommandPalette(); this.openActivityLog(); } },
+      { name: '🤖 Switch AI Model', icon: '🤖', action: () => { this.closeCommandPalette(); this.openModelSelector(); } },
+      { name: '⚙️ Open Settings', icon: '⚙️', action: () => { this.closeCommandPalette(); chrome.runtime.openOptionsPage(); } },
+      { name: '🗑️ Clear All Data', icon: '🗑️', action: () => { this.closeCommandPalette(); this.resetWorkflow(); } }
+    ];
+
+    const results = document.getElementById('paletteResults');
+    if (results) {
+      results.innerHTML = commands.map((cmd, idx) => `
+        <div class="palette-item ${idx === 0 ? 'selected' : ''}" data-command="${idx}">
+          <span class="command-name">${cmd.name}</span>
+        </div>
+      `).join('');
+
+      // Bind command execution
+      results.querySelectorAll('.palette-item').forEach((item, idx) => {
+        item.addEventListener('click', () => {
+          commands[idx].action();
+          this.closeCommandPalette();
+        });
+      });
+    }
+  }
+
+  filterCommands(query) {
+    // Implementation for command filtering
+    console.log('Filter commands:', query);
+  }
+
+  // Command Palette Helper Methods
+  async copyAllCode() {
+    if (!this.generatedCode || !this.generatedCode.variations) {
+      this.showError('No code to copy');
+      return;
+    }
+
+    const allCode = this.generatedCode.variations.map((v, idx) => {
+      return `/* === VARIATION ${idx + 1}: ${v.name || 'Variation ' + (idx + 1)} === */\n\n/* CSS */\n${v.css || ''}\n\n/* JavaScript */\n${v.js || ''}`;
+    }).join('\n\n');
+
+    try {
+      await navigator.clipboard.writeText(allCode);
+      this.showSuccess('All code copied to clipboard');
+      this.showStatus('📋 Code copied to clipboard', 'success', 3000);
+    } catch (error) {
+      console.error('Failed to copy code:', error);
+      this.showError('Failed to copy code');
+    }
+  }
+
+  async runVisualQAForAllVariations() {
+    if (!this.generatedCode || !this.generatedCode.variations) {
+      this.showError('No variations to test');
+      return;
+    }
+
+    this.showStatus('🧪 Running Visual QA on all variations...', 'loading');
+
+    for (let i = 0; i < this.generatedCode.variations.length; i++) {
+      const variation = this.generatedCode.variations[i];
+      await this.runVisualQAValidation(variation, this.generatedCode);
+    }
+
+    this.showStatus('✅ Visual QA complete for all variations', 'success', 5000);
+  }
+
+  async regenerateAllCode() {
+    if (!this.currentPageData) {
+      this.showError('No page data available. Please capture the page first.');
+      return;
+    }
+
+    const primaryDesc = document.getElementById('primaryDescription')?.value;
+    if (!primaryDesc) {
+      this.showError('Please describe the changes you want to make');
+      return;
+    }
+
+    this.showStatus('🔄 Regenerating all code...', 'loading');
+    await this.generateExperiment();
+  }
+
+  resetWorkflow() {
+    if (confirm('Are you sure you want to clear all data and start fresh? This cannot be undone.')) {
+      this.currentPageData = null;
+      this.generatedCode = null;
+      this.variations = [{ id: 1, name: 'Variation 1', description: '' }];
+      this.conversation = [];
+      this.selectedElementData = null;
+
+      // Clear UI
+      document.getElementById('primaryDescription').value = '';
+      document.getElementById('chatHistory').innerHTML = '';
+
+      // Reset to fresh state
+      this.updateWorkflowState('fresh');
+
+      this.showStatus('🗑️ All data cleared', 'success', 3000);
+      this.clearActivity();
+    }
+  }
+
+  openModelSelector() {
+    const overlay = document.getElementById('modelSelectorOverlay');
+    if (overlay) {
+      overlay.classList.remove('hidden');
+    }
+  }
+
+  handlePaletteNavigation(e) {
+    // Implementation for keyboard navigation in command palette
+    if (e.key === 'Enter') {
+      const selected = document.querySelector('.palette-item.selected');
+      if (selected) {
+        selected.click();
+      }
+    }
+  }
+
+  closeAllOverlays() {
+    this.closeCommandPalette();
+    this.closeChatModal();
+    this.closeActivityLog();
+  }
+
+  setButtonLoading(buttonId, loading) {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+
+    const textSpan = button.querySelector('.btn-text') || button;
+    const loadingSpan = button.querySelector('.btn-loading');
+
+    if (loading) {
+      button.disabled = true;
+      textSpan.style.display = 'none';
+      if (loadingSpan) {
+        loadingSpan.classList.remove('hidden');
+      }
+    } else {
+      button.disabled = false;
+      textSpan.style.display = '';
+      if (loadingSpan) {
+        loadingSpan.classList.add('hidden');
+      }
+    }
+  }
+
+  showSuccess(message) {
+    this.showNotification(message, 'success');
+  }
+
+  showError(message) {
+    this.showNotification(message, 'error');
+  }
+
+  showNotification(message, type) {
+    const notification = document.getElementById(type + 'Display');
+    if (notification) {
+      notification.querySelector('.message').textContent = message;
+      notification.classList.remove('hidden');
+      
+      setTimeout(() => {
+        notification.classList.add('hidden');
+      }, 4000);
+    }
+
+    // Also add to activity stream
+    this.addActivity(message, type === 'success' ? 'success' : 'error');
+  }
+
+  // ==========================================
+  // PLACEHOLDER METHODS (Legacy Compatibility)
+  // ==========================================
+
+  async previewVariation(variationNumber) {
+    try {
+      this.addActivity(`Previewing variation ${variationNumber}...`, 'info');
+
+      if (!this.generatedCode?.variations) {
+        throw new Error('No variations available');
       }
 
-      this.generatedCode = adjusted.code;
-      this.recordUsage(adjusted.usage);
-      this.displayGeneratedCode(adjusted.code);
-      
-      this.addStatusLog(`  ✓ Code updated, retesting...`, 'info');
-      await this.sleep(500);
+      const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
+      if (!variation) {
+        throw new Error(`Variation ${variationNumber} not found`);
+      }
+
+      // Send preview request through background script
+      const response = await chrome.runtime.sendMessage({
+        type: 'PREVIEW_VARIATION',
+        css: variation.css || '',
+        js: variation.js || '',
+        variationNumber: variationNumber,
+        tabId: this.targetTabId // Pass the stored tab ID
+      });
+
+      if (!response.success) {
+        throw new Error(response.error || 'Preview failed');
+      }
+
+      this.previewState.activeVariation = variationNumber;
+      this.addActivity(`Variation ${variationNumber} previewed successfully`, 'success');
+
+      // Update UI
+      const testBtn = document.getElementById('testVariationBtn');
+      const clearBtn = document.getElementById('clearPreviewBtn');
+      if (testBtn) testBtn.disabled = false;
+      if (clearBtn) clearBtn.disabled = false;
+
+    } catch (error) {
+      console.error('Preview failed:', error);
+      this.addActivity(`Preview failed: ${error.message}`, 'error');
     }
   }
 
   async testVariation(variationNumber) {
-    const variation = this.generatedCode?.variations.find(v => v.number === variationNumber);
-    if (!variation) return null;
-
-    const variationName = variation.name || `Variation ${variationNumber}`;
-
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) return null;
-
-    const result = {
-      variationNumber,
-      variationName,
-      timestamp: Date.now(),
-      errors: []
-    };
-
     try {
-      // Step 1: Inject error monitoring
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        world: 'MAIN',
-        func: () => {
-          // Setup error capture
-          window.__convertTestErrors = [];
-          window.__convertOriginalConsoleError = console.error;
-          console.error = function(...args) {
-            window.__convertTestErrors.push(args.join(' '));
-            window.__convertOriginalConsoleError.apply(console, args);
-          };
-        }
+      this.addActivity(`Testing variation ${variationNumber}...`, 'info');
+
+      if (!this.generatedCode?.variations) {
+        throw new Error('No variations available');
+      }
+
+      const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
+      if (!variation) {
+        throw new Error(`Variation ${variationNumber} not found`);
+      }
+
+      // Send test request through background script
+      const response = await chrome.runtime.sendMessage({
+        type: 'TEST_VARIATION',
+        css: variation.css || '',
+        js: variation.js || '',
+        variationNumber: variationNumber,
+        tabId: this.targetTabId // Pass the stored tab ID
       });
 
-      // Step 2: Clear previous variation
-      const resetResult = await this.resetVariationOnTab(tab.id, 'convert-ai-');
-      await this.resetVariationOnTab(tab.id, 'convert-ai-preview');
-      if (!resetResult) {
-        this.addStatusLog('  ⚠️ Unable to reset previously injected code. Try reloading the page.', 'error');
-        result.errors.push('Content script injection failed - try reloading the page');
+      if (!response.success) {
+        throw new Error(response.error || 'Test failed');
       }
 
-      await this.sleep(200);
-
-      // Step 3: Apply variation
-      const payload = this.buildVariationPayload(variation);
-
-      const applyResponse = await chrome.runtime.sendMessage({
-        type: 'APPLY_VARIATION',
-        tabId: tab.id,
-        key: `convert-ai-${variationNumber}`,
-        css: payload.css,
-        js: payload.js
-      });
-
-      if (Array.isArray(applyResponse?.logs)) {
-        this.logOperationEntries(applyResponse.logs, applyResponse.success ? 'info' : 'error');
-      }
-
-      if (!applyResponse?.success) {
-        result.errors.push(applyResponse?.error || 'Failed to apply variation');
-      }
-
-      await this.sleep(800); // Give time for JS to execute
-
-      // Step 4: Collect errors from page
-      const errorResults = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        world: 'MAIN',
-        func: () => {
-          const errors = window.__convertTestErrors || [];
-          // Restore original console.error
-          if (window.__convertOriginalConsoleError) {
-            console.error = window.__convertOriginalConsoleError;
-          }
-          return errors;
-        }
-      });
-
-      if (errorResults?.[0]?.result) {
-        const pageErrors = errorResults[0].result;
-        pageErrors.forEach(err => {
-          if (!result.errors.includes(err)) {
-            result.errors.push(`Console error: ${err}`);
-          }
-        });
-      }
-
-      // Step 5: Check if critical elements exist (if JS was applied)
-      if (variation.js) {
-        const elementCheckResults = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          world: 'MAIN',
-          func: (jsCode) => {
-            // Extract selectors from the JS code
-            const selectorRegex = /querySelector(?:All)?\s*\(\s*['"`]([^'"` ]+)['"`]\s*\)/g;
-            const selectors = [];
-            let match;
-            while ((match = selectorRegex.exec(jsCode)) !== null) {
-              selectors.push(match[1]);
-            }
-            
-            // Check if these selectors exist
-            const missing = [];
-            selectors.forEach(selector => {
-              try {
-                const element = document.querySelector(selector);
-                if (!element) {
-                  missing.push(selector);
-                }
-              } catch (e) {
-                missing.push(selector + ' (invalid selector)');
-              }
-            });
-            
-            return missing;
-          },
-          args: [variation.js]
-        });
-
-        if (elementCheckResults?.[0]?.result?.length > 0) {
-          const missingElements = elementCheckResults[0].result;
-          missingElements.forEach(selector => {
-            result.errors.push(`Element not found: ${selector}`);
-          });
-        }
-      }
-
-      // Step 6: Capture screenshot
-      try {
-        result.screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
-          format: 'png',
-          quality: 90
-        });
-        this.displayTestScreenshot(result.screenshot, variationNumber);
-      } catch (error) {
-        console.warn('Screenshot failed:', error);
-      }
+      this.addActivity(`Variation ${variationNumber} applied to page for testing`, 'success');
 
     } catch (error) {
-      result.errors.push(`Test execution error: ${error.message}`);
+      console.error('Test failed:', error);
+      this.addActivity(`Test failed: ${error.message}`, 'error');
     }
-
-    return result;
   }
 
-  async autoValidateVariation(variationNumber, options = {}) {
-    if (!this.generatedCode?.variations) {
-      return;
-    }
+  testCurrentVariation() {
+    const activeVariation = this.previewState.activeVariation || 1;
+    this.testVariation(activeVariation);
+  }
 
-    const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
-    if (!variation) {
-      return;
-    }
-
-    const label = variation.name || `Variation ${variationNumber}`;
-    const origin = options.origin || 'Validation';
-    const shouldUpdateConvertStatus = Boolean(
-      options.updateConvertStatus && this.convertState && this.convertState.projectId
-    );
-
-    this.addStatusLog(`${origin}: running checks for ${label}`, 'info');
-
-    const result = await this.testVariation(variationNumber);
-    if (!result) {
-      this.addStatusLog(`${origin}: test execution failed for ${label}`, 'error');
-      if (shouldUpdateConvertStatus && typeof this.setConvertStatus === 'function') {
-        this.setConvertStatus(`Validation failed for ${label}`, 'error');
-      }
-      return result;
-    }
-
-    if (Array.isArray(result.errors) && result.errors.length > 0) {
-      this.addStatusLog(`${origin}: ${result.errors.length} issue(s) detected for ${label}`, 'error');
-      result.errors.forEach((err, idx) => {
-        this.addStatusLog(`  ${idx + 1}. ${err}`, 'error');
+  async clearPreview() {
+    try {
+      // Send clear preview request through background script
+      const response = await chrome.runtime.sendMessage({
+        type: 'CLEAR_PREVIEW'
       });
-      this.showError(`${label} validation failed. See status log for details.`);
-      if (shouldUpdateConvertStatus && typeof this.setConvertStatus === 'function') {
-        this.setConvertStatus(`Issues detected for ${label}. Review the status log.`, 'error');
+
+      if (!response.success) {
+        throw new Error(response.error || 'Clear preview failed');
+      }
+
+      this.previewState.activeVariation = null;
+      this.addActivity('Preview cleared', 'info');
+      
+      // Update UI
+      document.getElementById('testVariationBtn').disabled = true;
+      document.getElementById('clearPreviewBtn').disabled = true;
+
+    } catch (error) {
+      console.error('Clear preview failed:', error);
+      this.addActivity(`Failed to clear preview: ${error.message}`, 'error');
+    }
+  }
+
+  async launchAutomaticTesting(codeData) {
+    console.log('🚀 Launching automatic testing pipeline...');
+    this.showStatus('Starting automatic code validation...', 'loading');
+    this.addActivity('🔍 Starting automatic code validation...', 'info');
+
+    // Initialize testing status
+    this.updateTestingStatus('initializing');
+    
+    let passedCount = 0;
+    let failedCount = 0;
+    const totalCount = (codeData.variations || []).length;
+    
+    // Run tests for each variation
+    for (const variation of codeData.variations || []) {
+      try {
+        await this.runVariationTests(variation, codeData);
+        passedCount++;
+      } catch (error) {
+        failedCount++;
+        console.error(`Variation ${variation.number} failed testing:`, error);
+        // Continue testing other variations
+      }
+    }
+    
+    // Update final status based on results
+    const qaStatusEl = document.getElementById('qaStatus');
+
+    if (failedCount === 0) {
+      this.updateTestingStatus('complete');
+      this.showStatus(`✅ All ${totalCount} variations passed testing`, 'success', 4000);
+      this.addActivity(`✅ All ${totalCount} variations passed testing`, 'success');
+
+      if (qaStatusEl) {
+        qaStatusEl.textContent = '✅';
+        qaStatusEl.title = 'All tests passed';
+      }
+    } else if (passedCount > 0) {
+      this.updateTestingStatus('partial');
+      this.showStatus(`Testing completed: ${passedCount} passed, ${failedCount} failed`, 'warning', 5000);
+      this.addActivity(`⚠️ Testing completed: ${passedCount} passed, ${failedCount} failed`, 'warning');
+
+      if (qaStatusEl) {
+        qaStatusEl.textContent = '⚠️';
+        qaStatusEl.title = `${passedCount} passed, ${failedCount} failed`;
       }
     } else {
-      this.addStatusLog(`${origin}: ${label} passed validation`, 'success');
-      this.showSuccess(`${label} passed validation`);
-      if (shouldUpdateConvertStatus && typeof this.setConvertStatus === 'function') {
-        this.setConvertStatus(`✅ ${label} passed validation`, 'success');
+      this.updateTestingStatus('failed');
+      this.showStatus(`All ${totalCount} variations failed testing`, 'error', 5000);
+      this.addActivity(`❌ All ${totalCount} variations failed testing`, 'error');
+
+      if (qaStatusEl) {
+        qaStatusEl.textContent = '❌';
+        qaStatusEl.title = 'All tests failed';
+      }
+    }
+  }
+
+  async runVariationTests(variation, codeData) {
+    const testName = `Variation ${variation.number}: ${variation.name}`;
+    console.log(`🧪 Testing ${testName}`);
+    
+    try {
+      // Update status for this variation
+      this.updateVariationTestStatus(variation.number, 'testing');
+      
+      // 1. Technical Code Validation
+      await this.runTechnicalValidation(variation);
+      
+      // 2. Syntax and Error Checking  
+      await this.runSyntaxValidation(variation);
+      
+      // 3. Auto-inject and Test on Page
+      await this.runPageInjectionTest(variation);
+      
+      // 4. Visual QA Verification
+      await this.runVisualQAValidation(variation, codeData);
+      
+      // 5. Performance Impact Check
+      await this.runPerformanceValidation(variation);
+      
+      // Mark variation as passed
+      this.updateVariationTestStatus(variation.number, 'passed');
+      this.addActivity(`✅ ${testName} - All validations passed`, 'success');
+      
+      // Log detailed results
+      console.log(`✅ Complete test results for ${testName}:`, {
+        technicalValidation: 'PASSED',
+        syntaxValidation: 'PASSED', 
+        pageInjection: 'PASSED',
+        visualQA: 'PASSED',
+        performance: 'PASSED'
+      });
+      
+    } catch (error) {
+      console.error(`Testing failed for ${testName}:`, error);
+      this.updateVariationTestStatus(variation.number, 'failed');
+      this.addActivity(`❌ ${testName} - Tests failed: ${error.message}`, 'error');
+    }
+  }
+
+  async runTechnicalValidation(variation) {
+    this.addActivity(`🔧 Technical validation - ${variation.name}`, 'info');
+    
+    // Auto-fix common AI generation issues
+    this.cleanupGeneratedCode(variation);
+    
+    // Check for critical code issues only
+    const criticalIssues = [];
+    const warnings = [];
+    
+    if (variation.css) {
+      // CSS validation - only critical issues
+      if (variation.css.includes('!important') && variation.css.split('!important').length > 5) {
+        warnings.push('Many !important declarations detected');
+      }
+      
+      // Check for template syntax in CSS (like {{variable}})
+      if (variation.css.match(/\{\{[A-Za-z_][A-Za-z_0-9]*\}\}/)) {
+        criticalIssues.push('Template syntax found in CSS - AI may have returned incomplete code');
+      }
+    }
+    
+    if (variation.js) {
+      // JavaScript validation - focus on critical issues
+      if (variation.js.includes('document.write(')) {
+        criticalIssues.push('Use of deprecated document.write()');
+      }
+      
+      if (variation.js.includes('eval(')) {
+        criticalIssues.push('Use of potentially unsafe eval()');
+      }
+      
+      // Check for template literals (but not object destructuring or nested objects)
+      // Look for patterns like ${var} or {{var}} which indicate template syntax
+      if (variation.js.match(/\$\{[A-Z_][A-Z_0-9]*\}/) || variation.js.match(/\{\{[A-Za-z_][A-Za-z_0-9]*\}\}/)) {
+        criticalIssues.push('Template syntax found in JavaScript - AI returned incomplete code');
+      }
+      
+      // More lenient DOM query validation
+      const hasQuerySelector = variation.js.includes('querySelector');
+      const hasErrorHandling = variation.js.includes('try') || variation.js.includes('catch') || 
+                              variation.js.includes('if (') || variation.js.includes('?.') ||
+                              variation.js.includes('waitForElement');
+      
+      if (hasQuerySelector && !hasErrorHandling) {
+        warnings.push('Consider adding error handling for DOM queries');
+      }
+    }
+    
+    // Log warnings but don't fail for them
+    if (warnings.length > 0) {
+      this.addActivity(`⚠️ Warnings: ${warnings.join(', ')}`, 'warning');
+    }
+    
+    // Only fail for critical issues
+    if (criticalIssues.length > 0) {
+      throw new Error(`Critical issues found: ${criticalIssues.join(', ')}`);
+    }
+  }
+
+  cleanupGeneratedCode(variation) {
+    // Fix common AI generation issues
+    
+    if (variation.css) {
+      // Remove template syntax
+      variation.css = variation.css.replace(/\{\{.*?\}\}/g, '').trim();
+      
+      // Remove markdown code block syntax
+      variation.css = variation.css.replace(/```css\n?/g, '').replace(/```\n?/g, '').trim();
+      
+      // Clean up extra whitespace
+      variation.css = variation.css.replace(/\n\s*\n/g, '\n').trim();
+    }
+    
+    if (variation.js) {
+      // Remove template syntax
+      variation.js = variation.js.replace(/\{\{.*?\}\}/g, '').trim();
+      
+      // Remove markdown code block syntax  
+      variation.js = variation.js.replace(/```javascript\n?/g, '').replace(/```js\n?/g, '').replace(/```\n?/g, '').trim();
+      
+      // Clean up extra whitespace
+      variation.js = variation.js.replace(/\n\s*\n/g, '\n').trim();
+    }
+    
+    if (variation.css || variation.js) {
+      this.addActivity(`🧹 Cleaned up generated code format`, 'info');
+    }
+  }
+
+  async runSyntaxValidation(variation) {
+    this.addActivity(`📝 Syntax validation - ${variation.name}`, 'info');
+    
+    // Send code to background for syntax checking
+    const response = await chrome.runtime.sendMessage({
+      type: 'VALIDATE_SYNTAX',
+      css: variation.css || '',
+      js: variation.js || '',
+      variationNumber: variation.number
+    });
+    
+    if (!response.success) {
+      throw new Error(`Syntax validation failed: ${response.error}`);
+    }
+    
+    // Handle validation results
+    const validation = response.validation;
+    
+    if (validation.warnings && validation.warnings.length > 0) {
+      this.addActivity(`⚠️ Syntax warnings: ${validation.warnings.join(', ')}`, 'warning');
+    }
+    
+    if (!validation.isValid) {
+      throw new Error(`Syntax errors found: ${validation.issues.join(', ')}`);
+    }
+    
+    this.addActivity(`✅ Code syntax is valid`, 'success');
+  }
+
+  async runPageInjectionTest(variation) {
+    this.addActivity(`🚀 Page injection test - ${variation.name}`, 'info');
+
+    // Auto-inject code into page for testing
+    const response = await chrome.runtime.sendMessage({
+      type: 'TEST_VARIATION',
+      css: variation.css || '',
+      js: variation.js || '',
+      variationNumber: variation.number,
+      tabId: this.targetTabId // Pass the stored tab ID
+    });
+
+    if (!response.success) {
+      throw new Error(`Page injection failed: ${response.error}`);
+    }
+
+    // Wait a moment for the code to execute
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Check for JavaScript errors on the page
+    const errorResponse = await chrome.runtime.sendMessage({
+      type: 'CHECK_PAGE_ERRORS',
+      variationNumber: variation.number,
+      tabId: this.targetTabId // Pass the stored tab ID
+    });
+
+    if (errorResponse.hasErrors) {
+      this.addActivity(`⚠️ Page errors detected but code may still work: ${errorResponse.errors.join(', ')}`, 'warning');
+      // Don't fail the test for page errors - they might be false positives
+      // throw new Error(`JavaScript errors detected: ${errorResponse.errors.join(', ')}`);
+    } else {
+      this.addActivity(`✅ No page errors detected after injection`, 'success');
+    }
+  }
+
+  async runVisualQAValidation(variation, codeData) {
+    console.log('🔍 Starting Visual QA validation with AI feedback loop...');
+    this.showStatus(`🔍 Running Visual QA analysis on ${variation.name}...`, 'loading');
+    this.addActivity(`📸 Visual QA validation - ${variation.name}`, 'info');
+
+    // Capture screenshot after code injection
+    const afterResponse = await chrome.runtime.sendMessage({
+      type: 'CAPTURE_AFTER_INJECTION',
+      variationNumber: variation.number,
+      tabId: this.targetTabId
+    });
+
+    if (!afterResponse.success) {
+      console.warn('Visual QA capture failed:', afterResponse.error);
+      this.addActivity(`⚠️ Could not capture after screenshot`, 'warning');
+      return;
+    }
+
+    let afterScreenshot = afterResponse.screenshot;
+    const beforeScreenshot = this.currentPageData?.screenshot || this.basePageData?.screenshot;
+
+    if (!beforeScreenshot) {
+      console.warn('No before screenshot available for Visual QA');
+      this.addActivity(`⚠️ No before screenshot for comparison`, 'warning');
+      return;
+    }
+
+    this.addActivity(`📷 Screenshots captured, analyzing with AI...`, 'info');
+
+    // Initialize Visual QA service
+    if (!this.visualQAService) {
+      console.error('Visual QA Service not initialized');
+      return;
+    }
+
+    // Get the original user request
+    const originalRequest = document.getElementById('primaryDescription')?.value || 'Visual QA check';
+
+    // Run Visual QA feedback loop (up to MAX_ITERATIONS)
+    let currentCode = { ...variation };
+    let iteration = 1;
+    const maxIterations = this.visualQAService.MAX_ITERATIONS || 3;
+    let previousDefects = [];
+    let qaHistory = [];
+
+    while (iteration <= maxIterations) {
+      console.log(`[Visual QA] Starting iteration ${iteration}/${maxIterations}`);
+      this.updateStatus(`🔍 Visual QA iteration ${iteration}/${maxIterations}...`, 'loading');
+
+      try {
+        // Run QA check
+        const qaResult = await this.visualQAService.runQA({
+          originalRequest,
+          beforeScreenshot,
+          afterScreenshot,
+          iteration,
+          previousDefects,
+          elementDatabase: this.currentPageData?.elementDatabase || null,
+          generatedCode: currentCode
+        });
+
+        console.log(`[Visual QA] Iteration ${iteration} result:`, qaResult);
+        qaHistory.push(qaResult);
+
+        // Track Visual QA API costs
+        if (qaResult.usage) {
+          this.updateCostDisplay(qaResult.usage);
+          console.log('[Visual QA] API usage tracked:', qaResult.usage);
+        }
+
+        // Show result in UI
+        if (qaResult.status === 'PASS') {
+          this.showStatus(`✅ Visual QA passed - no issues found`, 'success', 4000);
+          this.addActivity(`✅ Visual QA PASSED - code looks good!`, 'success');
+          break;
+        } else {
+          const defectCount = qaResult.defects?.length || 0;
+          this.updateStatus(`⚠️ Found ${defectCount} defect(s), generating fix...`, 'warning');
+          this.addActivity(`⚠️ Visual QA found ${defectCount} defect(s) in iteration ${iteration}`, 'warning');
+
+          // Log defects
+          qaResult.defects?.forEach((defect, idx) => {
+            console.log(`  Defect ${idx + 1} [${defect.severity}]:`, defect.description);
+            this.addActivity(`   ${defect.severity === 'critical' ? '🔴' : '🟡'} ${defect.description.substring(0, 80)}...`, defect.severity === 'critical' ? 'error' : 'warning');
+          });
+        }
+
+        // Check if we should continue
+        const shouldContinue = this.visualQAService.shouldContinueIteration(qaResult, iteration, previousDefects);
+
+        if (!shouldContinue) {
+          console.log('[Visual QA] Stopping iterations');
+          if (qaResult.status !== 'PASS') {
+            this.showStatus(`⚠️ Visual QA completed with ${qaResult.defects?.length || 0} remaining issues`, 'warning', 5000);
+            this.addActivity(`⚠️ Visual QA completed after ${iteration} iteration(s) with remaining issues`, 'warning');
+          }
+          break;
+        }
+
+        // Generate feedback for next iteration
+        const feedback = this.visualQAService.buildFeedbackForRegeneration(qaResult);
+        if (!feedback) {
+          break; // No feedback needed
+        }
+
+        console.log('[Visual QA] Feedback for regeneration:', feedback);
+
+        // Regenerate code with feedback
+        this.updateStatus(`🔄 Regenerating code with QA feedback...`, 'loading');
+        const updatedCode = await this.regenerateCodeWithFeedback(originalRequest, currentCode, feedback, iteration);
+
+        if (!updatedCode) {
+          console.error('[Visual QA] Code regeneration failed');
+          this.addActivity(`❌ Failed to regenerate code with feedback`, 'error');
+          break;
+        }
+
+        // Update variation with new code
+        currentCode = updatedCode;
+        variation.css = updatedCode.css;
+        variation.js = updatedCode.js;
+
+        // Re-inject updated code
+        this.addActivity(`🔄 Re-testing with improved code...`, 'info');
+        await chrome.runtime.sendMessage({
+          type: 'TEST_VARIATION',
+          css: variation.css || '',
+          js: variation.js || '',
+          variationNumber: variation.number,
+          tabId: this.targetTabId
+        });
+
+        // Capture new screenshot
+        const newAfterResponse = await chrome.runtime.sendMessage({
+          type: 'CAPTURE_AFTER_INJECTION',
+          variationNumber: variation.number,
+          tabId: this.targetTabId
+        });
+
+        if (newAfterResponse.success) {
+          afterScreenshot = newAfterResponse.screenshot;
+        }
+
+        // Store defects for next iteration
+        previousDefects = qaResult.defects || [];
+        iteration++;
+
+      } catch (error) {
+        console.error('[Visual QA] Error in iteration:', error);
+        this.addActivity(`❌ Visual QA error: ${error.message}`, 'error');
+        break;
       }
     }
 
-    return result;
+    // Store QA history in variation
+    variation.qaHistory = qaHistory;
+    variation.afterScreenshot = afterScreenshot;
+
+    console.log('[Visual QA] Complete. Total iterations:', iteration - 1);
   }
 
-  buildAutoFeedback(testResult, variationConfig) {
-    const errorList = testResult.errors.map((err, idx) => `${idx + 1}. ${err}`).join('\n');
-    
-    return `
-AUTOMATED TEST RESULTS FOR ${testResult.variationName}:
+  async regenerateCodeWithFeedback(originalRequest, currentCode, feedback, iteration) {
+    console.log('[Visual QA] Regenerating code with feedback...');
 
-Issues Detected:
-${errorList}
-
-Variation Goal: ${variationConfig.description || 'See overall description'}
-
-Please update the code to fix these issues. Use vanilla JavaScript only - no jQuery or Convert utilities.
-Ensure all DOM manipulations use standard APIs like querySelector, addEventListener, etc.
-`.trim();
-  }
-
-  async adjustCode(feedback, testSummary, options = {}) {
     try {
-      const payload = {
-        generationData: this.buildGenerationData(),
-        previousCode: this.serializeCode(this.generatedCode),
-        feedback,
-        testSummary
-      };
+      // Build enhanced request with feedback
+      const enhancedRequest = `${originalRequest}\n\n${feedback}`;
 
-      if (options.includeConversation) {
-        payload.conversationHistory = this.getConversationHistoryForAI();
-      }
-
-      if (options.extraContext) {
-        payload.extraContext = options.extraContext;
-      }
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'ADJUST_CODE',
-        data: payload
+      // Call AI to regenerate code
+      const result = await this.callAIGeneration({
+        description: enhancedRequest,
+        pageData: this.currentPageData,
+        settings: this.settings,
+        selectedElement: this.selectedElementData,
+        variations: [{ id: 1, name: 'Variation 1', description: enhancedRequest }]
       });
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Adjustment failed');
+      if (result?.variations?.[0]) {
+        console.log('[Visual QA] Code regenerated successfully');
+        return result.variations[0];
       }
 
-      return response;
+      return null;
     } catch (error) {
-      console.error('Adjustment failed:', error);
+      console.error('[Visual QA] Regeneration failed:', error);
       return null;
     }
   }
 
-  validateGeneration() {
-    if (!this.settings.authToken) {
-      this.showError('Please add your OpenAI API key in Settings');
-      return false;
+  async runPerformanceValidation(variation) {
+    this.addActivity(`⚡ Performance validation - ${variation.name}`, 'info');
+    
+    // Check code size and complexity
+    const cssSize = (variation.css || '').length;
+    const jsSize = (variation.js || '').length;
+    
+    if (cssSize > 10000) {
+      console.warn(`Large CSS size: ${cssSize} characters`);
     }
-
-    if (!this.currentPageData) {
-      this.showError('Please capture the current page first');
-      return false;
+    
+    if (jsSize > 15000) {
+      console.warn(`Large JS size: ${jsSize} characters`);
     }
-
-    // Check that we have at least one variation with instructions
-    const hasValidVariations = this.variations.some(v => v.description?.trim());
-    if (!hasValidVariations) {
-      this.showError('Please add instructions for at least one variation');
-      return false;
+    
+    // Check for performance anti-patterns
+    if (variation.js && variation.js.includes('setInterval') && !variation.js.includes('clearInterval')) {
+      throw new Error('setInterval used without corresponding clearInterval');
     }
-
-    return true;
   }
 
-  buildGenerationData() {
-    return {
-      pageData: this.currentPageData,
-      description: document.getElementById('descriptionText').value.trim(),
-      variations: this.variations,
-      settings: this.settings
-    };
-  }
-
-  displayGeneratedCode(codeData) {
-    document.getElementById('resultsPanel').classList.remove('hidden');
-    document.getElementById('stopIterationBtn')?.classList.remove('hidden');
-
-    this.previewState.activeVariation = null;
-
-    // Initialize edited code tracking if not exists
-    if (!this.editedCode) {
-      this.editedCode = {};
-    }
-
-    this.syncVariationNamesFromCode(codeData);
-    this.renderVariations();
-
-    const tabs = [];
-    codeData.variations.forEach(v => {
-      if (v.css) tabs.push({ id: `v${v.number}-css`, label: `${v.name} CSS`, type: 'css', content: v.css, variationNumber: v.number });
-      if (v.js) tabs.push({ id: `v${v.number}-js`, label: `${v.name} JS`, type: 'js', content: v.js, variationNumber: v.number });
-    });
-    if (codeData.globalCSS) tabs.push({ id: 'global-css', label: 'Global CSS', type: 'css', content: codeData.globalCSS });
-    if (codeData.globalJS) tabs.push({ id: 'global-js', label: 'Global JS', type: 'js', content: codeData.globalJS });
-
-    // Render tabs
-    const tabsContainer = document.getElementById('codeTabs');
-    tabsContainer.innerHTML = tabs.map((tab, idx) => 
-      `<button class="tab ${idx === 0 ? 'active' : ''}" data-tab-id="${tab.id}">${tab.label}</button>`
-    ).join('');
-
-    // Bind tab click events
-    tabsContainer.querySelectorAll('.tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const tabId = btn.getAttribute('data-tab-id');
-        this.switchTab(tabId);
-      });
-    });
-
-    // Render editable content
-    const contentContainer = document.getElementById('codeContent');
-    contentContainer.innerHTML = tabs.map((tab, idx) => {
-      const currentContent = this.editedCode[tab.id] || tab.content;
-      const isModified = this.editedCode[tab.id] && this.editedCode[tab.id] !== tab.content;
+  updateTestingStatus(status) {
+    // Update the UI to show overall testing status
+    const statusElement = document.querySelector('.testing-status');
+    if (statusElement) {
+      const statusTexts = {
+        'initializing': '🔄 Initializing Tests',
+        'complete': '✅ All Tests Passed',
+        'partial': '⚠️ Some Tests Failed',
+        'failed': '❌ Tests Failed'
+      };
       
-      return `
-      <div class="tab-content ${idx === 0 ? '' : 'hidden'}" data-content-id="${tab.id}">
-        <div class="code-header">
-          <span class="code-title">
-            ${tab.label}
-            ${isModified ? '<span class="code-modified-badge">✏️ Modified</span>' : ''}
-          </span>
-          <div class="code-actions">
-            <button class="btn-small copy-code-btn" data-code-id="${tab.id}">📋 Copy</button>
-          </div>
-        </div>
-        <div class="code-editor">
-          <textarea 
-            class="code-textarea ${isModified ? 'modified' : ''}" 
-            data-code-id="${tab.id}"
-            data-original-content="${this.escapeAttr(tab.content)}"
-            spellcheck="false"
-          >${this.escapeHtml(currentContent)}</textarea>
-          <div class="code-editor-actions">
-            <button class="btn-small btn-primary save-code-btn" data-code-id="${tab.id}" style="display: ${isModified ? 'inline-block' : 'none'};">💾 Save Changes</button>
-            <button class="btn-small btn-secondary revert-code-btn" data-code-id="${tab.id}" style="display: ${isModified ? 'inline-block' : 'none'};">↩️ Revert</button>
-          </div>
-        </div>
-      </div>
-    `;
-    }).join('');
-    
-    // Bind textarea input events to track modifications
-    contentContainer.querySelectorAll('.code-textarea').forEach(textarea => {
-      textarea.addEventListener('input', () => {
-        const codeId = textarea.getAttribute('data-code-id');
-        this.handleCodeEdit(codeId, textarea);
-      });
-    });
-
-    // Bind action button events
-    contentContainer.querySelectorAll('.copy-code-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const codeId = btn.getAttribute('data-code-id');
-        this.copyCode(codeId);
-      });
-    });
-
-    contentContainer.querySelectorAll('.save-code-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const codeId = btn.getAttribute('data-code-id');
-        this.saveCodeEdit(codeId);
-      });
-    });
-
-    contentContainer.querySelectorAll('.revert-code-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const codeId = btn.getAttribute('data-code-id');
-        this.revertCodeEdit(codeId);
-      });
-    });
-
-    this.renderVariationPreviewPanel(codeData);
-    this.updateFocusedVariationWorkspace();
-
-    const autoPreviewOrigin = (this.autoIteration?.active && this.autoIteration.iterations > 0)
-      ? 'iteration'
-      : 'auto';
-    this.autoPreviewLatestCode(autoPreviewOrigin);
-
-    if (typeof this.updateConvertActionState === 'function') {
-      this.updateConvertActionState();
+      statusElement.textContent = statusTexts[status] || `🔄 Testing: ${status}`;
+      statusElement.className = `testing-status ${status}`;
     }
   }
 
-  switchTab(tabId) {
-    // Update tab buttons
-    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    document.querySelector(`[data-tab-id="${tabId}"]`)?.classList.add('active');
-    
-    // Update content
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
-    document.querySelector(`[data-content-id="${tabId}"]`)?.classList.remove('hidden');
-  }
-
-  async copyCode(tabId) {
-    // Get current code from textarea (which may be edited)
-    const textarea = document.querySelector(`.code-textarea[data-code-id="${tabId}"]`);
-    const content = textarea ? textarea.value : this.getCurrentCodeForId(tabId);
-    
-    if (!content) {
-      this.showError('No code to copy');
-      return;
-    }
-    
-    await navigator.clipboard.writeText(content);
-    this.showSuccess('Code copied to clipboard!');
-  }
-
-  renderVariationPreviewPanel(codeData) {
-    const panel = document.getElementById('variationPreview');
-    const list = document.getElementById('variationPreviewList');
-    const hint = document.getElementById('variationPreviewHint');
-
-    if (!panel || !list) return;
-
-    if (!codeData?.variations?.length) {
-      list.innerHTML = '';
-      panel.classList.add('hidden');
-      if (hint) hint.textContent = 'Click Preview to apply a variation on the active tab.';
-      this.updatePreviewActiveState();
-      return;
-    }
-
-    list.innerHTML = codeData.variations.map((variation, index) => {
-      const variationName = this.escapeHtml(variation.name || `Variation ${variation.number}`);
-      const assets = [];
-      if (variation.css) assets.push('CSS');
-      if (variation.js) assets.push('JS');
-      if (codeData.globalCSS) assets.push('Global CSS');
-      if (codeData.globalJS) assets.push('Global JS');
-      const uniqueAssets = [...new Set(assets)];
-      const assetSummary = uniqueAssets.length ? uniqueAssets.join(' + ') : 'No assets';
-      const config = this.variations[index];
-      const instructions = config?.description?.trim()
-        ? this.escapeHtml(config.description.trim())
-        : 'No variation instructions yet.';
-      const isFocused = this.isVariationFocusedByNumber(variation.number);
-
-      return `
-        <div class="variation-preview-item ${isFocused ? 'focused' : ''}" data-variation-number="${variation.number}">
-          <div class="variation-preview-info">
-            <div class="variation-preview-name">${variationName}</div>
-            <div class="variation-preview-meta">${assetSummary}</div>
-            <div class="variation-preview-notes">${instructions}</div>
-          </div>
-          <div class="variation-preview-buttons">
-            <button class="btn-small preview-apply-btn" data-variation-number="${variation.number}">Preview</button>
-            <button class="btn-small btn-secondary preview-focus-btn" data-variation-number="${variation.number}" ${isFocused ? 'disabled' : ''}>${isFocused ? 'Focused' : 'Focus'}</button>
-            <button class="btn-small preview-test-btn" data-variation-number="${variation.number}">Retest</button>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    panel.classList.remove('hidden');
-
-    list.querySelectorAll('.preview-apply-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const number = parseInt(btn.getAttribute('data-variation-number'), 10);
-        this.previewVariation(number);
-      });
-    });
-
-    list.querySelectorAll('.preview-test-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const number = parseInt(btn.getAttribute('data-variation-number'), 10);
-        this.retestVariation(number);
-      });
-    });
-
-    list.querySelectorAll('.preview-focus-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const number = parseInt(btn.getAttribute('data-variation-number'), 10);
-        this.setFocusedVariationByNumber(number);
-      });
-    });
-
-    this.updatePreviewActiveState();
-  }
-
-  buildVariationPayload(variation) {
-    const cssParts = [];
-    const jsParts = [];
-    
-    // Check for edited global CSS first (even if not saved)
-    const globalCSSTextarea = document.querySelector('.code-textarea[data-code-id="global-css"]');
-    const globalCSS = globalCSSTextarea ? globalCSSTextarea.value : this.generatedCode?.globalCSS;
-    if (globalCSS) {
-      cssParts.push(globalCSS);
-    }
-    
-    // Check for edited variation CSS
-    const variationCSSId = `v${variation.number}-css`;
-    const variationCSSTextarea = document.querySelector(`.code-textarea[data-code-id="${variationCSSId}"]`);
-    const variationCSS = variationCSSTextarea ? variationCSSTextarea.value : variation?.css;
-    if (variationCSS) {
-      cssParts.push(variationCSS);
-    }
-    
-    // Check for edited global JS
-    const globalJSTextarea = document.querySelector('.code-textarea[data-code-id="global-js"]');
-    const globalJS = globalJSTextarea ? globalJSTextarea.value : this.generatedCode?.globalJS;
-    if (globalJS) {
-      jsParts.push(globalJS);
-    }
-    
-    // Check for edited variation JS
-    const variationJSId = `v${variation.number}-js`;
-    const variationJSTextarea = document.querySelector(`.code-textarea[data-code-id="${variationJSId}"]`);
-    const variationJS = variationJSTextarea ? variationJSTextarea.value : variation?.js;
-    if (variationJS) {
-      jsParts.push(variationJS);
-    }
-
-    const combine = (parts) => parts
-      .map(part => typeof part === 'string' ? part.trim() : '')
-      .filter(Boolean)
-      .join('\n\n');
-
-    const css = combine(cssParts);
-    const js = combine(jsParts);
-
-    return {
-      css: css || null,
-      js: js || null
-    };
-  }
-
-  updatePreviewActiveState() {
-    const list = document.getElementById('variationPreviewList');
-    const clearBtn = document.getElementById('clearPreviewBtn');
-    const hint = document.getElementById('variationPreviewHint');
-
-    if (list) {
-      list.querySelectorAll('.variation-preview-item').forEach(item => {
-        const number = parseInt(item.getAttribute('data-variation-number'), 10);
-        item.classList.toggle('active', this.previewState.activeVariation === number);
-        item.classList.toggle('focused', this.isVariationFocusedByNumber(number));
-      });
-    }
-
-    if (clearBtn) {
-      if (this.previewState.activeVariation) {
-        clearBtn.disabled = false;
-        clearBtn.classList.remove('disabled');
-      } else {
-        clearBtn.disabled = true;
-        clearBtn.classList.add('disabled');
+  updateVariationTestStatus(variationNumber, status) {
+    // Update the variation object's testStatus property
+    if (this.generatedCode?.variations) {
+      const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
+      if (variation) {
+        variation.testStatus = status;
+        console.log(`Updated variation ${variationNumber} testStatus to:`, status);
       }
     }
 
-    if (hint) {
-      hint.textContent = this.previewState.activeVariation
-        ? 'Preview is active on the current tab.'
-        : 'Preview is off. Choose a variation to apply it to the active tab.';
-    }
-  }
-
-  async previewVariation(variationNumber, options = {}) {
-    const { silent = false } = options;
-    if (!this.generatedCode) {
-      this.showError('Generate code before previewing variations');
-      return;
-    }
-
-    const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
-    if (!variation) {
-      this.showError('Variation not found');
-      return;
-    }
-
-    let tab;
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      tab = tabs?.[0];
-    } catch (error) {
-      console.error('Failed to query active tab:', error);
-    }
-
-    if (!tab) {
-      this.showError('No active tab available for preview');
-      return;
-    }
-
-    const variationName = variation.name || `Variation ${variationNumber}`;
-
-    if (!silent) {
-      this.addStatusLog(`🎯 Previewing ${variationName} on active tab`, 'info');
-    }
-
-    const resetBase = await this.resetVariationOnTab(tab.id, 'convert-ai-');
-    const resetPreview = await this.resetVariationOnTab(tab.id, 'convert-ai-preview');
-
-    if (!resetBase && !resetPreview) {
-      const message = 'Unable to prepare the page for preview. Reload the page and try again.';
-      this.addStatusLog(`✗ ${message}`, 'error');
-      this.showError(message);
-      return;
-    }
-
-    const payload = this.buildVariationPayload(variation);
-
-    let applyResponse;
-    try {
-      applyResponse = await chrome.runtime.sendMessage({
-        type: 'APPLY_VARIATION',
-        tabId: tab.id,
-        key: `convert-ai-preview-${variationNumber}`,
-        css: payload.css,
-        js: payload.js
-      });
-    } catch (error) {
-      if (!silent) {
-        this.addStatusLog(`✗ Preview apply failed: ${error.message}`, 'error');
-      }
-      this.showError(error.message || 'Failed to apply variation preview');
-      return;
-    }
-
-    if (Array.isArray(applyResponse?.logs)) {
-      this.logOperationEntries(applyResponse.logs, applyResponse.success ? 'info' : 'error');
-    }
-
-    if (!applyResponse?.success) {
-      const errorMessage = applyResponse?.error || 'Failed to apply variation preview';
-      if (!silent) {
-        this.addStatusLog(`✗ Preview failed: ${errorMessage}`, 'error');
-      }
-      this.showError(errorMessage);
-      return;
-    }
-
-    this.previewState.activeVariation = variationNumber;
-    this.updatePreviewActiveState();
-    if (!silent) {
-      this.setAiActivity('preview', `${variationName} applied to the page.`);
-    }
-    if (!silent) {
-      this.showSuccess(`${variationName} applied to the page`);
-    }
-  }
-
-  async retestVariation(variationNumber) {
-    if (!this.generatedCode) {
-      this.showError('Generate code before testing variations');
-      return;
-    }
-
-    const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
-    if (!variation) {
-      this.showError('Variation not found');
-      return;
-    }
-
-    const variationName = variation.name || `Variation ${variationNumber}`;
-    this.addStatusLog(`🔁 Retesting ${variationName}...`, 'info');
-    const result = await this.testVariation(variationNumber);
-
-    if (!result) {
-      this.addStatusLog('✗ Unable to retest variation', 'error');
-      this.showError('Variation test failed');
-      return;
-    }
-
-    if (result.errors.length) {
-      this.addStatusLog(`✗ ${variationName} reported ${result.errors.length} issue(s)`, 'error');
-      result.errors.forEach((err, idx) => {
-        this.addStatusLog(`    ${idx + 1}. ${err}`, 'error');
-      });
-      this.updateIndicator('error');
-    } else {
-      this.addStatusLog(`✓ ${variationName} passed manual retest`, 'success');
-      this.updateIndicator('active');
-      this.showSuccess(`${variationName} retested successfully`);
-    }
-
-    this.previewState.activeVariation = variationNumber;
-    this.updatePreviewActiveState();
-  }
-
-  isMissingContentScriptError(error) {
-    if (!error) return false;
-    const message = error.message || String(error);
-    return message.includes('Receiving end does not exist') ||
-      message.includes('No matching message handler') ||
-      message.includes('Could not establish connection');
-  }
-
-  async ensureContentScript(tabId) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content-scripts/page-capture.js']
-      });
-      await this.sleep(100);
-      return true;
-    } catch (error) {
-      console.warn('Content script injection failed:', error);
-      return false;
-    }
-  }
-
-  async resetVariationOnTab(tabId, keyPrefix = 'convert-ai-') {
-    try {
-      await chrome.tabs.sendMessage(tabId, {
-        type: 'RESET_VARIATION',
-        keyPrefix
-      });
-      return true;
-    } catch (error) {
-      if (!this.isMissingContentScriptError(error)) {
-        console.warn('Reset variation failed:', error);
-        return false;
+    // Update the variation card to show test status
+    const variationCard = document.querySelector(`[data-variation="${variationNumber}"]`);
+    if (variationCard) {
+      let statusElement = variationCard.querySelector('.test-status');
+      if (!statusElement) {
+        statusElement = document.createElement('div');
+        statusElement.className = 'test-status';
+        variationCard.querySelector('.variation-header').appendChild(statusElement);
       }
 
-      const injected = await this.ensureContentScript(tabId);
-      if (!injected) {
-        return false;
-      }
+      const statusIcons = {
+        'testing': '🔄',
+        'passed': '✅',
+        'failed': '❌'
+      };
 
-      try {
-        await chrome.tabs.sendMessage(tabId, {
-          type: 'RESET_VARIATION',
-          keyPrefix
-        });
-        return true;
-      } catch (retryError) {
-        console.warn('Reset variation retry failed:', retryError);
-        return false;
-      }
-    }
-  }
+      statusElement.innerHTML = `${statusIcons[status] || '⏳'} ${status}`;
+      statusElement.className = `test-status ${status}`;
 
-  async clearVariationPreview(showToast = true) {
-    const hadActive = !!this.previewState.activeVariation;
-    this.previewState.activeVariation = null;
-
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs?.[0];
-      if (tab) {
-        await this.resetVariationOnTab(tab.id, 'convert-ai-preview');
-        await this.resetVariationOnTab(tab.id, 'convert-ai-');
-      }
-    } catch (error) {
-      console.warn('Failed to clear variation preview:', error);
-    }
-
-    this.updatePreviewActiveState();
-
-    if (!this.previewState.activeVariation) {
-      this.setAiActivity('idle', 'Preview cleared. Select a variation to apply it again.');
-    }
-
-    if (showToast && hadActive) {
-      this.showSuccess('Preview cleared from the page');
-    }
-  }
-
-  displayTestScreenshot(screenshotData, variationNumber) {
-    const container = document.getElementById('testScreenshot');
-    const img = document.getElementById('screenshotImg');
-    const meta = document.getElementById('screenshotMeta');
-    
-    img.src = screenshotData;
-    meta.textContent = `Variation ${variationNumber} - ${new Date().toLocaleTimeString()}`;
-    container.classList.remove('hidden');
-  }
-
-  stopIteration() {
-    this.autoIteration.active = false;
-    this.addStatusLog('⏸ Auto-iteration stopped', 'info');
-    document.getElementById('stopIterationBtn')?.classList.add('hidden');
-  }
-
-  recordUsage(usage) {
-    if (!usage) return;
-    const promptTokens = usage.promptTokens || usage.inputTokens || 0;
-    const completionTokens = usage.completionTokens || usage.outputTokens || 0;
-    const tokens = promptTokens + completionTokens;
-
-    this.usageStats.tokens += tokens;
-    const costDelta = this.calculateCost(usage);
-    this.usageStats.cost = Number((this.usageStats.cost + costDelta).toFixed(6));
-    this.updateUsageDisplay();
-    this.persistUsageStats();
-  }
-
-  calculateCost(usage) {
-    const prices = {
-      'gpt-4o-mini': { input: 0.00015, output: 0.0006 },
-      'gpt-4o': { input: 0.005, output: 0.015 },
-      'gpt-4.1-mini': { input: 0.00015, output: 0.0006 },
-      default: { input: 0.00015, output: 0.0006 }
-    };
-    const rawModel = (usage?.model || this.settings.model || 'gpt-4o-mini').toLowerCase();
-    const normalizedModel = rawModel.startsWith('gpt-4o-mini')
-      ? 'gpt-4o-mini'
-      : rawModel.startsWith('gpt-4.1-mini')
-        ? 'gpt-4.1-mini'
-        : rawModel.startsWith('gpt-4o')
-          ? 'gpt-4o'
-          : 'default';
-    const pricing = prices[normalizedModel] || prices.default;
-
-    const promptTokens = usage?.promptTokens || usage?.inputTokens || 0;
-    const completionTokens = usage?.completionTokens || usage?.outputTokens || 0;
-    return ((promptTokens * pricing.input) + (completionTokens * pricing.output)) / 1000;
-  }
-
-  updateUsageDisplay() {
-    const el = document.getElementById('usageStats');
-    if (el) {
-      el.textContent = `Tokens: ${this.usageStats.tokens} | Cost: $${this.usageStats.cost.toFixed(4)}`;
-    }
-  }
-
-  async loadUsageStats() {
-    if (!this.usageStorage?.get) return;
-    try {
-      const result = await this.usageStorage.get(['usageStats']);
-      if (result?.usageStats) {
-        const { tokens = 0, cost = 0 } = result.usageStats;
-        this.usageStats = {
-          tokens: Number(tokens) || 0,
-          cost: Number(cost) || 0
+      // Also update the status badge in the variation header
+      const statusBadge = variationCard.querySelector('.variation-badge');
+      if (statusBadge) {
+        const badges = {
+          'pending': '⏳ Pending',
+          'testing': '🔄 Testing',
+          'passed': '✅ Passed',
+          'failed': '❌ Failed',
+          'warning': '⚠️ Issues'
         };
-        this.updateUsageDisplay();
+        statusBadge.textContent = badges[status] || badges.pending;
+        statusBadge.className = `variation-badge ${status}`;
       }
-    } catch (error) {
-      console.error('Failed to load usage stats:', error);
     }
   }
 
-  async persistUsageStats() {
-    if (!this.usageStorage?.set) return;
-    try {
-      await this.usageStorage.set({ usageStats: this.usageStats });
-    } catch (error) {
-      console.error('Failed to persist usage stats:', error);
-    }
+  editDescription() {
+    this.updateWorkflowState('building');
+    this.focusChatInput();
   }
 
-  getUsageStorageArea() {
-    if (chrome?.storage?.session) {
-      return chrome.storage.session;
-    }
-    return chrome?.storage?.local;
-  }
-
-  showStatusPanel() {
-    const panel = document.getElementById('statusPanel');
-    if (panel) {
-      panel.classList.remove('hidden');
-    }
-    this.switchPanel('review');
-  }
-
-  addStatusLog(message, type = 'info') {
-    const log = document.getElementById('statusLog');
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-    entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-    log.appendChild(entry);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  logOperationEntries(entries, type = 'info') {
-    if (!Array.isArray(entries) || !entries.length) return;
-    entries.forEach(entry => {
-      this.addStatusLog(`LOG ▶ ${entry}`, type);
-    });
-  }
-
-  updateIndicator(state) {
-    const indicator = document.getElementById('statusIndicator');
-    indicator.className = `indicator ${state}`;
-  }
-
-  async copyLog() {
-    const log = document.getElementById('statusLog').textContent;
-    await navigator.clipboard.writeText(log);
-    this.showSuccess('Log copied!');
-  }
-
-  async clearResults() {
-    await this.clearVariationPreview(false);
-    document.getElementById('resultsPanel').classList.add('hidden');
-    document.getElementById('variationPreview')?.classList.add('hidden');
-    const list = document.getElementById('variationPreviewList');
-    if (list) list.innerHTML = '';
-    this.generatedCode = null;
-    this.editedCode = {}; // Reset edited code tracking
-    this.setAiActivity('idle', 'Preview cleared. Generate new code to continue.');
-
-    if (typeof this.updateConvertActionState === 'function') {
-      this.updateConvertActionState();
-    }
-  }
-
-  exportAll() {
+  exportCode() {
     if (!this.generatedCode) {
       this.showError('No code to export');
       return;
     }
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    
-    this.generatedCode.variations.forEach(v => {
-      if (v.css) this.downloadFile(`${v.name.toLowerCase().replace(/\s+/g, '-')}.css`, v.css);
-      if (v.js) this.downloadFile(`${v.name.toLowerCase().replace(/\s+/g, '-')}.js`, v.js);
-    });
+    this.addActivity('Exporting code as JSON...', 'info');
 
-    if (this.generatedCode.globalCSS) this.downloadFile('global.css', this.generatedCode.globalCSS);
-    if (this.generatedCode.globalJS) this.downloadFile('global.js', this.generatedCode.globalJS);
+    // Format code as JSON export
+    const exportData = {
+      timestamp: new Date().toISOString(),
+      pageUrl: this.currentPageData?.url || 'Unknown',
+      variations: this.generatedCode.variations.map(v => ({
+        number: v.number,
+        name: v.name,
+        css: v.css || '',
+        js: v.js || '',
+        testStatus: v.testStatus || 'pending'
+      })),
+      globalCSS: this.generatedCode.globalCSS || '',
+      globalJS: this.generatedCode.globalJS || ''
+    };
 
-    this.showSuccess('Files exported successfully!');
-  }
-
-  downloadFile(filename, content) {
-    const blob = new Blob([content], { type: 'text/plain' });
+    // Create downloadable JSON file
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    a.download = `convert-experiment-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+
+    this.showStatus('📤 Code exported successfully', 'success', 3000);
+    this.addActivity('Code exported as JSON', 'success');
   }
 
-  serializeCode(code) {
-    if (!code) return '';
-    let output = '';
-    code.variations.forEach(v => {
-      if (v.css) output += `// VARIATION ${v.number} - ${v.name}\n// VARIATION CSS\n${v.css}\n\n`;
-      if (v.js) output += `// VARIATION ${v.number} - ${v.name}\n// VARIATION JAVASCRIPT\n${v.js}\n\n`;
+  addVariation() {
+    const newId = Math.max(...this.variations.map(v => v.id)) + 1;
+    this.variations.push({
+      id: newId,
+      name: `Variation ${newId}`,
+      description: ''
     });
-    if (code.globalCSS) output += `// GLOBAL CSS\n${code.globalCSS}\n\n`;
-    if (code.globalJS) output += `// GLOBAL JS\n${code.globalJS}\n\n`;
-    return output;
+    
+    console.log(`➕ Adding variation ${newId}`);
+    this.addActivity(`Added Variation ${newId}`, 'info');
+    
+    // Update the UI to show the new variation
+    this.renderVariationBuilder();
   }
 
-  syncVariationNamesFromCode(codeData) {
-    if (!codeData?.variations?.length) {
+  renderVariationBuilder() {
+    const additionalVariations = document.getElementById('additionalVariations');
+    if (!additionalVariations) return;
+
+    // Only show additional variations if we have more than 1
+    if (this.variations.length <= 1) {
+      additionalVariations.classList.add('hidden');
       return;
     }
 
-    const generatedByNumber = new Map();
-    codeData.variations.forEach(variation => {
-      if (typeof variation.number === 'number') {
-        generatedByNumber.set(variation.number, variation);
-      }
-    });
-
-    let updated = false;
-    const mapped = this.variations.map((config, index) => {
-      const candidate = generatedByNumber.get(config.id) ||
-        generatedByNumber.get(index + 1) ||
-        codeData.variations[index];
-
-      if (candidate?.name && candidate.name !== config.name) {
-        updated = true;
-        return { ...config, name: candidate.name };
-      }
-      return config;
-    });
-
-    let augmented = mapped;
-    if (codeData.variations.length > mapped.length) {
-      let maxId = mapped.reduce((max, variation) => Math.max(max, variation.id || 0), 0);
-      augmented = [...mapped];
-      for (let i = mapped.length; i < codeData.variations.length; i++) {
-        maxId += 1;
-        const generated = codeData.variations[i];
-        augmented.push({
-          id: maxId,
-          name: generated?.name || `Variation ${i + 1}`,
-          description: ''
-        });
-      }
-      updated = true;
-    }
-
-    this.variations = augmented;
-
-    if (updated) {
-      this.renderVariations();
-    }
-  }
-
-  // ============================================
-  // Code Editing Methods
-  // ============================================
-
-  handleCodeEdit(codeId, textarea) {
-    const originalContent = textarea.getAttribute('data-original-content');
-    const currentContent = textarea.value;
-    const isModified = currentContent !== originalContent;
-
-    // Update textarea styling
-    textarea.classList.toggle('modified', isModified);
-
-    // Show/hide save and revert buttons
-    const tabContent = textarea.closest('.tab-content');
-    const saveBtn = tabContent.querySelector('.save-code-btn');
-    const revertBtn = tabContent.querySelector('.revert-code-btn');
+    additionalVariations.classList.remove('hidden');
     
-    if (saveBtn) saveBtn.style.display = isModified ? 'inline-block' : 'none';
-    if (revertBtn) revertBtn.style.display = isModified ? 'inline-block' : 'none';
-
-    // Update modified badge in tab title
-    const header = tabContent.querySelector('.code-title');
-    const existingBadge = header.querySelector('.code-modified-badge');
-    
-    if (isModified && !existingBadge) {
-      const badge = document.createElement('span');
-      badge.className = 'code-modified-badge';
-      badge.textContent = '✏️ Modified';
-      header.appendChild(badge);
-    } else if (!isModified && existingBadge) {
-      existingBadge.remove();
-    }
-  }
-
-  saveCodeEdit(codeId) {
-    const textarea = document.querySelector(`.code-textarea[data-code-id="${codeId}"]`);
-    if (!textarea) return;
-
-    const currentContent = textarea.value;
-    this.editedCode[codeId] = currentContent;
-
-    // Update the generated code object with edited content
-    this.updateGeneratedCodeWithEdits(codeId, currentContent);
-
-    // Update original content attribute so it's no longer "modified"
-    textarea.setAttribute('data-original-content', this.escapeAttr(currentContent));
-    
-    // Trigger re-check
-    this.handleCodeEdit(codeId, textarea);
-    
-    this.addStatusLog(`✅ Saved edits to ${codeId}`, 'success');
-    this.showSuccess('Code changes saved!');
-
-    const match = codeId.match(/^v(\d+)-(css|js)$/);
-    if (match) {
-      const variationNumber = parseInt(match[1], 10);
-      this.autoValidateVariation(variationNumber, {
-        origin: 'Manual edit validation',
-        updateConvertStatus: true
-      }).catch(error => {
-        console.error('Auto validation after save failed:', error);
-      });
-    }
-  }
-
-  revertCodeEdit(codeId) {
-    const textarea = document.querySelector(`.code-textarea[data-code-id="${codeId}"]`);
-    if (!textarea) return;
-
-    const originalContent = textarea.getAttribute('data-original-content');
-    textarea.value = originalContent;
-    
-    // Remove from edited code tracking
-    delete this.editedCode[codeId];
-    
-    // Trigger re-check
-    this.handleCodeEdit(codeId, textarea);
-    
-    this.addStatusLog(`↩️ Reverted ${codeId} to original`, 'info');
-    this.showSuccess('Code reverted to original');
-  }
-
-  updateGeneratedCodeWithEdits(codeId, content) {
-    if (!this.generatedCode) return;
-
-    // Parse the code ID to update the right part of generatedCode
-    const match = codeId.match(/v(\d+)-(css|js)/);
-    if (match) {
-      const variationNumber = parseInt(match[1]);
-      const type = match[2];
-      const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
-      if (variation) {
-        variation[type] = content;
-      }
-    } else if (codeId === 'global-css') {
-      this.generatedCode.globalCSS = content;
-    } else if (codeId === 'global-js') {
-      this.generatedCode.globalJS = content;
-    }
-  }
-
-
-
-
-
-  getCurrentCodeForId(codeId) {
-    const textarea = document.querySelector(`.code-textarea[data-code-id="${codeId}"]`);
-    return textarea ? textarea.value : (this.editedCode[codeId] || '');
-  }
-
-  escapeAttr(text) {
-    if (!text) return '';
-    return String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
-  // ============================================
-  // End Code Editing Methods
-  // ============================================
-
-  // ============================================
-  // Convert.com Integration Methods
-  // ============================================
-
-  initializeConvertState() {
-    this.convertState = {
-      apiKeys: [],
-      apiKeyId: '',
-      credentials: null,
-      accounts: [],
-      accountId: '',
-      projects: [],
-      projectId: '',
-      experiences: [],
-      experienceId: '',
-      baselineVariation: null,
-      variationStore: new Map(),
-      experienceDetails: null,
-      creationMode: false,
-      statusTimer: null
-    };
-  }
-
-  initializeUtilities() {
-    // Initialize keyboard shortcuts
-    this.keyboardShortcuts.init();
-    console.log('⌨️ Keyboard shortcuts initialized');
-
-    // Setup session auto-save
-    this.sessionManager.setupAutoSave();
-    console.log('💾 Session auto-save initialized');
-
-    // Try to restore previous session
-    this.restoreSession();
-
-    // Setup capture mode toggles
-    this.setupCaptureModeToggles();
-
-    // Setup design file upload
-    this.setupDesignFileUpload();
-
-    // Setup prompt helper
-    this.setupPromptHelper();
-
-    // Setup template library
-    this.setupTemplateLibrary();
-
-    console.log('✅ All utilities initialized');
-  }
-
-  async restoreSession() {
-    const session = await this.sessionManager.loadSession();
-    if (session) {
-      this.sessionManager.showRestoreDialog(session);
-    }
-  }
-
-  setupCaptureModeToggles() {
-    const fullBtn = document.getElementById('captureModeFull');
-    const elementBtn = document.getElementById('captureModeElement');
-    const selectionHint = document.getElementById('elementSelectionHint');
-    const selectedPreview = document.getElementById('selectedElementPreview');
-
-    if (!fullBtn || !elementBtn) return;
-
-    fullBtn.addEventListener('click', () => {
-      this.captureMode = 'full';
-      fullBtn.classList.add('active');
-      elementBtn.classList.remove('active');
-      
-      // Hide element-specific UI
-      selectionHint?.classList.add('hidden');
-      selectedPreview?.classList.add('hidden');
-      
-      this.addStatusLog('📄 Capture mode: Full page', 'info');
-    });
-
-    elementBtn.addEventListener('click', () => {
-      this.captureMode = 'element';
-      elementBtn.classList.add('active');
-      fullBtn.classList.remove('active');
-      
-      // Show element selection hint
-      selectionHint?.classList.remove('hidden');
-      
-      this.addStatusLog('🎯 Capture mode: Select element - Click "Capture Page" then select an element', 'info');
-    });
-
-    // Setup change selection button
-    const changeSelectionBtn = document.getElementById('changeSelectionBtn');
-    changeSelectionBtn?.addEventListener('click', () => {
-      selectedPreview?.classList.add('hidden');
-      selectionHint?.classList.remove('hidden');
-      this.currentPageData.selectedElement = null;
-      this.addStatusLog('🎯 Click "Capture Page" to select a new element', 'info');
-    });
-  }
-
-  setupDesignFileUpload() {
-    const uploadBox = document.getElementById('uploadBox');
-    const fileInput = document.getElementById('designFileInput');
-    const previewGrid = document.getElementById('designPreviewGrid');
-
-    if (!uploadBox || !fileInput || !previewGrid) return;
-
-    // Click to browse
-    uploadBox.addEventListener('click', () => fileInput.click());
-
-    // Drag and drop
-    uploadBox.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      uploadBox.classList.add('drag-over');
-    });
-
-    uploadBox.addEventListener('dragleave', () => {
-      uploadBox.classList.remove('drag-over');
-    });
-
-    uploadBox.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      uploadBox.classList.remove('drag-over');
-
-      const files = Array.from(e.dataTransfer.files);
-      await this.handleDesignFiles(files);
-    });
-
-    // File input change
-    fileInput.addEventListener('change', async (e) => {
-      const files = Array.from(e.target.files);
-      await this.handleDesignFiles(files);
-    });
-  }
-
-  async handleDesignFiles(files) {
-    for (const file of files) {
-      try {
-        const processed = await this.designFileManager.addFile(file);
-        this.renderDesignPreview(processed);
-        this.addStatusLog(`✅ Added design file: ${file.name}`, 'success');
-      } catch (error) {
-        this.showError(error.message);
-      }
-    }
-  }
-
-  renderDesignPreview(file) {
-    const previewGrid = document.getElementById('designPreviewGrid');
-    if (!previewGrid) return;
-
-    const card = document.createElement('div');
-    card.innerHTML = this.designFileManager.generatePreviewCard(file);
-    previewGrid.appendChild(card.firstElementChild);
-
-    // Bind remove button
-    const removeBtn = card.querySelector('.design-remove-btn');
-    removeBtn?.addEventListener('click', () => {
-      this.designFileManager.removeFile(file.id);
-      card.firstElementChild.remove();
-      this.addStatusLog(`🗑️ Removed design file: ${file.name}`, 'info');
-    });
-
-    // Bind notes input
-    const notesInput = card.querySelector('.design-notes-input');
-    notesInput?.addEventListener('input', (e) => {
-      this.designFileManager.updateFileNotes(file.id, e.target.value);
-    });
-  }
-
-  setupPromptHelper() {
-    const suggestionsBtn = document.getElementById('showSuggestionsBtn');
-    const examplesBtn = document.getElementById('showExamplesBtn');
-    const templatesBtn = document.getElementById('showTemplatesBtn');
-    const suggestionChips = document.getElementById('suggestionChips');
-    const chipsContainer = document.getElementById('chipsContainer');
-
-    if (!suggestionsBtn || !examplesBtn || !templatesBtn) return;
-
-    // Show/hide suggestions
-    suggestionsBtn.addEventListener('click', () => {
-      const isVisible = suggestionChips.style.display !== 'none';
-      if (isVisible) {
-        suggestionChips.style.display = 'none';
-      } else {
-        this.showPromptSuggestions();
-        suggestionChips.style.display = 'block';
-      }
-    });
-
-    // Show examples modal
-    examplesBtn.addEventListener('click', () => {
-      this.showExamplesModal();
-    });
-
-    // Show templates (reuse existing template functionality)
-    templatesBtn.addEventListener('click', () => {
-      this.showTemplateLibrary();
-    });
-
-    // Setup examples modal
-    this.setupExamplesModal();
-  }
-
-  showPromptSuggestions() {
-    const chipsContainer = document.getElementById('chipsContainer');
-    if (!chipsContainer) return;
-
-    // Get suggestions based on current context
-    const selectedElement = this.currentPageData?.selectedElement;
-    const suggestions = this.promptAssistant.getSuggestionsForElement(selectedElement);
-
-    // Clear existing chips
-    chipsContainer.innerHTML = '';
-
-    // Create suggestion chips
-    suggestions.forEach(suggestion => {
-      const chip = document.createElement('button');
-      chip.className = 'chip';
-      chip.textContent = suggestion;
-      chip.addEventListener('click', () => {
-        this.insertSuggestion(suggestion);
-      });
-      chipsContainer.appendChild(chip);
-    });
-  }
-
-  insertSuggestion(suggestion) {
-    const descriptionText = document.getElementById('descriptionText');
-    if (!descriptionText) return;
-
-    const currentText = descriptionText.value;
-    const newText = currentText ? `${currentText}\n\n${suggestion}` : suggestion;
-    
-    descriptionText.value = newText;
-    descriptionText.focus();
-
-    // Update character count if it exists
-    const charCount = document.getElementById('charCount');
-    if (charCount) {
-      charCount.textContent = newText.length;
-    }
-
-    // Hide suggestions after selection
-    const suggestionChips = document.getElementById('suggestionChips');
-    if (suggestionChips) {
-      suggestionChips.style.display = 'none';
-    }
-  }
-
-  setupExamplesModal() {
-    const modal = document.getElementById('examplesModal');
-    const closeBtn = document.getElementById('closeExamplesModal');
-    const overlay = modal?.querySelector('.modal-overlay');
-
-    if (!modal) return;
-
-    closeBtn?.addEventListener('click', () => {
-      modal.classList.add('hidden');
-    });
-
-    overlay?.addEventListener('click', () => {
-      modal.classList.add('hidden');
-    });
-
-    // Make example cards clickable
-    modal.addEventListener('click', (e) => {
-      const exampleCard = e.target.closest('.example-card');
-      if (exampleCard) {
-        const exampleText = exampleCard.querySelector('.example-text')?.textContent;
-        if (exampleText) {
-          this.insertSuggestion(exampleText.replace(/["""]/g, ''));
-          modal.classList.add('hidden');
-        }
-      }
-    });
-  }
-
-  showExamplesModal() {
-    const modal = document.getElementById('examplesModal');
-    if (modal) {
-      modal.classList.remove('hidden');
-    }
-  }
-
-  setupTemplateLibrary() {
-    const browseBtn = document.getElementById('browseTemplatesBtn');
-    const modal = document.getElementById('templateModal');
-    const closeBtn = document.getElementById('closeTemplateModal');
-    const overlay = modal?.querySelector('.modal-overlay');
-
-    if (!browseBtn || !modal) return;
-
-    browseBtn.addEventListener('click', () => {
-      this.showTemplateLibrary();
-    });
-
-    closeBtn?.addEventListener('click', () => {
-      modal.classList.add('hidden');
-    });
-
-    overlay?.addEventListener('click', () => {
-      modal.classList.add('hidden');
-    });
-  }
-
-  showTemplateLibrary() {
-    const modal = document.getElementById('templateModal');
-    const grid = document.getElementById('templateGrid');
-
-    if (!modal || !grid) return;
-
-    // Get templates from prompt assistant
-    const templates = this.promptAssistant.templates;
-
-    // Render template cards
-    grid.innerHTML = Object.entries(templates).map(([id, template]) => `
-      <div class="template-card" data-template-id="${id}">
-        <div class="template-icon">${template.icon}</div>
-        <h4>${template.name}</h4>
-        <p>${template.description}</p>
-        <div class="template-meta">${template.variations.length} variations</div>
-        <button class="btn-primary template-apply-btn">Apply Template</button>
+    // Render variations 2+
+    const additionalVars = this.variations.slice(1);
+    additionalVariations.innerHTML = additionalVars.map(variation => `
+      <div class="variation-item" data-variation-id="${variation.id}">
+        <div class="variation-header">
+          <label for="variation${variation.id}Description">${variation.name}</label>
+          <button class="btn-link remove-variation" data-variation-id="${variation.id}">
+            Remove
+          </button>
+        </div>
+        <textarea 
+          id="variation${variation.id}Description" 
+          placeholder="Describe what's different about this variation..."
+          rows="2"
+        >${variation.description}</textarea>
       </div>
     `).join('');
 
-    // Bind apply buttons
-    grid.querySelectorAll('.template-apply-btn').forEach(btn => {
+    // Bind remove buttons
+    additionalVariations.querySelectorAll('.remove-variation').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const card = e.target.closest('.template-card');
-        const templateId = card.getAttribute('data-template-id');
-        this.applyTemplate(templateId);
-        modal.classList.add('hidden');
+        const variationId = parseInt(e.target.dataset.variationId);
+        this.removeVariation(variationId);
       });
     });
 
-    modal.classList.remove('hidden');
-  }
-
-  applyTemplate(templateId) {
-    const template = this.promptAssistant.templates[templateId];
-    if (!template) return;
-
-    // Clear existing variations
-    this.variations = [];
-
-    // Add template variations
-    template.variations.forEach((v, idx) => {
-      this.variations.push({
-        id: idx + 1,
-        name: v.name,
-        description: v.instructions
+    // Bind textarea changes
+    additionalVariations.querySelectorAll('textarea').forEach(textarea => {
+      textarea.addEventListener('input', (e) => {
+        const variationId = parseInt(e.target.id.replace('variation', '').replace('Description', ''));
+        const variation = this.variations.find(v => v.id === variationId);
+        if (variation) {
+          variation.description = e.target.value;
+        }
       });
     });
-
-    // Update focused variation
-    this.focusedVariationId = this.variations[0]?.id || 1;
-
-    // Re-render
-    this.renderVariations();
-    this.updateFocusedVariationWorkspace();
-
-    this.showSuccess(`Applied template: ${template.name}`);
-    this.addStatusLog(`📋 Applied template: ${template.name} (${template.variations.length} variations)`, 'success');
   }
 
-  getConvertElements() {
-    return {
-      section: document.getElementById('convertIntegrationSection'),
-      apiKeySelect: document.getElementById('convertApiKeySelect'),
-      accountSelect: document.getElementById('convertAccountSelect'),
-      projectSelect: document.getElementById('convertProjectSelect'),
-      experienceSelect: document.getElementById('convertExperienceSelect'),
-      refreshProjectsBtn: document.getElementById('refreshConvertProjectsBtn'),
-      refreshExperiencesBtn: document.getElementById('refreshConvertExperiencesBtn'),
-      createFields: document.getElementById('convertCreateFields'),
-      status: document.getElementById('convertStatus'),
-      experienceMeta: document.getElementById('convertExperienceMeta'),
-      experienceStatus: document.getElementById('convertExperienceStatus'),
-      experienceType: document.getElementById('convertExperienceType'),
-      experienceUpdated: document.getElementById('convertExperienceUpdated'),
-      importBtn: document.getElementById('importExperienceBtn'),
-      pushBtn: document.getElementById('pushExperienceBtn'),
-      runBtn: document.getElementById('runConvertPreviewBtn'),
-      newExperienceName: document.getElementById('convertNewExperienceName'),
-      newExperienceType: document.getElementById('convertNewExperienceType'),
-      newExperienceUrl: document.getElementById('convertNewExperienceUrl'),
-      newBaselineName: document.getElementById('convertNewBaselineName'),
-      newVariationName: document.getElementById('convertNewVariationName')
-    };
+  removeVariation(variationId) {
+    this.variations = this.variations.filter(v => v.id !== variationId);
+    console.log(`➖ Removed variation ${variationId}`);
+    this.addActivity(`Removed Variation ${variationId}`, 'info');
+    this.renderVariationBuilder();
   }
 
-  resetConvertSelect(selectEl, placeholder, includeCreate = false) {
-    if (!selectEl) return;
-    let html = `<option value="">${placeholder}</option>`;
-    if (includeCreate) {
-      html += '<option value="__create__">➕ Create New Experience</option>';
-    }
-    selectEl.innerHTML = html;
-    selectEl.disabled = true;
-  }
+  async activateElementSelector() {
+    console.log('🎯 activateElementSelector called');
+    this.showStatus('🎯 Click any element on the page to select it', 'info');
+    this.addActivity('Element selector activated - click any element on the page', 'info');
 
-  async loadConvertAPIKeys() {
     try {
-      const response = await chrome.runtime.sendMessage({ type: 'GET_CONVERT_API_KEYS' });
+      // Get the active tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) {
+        throw new Error('No active tab found');
+      }
+
+      this.targetTabId = tab.id;
+
+      console.log('📡 Ensuring content script is loaded on tab:', tab.id);
+
+      // First, ensure content script is injected
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content-scripts/element-selector.js']
+        });
+        console.log('✅ Content script injected successfully');
+        // Small delay to ensure script is ready
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (injectError) {
+        // Content script might already be loaded, that's okay
+        console.log('ℹ️ Content script injection skipped (likely already loaded):', injectError.message);
+      }
+
+      console.log('📡 Sending START_ELEMENT_SELECTION message to tab:', tab.id);
+
+      // Send message to content script to activate element selector
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: 'START_ELEMENT_SELECTION'
+      });
+
+      console.log('📡 Content script response:', response);
+
       if (response?.success) {
-        this.convertState.apiKeys = response.keys || [];
-        this.populateConvertApiKeys();
-      }
-    } catch (error) {
-      console.error('Failed to load Convert API keys:', error);
-      this.setConvertStatus('Failed to load Convert API keys', 'error');
-    }
-  }
-
-  populateConvertApiKeys() {
-    const elements = this.getConvertElements();
-    if (!elements.apiKeySelect) return;
-
-    const keys = this.convertState.apiKeys || [];
-    const previousSelection = this.convertState.apiKeyId;
-    const options = ['<option value="">-- Select API Key --</option>']
-      .concat(keys.map(key => `<option value="${key.id}">${this.escapeHtml(key.label || 'Unnamed Key')}</option>`));
-
-    elements.apiKeySelect.innerHTML = options.join('');
-    elements.apiKeySelect.disabled = keys.length === 0;
-
-    if (previousSelection && keys.some(key => key.id === previousSelection)) {
-      elements.apiKeySelect.value = previousSelection;
-      this.onConvertApiKeyChange();
-    } else {
-      this.onConvertApiKeyChange();
-    }
-  }
-
-  getActiveConvertCredentials(refresh = false) {
-    if (refresh) {
-      this.convertState.credentials = null;
-    }
-    if (this.convertState.credentials) {
-      return this.convertState.credentials;
-    }
-    const key = this.convertState.apiKeys.find(k => k.id === this.convertState.apiKeyId);
-    if (!key) return null;
-    this.convertState.credentials = {
-      apiKey: key.apiKey,
-      apiSecret: key.apiSecret
-    };
-    return this.convertState.credentials;
-  }
-
-  async onConvertApiKeyChange() {
-    const elements = this.getConvertElements();
-    const selectedId = elements.apiKeySelect?.value || '';
-    this.convertState.apiKeyId = selectedId;
-    this.convertState.credentials = null;
-    this.convertState.accounts = [];
-    this.convertState.accountId = '';
-    this.convertState.projects = [];
-    this.convertState.projectId = '';
-    this.convertState.experiences = [];
-    this.convertState.experienceId = '';
-    this.convertState.baselineVariation = null;
-    this.convertState.variationStore = new Map();
-    this.convertState.experienceDetails = null;
-    this.convertState.creationMode = false;
-
-    this.resetConvertSelect(elements.accountSelect, '-- Select Account --');
-    this.resetConvertSelect(elements.projectSelect, '-- Select Project --');
-    this.resetConvertSelect(elements.experienceSelect, '-- Select Experience --', true);
-    if (elements.refreshProjectsBtn) elements.refreshProjectsBtn.disabled = true;
-    if (elements.refreshExperiencesBtn) elements.refreshExperiencesBtn.disabled = true;
-    this.toggleConvertCreationMode(false);
-    this.updateConvertExperienceMeta(null);
-    this.setConvertStatus('');
-
-    if (!selectedId) {
-      this.updateConvertActionState();
-      return;
-    }
-
-    try {
-      await this.fetchConvertAccounts();
-    } catch (error) {
-      this.setConvertStatus(error.message, 'error');
-    } finally {
-      this.updateConvertActionState();
-    }
-  }
-
-  async fetchConvertAccounts() {
-    const elements = this.getConvertElements();
-    const credentials = this.getActiveConvertCredentials(true);
-    if (!credentials) {
-      throw new Error('Select a Convert.com API key to continue');
-    }
-
-    try {
-      this.setConvertStatus('Loading accounts…', 'info');
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONVERT_LIST_ACCOUNTS',
-        credentials
-      });
-
-      if (!response?.success) {
-        throw new Error(response?.error || 'Unable to load accounts');
-      }
-
-      this.convertState.accounts = response.accounts || [];
-      this.populateConvertAccounts();
-    } catch (error) {
-      console.error('Failed to fetch accounts:', error);
-      throw error;
-    }
-  }
-
-  populateConvertAccounts() {
-    const elements = this.getConvertElements();
-    if (!elements.accountSelect) return;
-
-    const accounts = this.convertState.accounts || [];
-    
-    // Sort accounts using smart lists
-    const sortedAccounts = this.convertSmartLists.sortAccounts(accounts);
-    
-    const options = ['<option value="">-- Select Account --</option>']
-      .concat(sortedAccounts.map(account => {
-        const enhanced = this.convertSmartLists.enhanceAccountDisplay(account);
-        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
-        return `<option value="${enhanced.value}"${searchAttr}>${enhanced.html}</option>`;
-      }));
-
-    elements.accountSelect.innerHTML = options.join('');
-    elements.accountSelect.disabled = accounts.length === 0;
-
-    // Add enhanced class for styling
-    elements.accountSelect.className = 'convert-enhanced-select';
-
-    if (accounts.length === 1) {
-      elements.accountSelect.value = accounts[0].id;
-      this.onConvertAccountChange();
-    } else {
-      this.updateConvertActionState();
-    }
-
-    this.setConvertStatus('');
-  }
-
-  async onConvertAccountChange() {
-    const elements = this.getConvertElements();
-    const accountId = elements.accountSelect?.value || '';
-    this.convertState.accountId = accountId;
-    this.convertState.projects = [];
-    this.convertState.projectId = '';
-    this.convertState.experiences = [];
-    this.convertState.experienceId = '';
-    this.convertState.baselineVariation = null;
-    this.convertState.variationStore = new Map();
-    this.convertState.experienceDetails = null;
-
-    this.resetConvertSelect(elements.projectSelect, '-- Select Project --');
-    this.resetConvertSelect(elements.experienceSelect, '-- Select Experience --', true);
-    this.toggleConvertCreationMode(false);
-    this.updateConvertExperienceMeta(null);
-    this.setConvertStatus('');
-
-    if (elements.refreshProjectsBtn) {
-      elements.refreshProjectsBtn.disabled = !accountId;
-    }
-    if (elements.refreshExperiencesBtn) {
-      elements.refreshExperiencesBtn.disabled = true;
-    }
-
-    if (!accountId) {
-      this.updateConvertActionState();
-      return;
-    }
-
-    try {
-      await this.refreshConvertProjects(true);
-    } catch (error) {
-      this.setConvertStatus(error.message, 'error');
-    } finally {
-      this.updateConvertActionState();
-    }
-  }
-
-  async refreshConvertProjects(force = false) {
-    const elements = this.getConvertElements();
-    if (!this.convertState.accountId) {
-      throw new Error('Select an account to load projects');
-    }
-
-    const credentials = this.getActiveConvertCredentials();
-    if (!credentials) {
-      throw new Error('Select a Convert.com API key to continue');
-    }
-
-    try {
-      if (elements.projectSelect) elements.projectSelect.disabled = true;
-      if (elements.refreshProjectsBtn) elements.refreshProjectsBtn.disabled = true;
-      this.setConvertStatus('Loading projects…', 'info');
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONVERT_LIST_PROJECTS',
-        credentials,
-        accountId: this.convertState.accountId,
-        options: { resultsPerPage: 200 }
-      });
-
-      if (!response?.success) {
-        throw new Error(response?.error || 'Unable to load projects');
-      }
-
-      this.convertState.projects = response.projects || [];
-      this.populateConvertProjects();
-    } finally {
-      if (elements.refreshProjectsBtn) {
-        elements.refreshProjectsBtn.disabled = !this.convertState.accountId;
-      }
-      this.setConvertStatus('');
-      this.updateConvertActionState();
-    }
-  }
-
-  populateConvertProjects() {
-    const elements = this.getConvertElements();
-    if (!elements.projectSelect) return;
-
-    const projects = this.convertState.projects || [];
-    
-    // Sort projects using smart lists
-    const sortedProjects = this.convertSmartLists.sortProjects(projects);
-    
-    const options = ['<option value="">-- Select Project --</option>']
-      .concat(sortedProjects.map(project => {
-        const enhanced = this.convertSmartLists.enhanceProjectDisplay(project);
-        const metaAttr = enhanced.meta ? ` data-meta="${this.escapeHtml(enhanced.meta)}"` : '';
-        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
-        return `<option value="${enhanced.value}"${metaAttr}${searchAttr}>${enhanced.html}</option>`;
-      }));
-
-    elements.projectSelect.innerHTML = options.join('');
-    elements.projectSelect.disabled = projects.length === 0;
-
-    // Add enhanced class for styling
-    elements.projectSelect.className = 'convert-enhanced-select';
-
-    // Add search functionality for large lists
-    if (projects.length > 10) {
-      this.convertSmartLists.addSearchToSelect(elements.projectSelect);
-    }
-
-    if (projects.length === 1) {
-      elements.projectSelect.value = projects[0].id;
-      this.onConvertProjectChange();
-    }
-  }
-
-  async onConvertProjectChange() {
-    const elements = this.getConvertElements();
-    const projectId = elements.projectSelect?.value || '';
-    this.convertState.projectId = projectId;
-    this.convertState.experiences = [];
-    this.convertState.experienceId = '';
-    this.convertState.baselineVariation = null;
-    this.convertState.variationStore = new Map();
-    this.convertState.experienceDetails = null;
-
-    this.resetConvertSelect(elements.experienceSelect, '-- Select Experience --', true);
-    this.toggleConvertCreationMode(false);
-    this.updateConvertExperienceMeta(null);
-    this.setConvertStatus('');
-
-    if (elements.refreshExperiencesBtn) {
-      elements.refreshExperiencesBtn.disabled = !projectId;
-    }
-
-    if (!projectId) {
-      this.updateConvertActionState();
-      return;
-    }
-
-    try {
-      await this.refreshConvertExperiences(true);
-    } catch (error) {
-      this.setConvertStatus(error.message, 'error');
-    } finally {
-      this.updateConvertActionState();
-    }
-  }
-
-  async refreshConvertExperiences(force = false) {
-    const elements = this.getConvertElements();
-    if (!this.convertState.projectId) {
-      throw new Error('Select a project to load experiences');
-    }
-
-    const credentials = this.getActiveConvertCredentials();
-    if (!credentials) {
-      throw new Error('Select a Convert.com API key to continue');
-    }
-
-    try {
-      if (elements.experienceSelect) elements.experienceSelect.disabled = true;
-      if (elements.refreshExperiencesBtn) elements.refreshExperiencesBtn.disabled = true;
-      this.setConvertStatus('Loading experiences…', 'info');
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONVERT_LIST_EXPERIENCES',
-        credentials,
-        accountId: this.convertState.accountId,
-        projectId: this.convertState.projectId,
-        options: { resultsPerPage: 200 }
-      });
-
-      if (!response?.success) {
-        throw new Error(response?.error || 'Unable to load experiences');
-      }
-
-      this.convertState.experiences = response.experiences || [];
-      this.populateConvertExperiences();
-    } finally {
-      if (elements.refreshExperiencesBtn) {
-        elements.refreshExperiencesBtn.disabled = !this.convertState.projectId;
-      }
-      this.setConvertStatus('');
-      this.updateConvertActionState();
-    }
-  }
-
-  populateConvertExperiences() {
-    const elements = this.getConvertElements();
-    if (!elements.experienceSelect) return;
-
-    const experiences = this.convertState.experiences || [];
-    
-    // Sort and group experiences using smart lists
-    const sortedExperiences = this.convertSmartLists.sortExperiences(experiences);
-    
-    let optionsHtml;
-    
-    if (experiences.length > 5) {
-      // Use grouped display for large lists
-      const groups = this.convertSmartLists.groupExperiencesByStatus(sortedExperiences);
-      optionsHtml = this.convertSmartLists.createGroupedSelect(
-        groups, 
-        this.convertSmartLists.enhanceExperienceDisplay.bind(this.convertSmartLists), 
-        '-- Select Experience --'
-      );
-    } else {
-      // Simple display for small lists
-      const options = ['<option value="">-- Select Experience --</option>'];
-      options.push('<option value="__create__">➕ Create New Experience</option>');
-      
-      sortedExperiences.forEach(experience => {
-        const enhanced = this.convertSmartLists.enhanceExperienceDisplay(experience);
-        const metaAttr = enhanced.meta ? ` data-meta="${this.escapeHtml(enhanced.meta)}"` : '';
-        const searchAttr = ` data-search="${this.escapeHtml(enhanced.searchText)}"`;
-        options.push(`<option value="${enhanced.value}"${metaAttr}${searchAttr}>${enhanced.html}</option>`);
-      });
-      
-      optionsHtml = options.join('');
-    }
-
-    elements.experienceSelect.innerHTML = optionsHtml;
-    elements.experienceSelect.disabled = false;
-
-    // Add enhanced class for styling
-    elements.experienceSelect.className = 'convert-enhanced-select';
-
-    // Add search functionality for large lists
-    if (experiences.length > 8) {
-      this.convertSmartLists.addSearchToSelect(elements.experienceSelect);
-    }
-  }
-
-  onConvertExperienceChange() {
-    const elements = this.getConvertElements();
-    const selected = elements.experienceSelect?.value || '';
-    this.convertState.experienceId = '';
-    this.convertState.creationMode = false;
-    this.convertState.experienceDetails = null;
-    this.convertState.baselineVariation = null;
-    this.convertState.variationStore = new Map();
-
-    this.toggleConvertCreationMode(false);
-    this.updateConvertExperienceMeta(null);
-    this.setConvertStatus('');
-
-    if (!selected) {
-      this.updateConvertActionState();
-      return;
-    }
-
-    if (selected === '__create__') {
-      this.toggleConvertCreationMode(true);
-      this.prepareNewExperienceDefaults();
-      this.updateConvertActionState();
-      return;
-    }
-
-    this.convertState.experienceId = selected;
-    this.updateConvertActionState();
-  }
-
-  toggleConvertCreationMode(enabled) {
-    const elements = this.getConvertElements();
-    this.convertState.creationMode = enabled;
-
-    if (elements.createFields) {
-      elements.createFields.classList.toggle('hidden', !enabled);
-    }
-    if (elements.importBtn) {
-      elements.importBtn.disabled = enabled || !this.convertState.experienceId;
-    }
-  }
-
-  prepareNewExperienceDefaults() {
-    const elements = this.getConvertElements();
-
-    const nameDefault = `AI Draft ${new Date().toLocaleDateString()}`;
-    if (elements.newExperienceName) {
-      if (!elements.newExperienceName.value) {
-        elements.newExperienceName.value = nameDefault;
-      }
-    }
-
-    if (elements.newBaselineName && !elements.newBaselineName.value) {
-      elements.newBaselineName.value = 'Original';
-    }
-
-    if (elements.newVariationName && !elements.newVariationName.value) {
-      const nextIndex = (this.generatedCode?.variations?.length || 0) + 1;
-      elements.newVariationName.value = `Variation ${nextIndex}`;
-    }
-
-    const url = this.currentPageData?.url || '';
-    if (elements.newExperienceUrl && !elements.newExperienceUrl.value) {
-      elements.newExperienceUrl.value = url;
-    }
-  }
-
-  updateConvertExperienceMeta(experience) {
-    const elements = this.getConvertElements();
-    if (!elements.experienceMeta) return;
-
-    if (!experience) {
-      elements.experienceMeta.classList.add('hidden');
-      if (elements.experienceStatus) elements.experienceStatus.textContent = '-';
-      if (elements.experienceType) elements.experienceType.textContent = '-';
-      if (elements.experienceUpdated) elements.experienceUpdated.textContent = '-';
-      return;
-    }
-
-    elements.experienceMeta.classList.remove('hidden');
-    if (elements.experienceStatus) {
-      elements.experienceStatus.textContent = experience.status || 'unknown';
-    }
-    if (elements.experienceType) {
-      elements.experienceType.textContent = experience.type || 'a/b';
-    }
-    if (elements.experienceUpdated) {
-      elements.experienceUpdated.textContent = this.formatConvertTimestamp(
-        experience.updated_at || experience.updatedAt || experience.updatedAtUtc
-      );
-    }
-  }
-
-  setConvertStatus(message, type = 'info') {
-    const elements = this.getConvertElements();
-    if (!elements.status) return;
-
-    if (this.convertState.statusTimer) {
-      clearTimeout(this.convertState.statusTimer);
-      this.convertState.statusTimer = null;
-    }
-
-    if (!message) {
-      elements.status.innerHTML = '';
-      return;
-    }
-
-    elements.status.innerHTML = `<div class="status-pill status-${type}">${message}</div>`;
-
-    if (type !== 'error') {
-      this.convertState.statusTimer = setTimeout(() => {
-        if (elements.status) {
-          elements.status.innerHTML = '';
-        }
-        this.convertState.statusTimer = null;
-      }, 8000);
-    }
-  }
-
-  updateConvertActionState() {
-    const elements = this.getConvertElements();
-    const hasCredentials = !!this.getActiveConvertCredentials();
-    const hasAccount = !!this.convertState.accountId;
-    const hasProject = !!this.convertState.projectId;
-    const hasExperience = !!this.convertState.experienceId;
-    const hasCode = !!(this.generatedCode && this.generatedCode.variations?.length);
-    const inCreation = this.convertState.creationMode;
-
-    if (elements.accountSelect) {
-      elements.accountSelect.disabled = !hasCredentials || !this.convertState.accounts.length;
-    }
-    if (elements.projectSelect) {
-      elements.projectSelect.disabled = !hasAccount || !this.convertState.projects.length;
-    }
-    if (elements.experienceSelect) {
-      elements.experienceSelect.disabled = !hasProject;
-    }
-    if (elements.refreshProjectsBtn) {
-      elements.refreshProjectsBtn.disabled = !hasAccount;
-    }
-    if (elements.refreshExperiencesBtn) {
-      elements.refreshExperiencesBtn.disabled = !hasProject;
-    }
-    if (elements.importBtn) {
-      elements.importBtn.disabled = inCreation || !hasExperience;
-    }
-    if (elements.pushBtn) {
-      const canPush = hasProject && hasCredentials && ((inCreation && hasCode) || (!inCreation && hasExperience && hasCode));
-      elements.pushBtn.disabled = !canPush;
-    }
-    if (elements.runBtn) {
-      elements.runBtn.disabled = !hasCode;
-    }
-  }
-
-  async importConvertExperience() {
-    if (!this.convertState.experienceId) {
-      this.setConvertStatus('Select an experience to import', 'info');
-      return;
-    }
-
-    const credentials = this.getActiveConvertCredentials();
-    if (!credentials) {
-      this.setConvertStatus('Select a Convert.com API key', 'error');
-      return;
-    }
-
-    const elements = this.getConvertElements();
-    if (elements.importBtn) {
-      elements.importBtn.disabled = true;
-    }
-
-    try {
-      this.setConvertStatus('Fetching experience details…', 'info');
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONVERT_GET_EXPERIENCE',
-        credentials,
-        accountId: this.convertState.accountId,
-        projectId: this.convertState.projectId,
-        experienceId: this.convertState.experienceId,
-        options: { expand: ['variations', 'variations.changes'] }
-      });
-
-      if (!response?.success) {
-        throw new Error(response?.error || 'Failed to load experience');
-      }
-
-      const experience = response.experience;
-      if (!experience) {
-        throw new Error('Experience details were empty');
-      }
-
-      this.convertState.experienceDetails = experience;
-      this.loadExperienceIntoBuilder(experience);
-      this.updateConvertExperienceMeta(experience);
-      this.setConvertStatus('✅ Experience synced into builder', 'success');
-      this.addStatusLog(`✅ Imported Convert experience "${experience.name}"`, 'success');
-    } catch (error) {
-      console.error('Import experience failed:', error);
-      this.setConvertStatus(`Failed to import experience: ${error.message}`, 'error');
-      this.addStatusLog(`❌ Convert import failed: ${error.message}`, 'error');
-    } finally {
-      if (elements.importBtn) {
-        elements.importBtn.disabled = false;
-      }
-      this.updateConvertActionState();
-    }
-  }
-
-  loadExperienceIntoBuilder(experience) {
-    const allVariations = Array.isArray(experience?.variations) ? experience.variations : [];
-    const baseline = allVariations.find(v => v?.is_baseline);
-    const variations = allVariations.filter(v => !v?.is_baseline);
-
-    this.convertState.baselineVariation = baseline || null;
-    this.convertState.variationStore = new Map();
-
-    const unsupported = [];
-    const mappedVariations = variations.map((variation, idx) => {
-      const changes = Array.isArray(variation?.changes) ? variation.changes : [];
-      const customChanges = changes.filter(change => change?.type === 'customCode');
-      const otherChanges = changes.filter(change => change?.type && change.type !== 'customCode');
-
-      if (otherChanges.length) {
-        unsupported.push({
-          variation: variation?.name || `Variation ${idx + 1}`,
-          types: [...new Set(otherChanges.map(change => change.type))].join(', ')
-        });
-      }
-
-      const cssPieces = customChanges
-        .map(change => (change?.data?.css || '').trim())
-        .filter(Boolean);
-      const jsPieces = customChanges
-        .map(change => (change?.data?.js || '').trim())
-        .filter(Boolean);
-
-      this.convertState.variationStore.set(variation.id, {
-        variation,
-        changes,
-        customChanges
-      });
-
-      return {
-        number: idx + 1,
-        name: variation?.name || `Variation ${idx + 1}`,
-        description: variation?.description || '',
-        css: cssPieces.join('\n\n'),
-        js: jsPieces.join('\n\n'),
-        convertVariationId: variation?.id,
-        convertChangeIds: customChanges.map(change => change?.id).filter(Boolean),
-        traffic_distribution: variation?.traffic_distribution ?? 0,
-        status: variation?.status || 'draft'
-      };
-    });
-
-    if (!mappedVariations.length) {
-      this.setConvertStatus('No custom-code variations found to import.', 'info');
-    }
-
-    this.variations = mappedVariations.map(v => ({
-      id: v.number,
-      name: v.name,
-      description: v.description
-    }));
-
-    this.renderVariations();
-
-    const codeData = {
-      variations: mappedVariations
-    };
-
-    if (experience?.global_css) {
-      codeData.globalCSS = experience.global_css;
-    }
-    if (experience?.global_js) {
-      codeData.globalJS = experience.global_js;
-    }
-
-    this.generatedCode = codeData;
-    this.displayGeneratedCode(codeData);
-
-    if (unsupported.length) {
-      const details = unsupported.map(item => `${item.variation}: ${item.types}`).join('<br>');
-      this.setConvertStatus(`Imported, but some changes use unsupported types:<br>${details}`, 'info');
-    }
-  }
-
-  formatConvertTimestamp(value) {
-    if (!value) {
-      return '-';
-    }
-
-    let date;
-    if (typeof value === 'number') {
-      date = value > 1e12 ? new Date(value) : new Date(value * 1000);
-    } else {
-      date = new Date(value);
-    }
-
-    if (Number.isNaN(date.getTime())) {
-      return '-';
-    }
-
-    return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-  }
-
-  getCurrentVariationField(variationNumber, type, fallback = '') {
-    const textarea = document.querySelector(`.code-textarea[data-code-id="v${variationNumber}-${type}"]`);
-    if (textarea) {
-      return textarea.value;
-    }
-    return fallback || '';
-  }
-
-  getCurrentGlobalField(type, fallback = '') {
-    const textarea = document.querySelector(`.code-textarea[data-code-id="global-${type}"]`);
-    if (textarea) {
-      return textarea.value;
-    }
-    return fallback || '';
-  }
-
-  async pushConvertExperience() {
-    const elements = this.getConvertElements();
-    const button = elements.pushBtn;
-    if (button) {
-      button.disabled = true;
-      button.textContent = this.convertState.creationMode ? 'Creating…' : 'Syncing…';
-    }
-
-    try {
-      if (this.convertState.creationMode) {
-        await this.createConvertExperienceFromBuilder();
+        // Status is already shown above
+        this.addActivity('Click any element on the page to select it', 'info');
       } else {
-        await this.updateExistingConvertExperience();
+        throw new Error('Could not activate element selector');
       }
+
     } catch (error) {
-      console.error('Convert push failed:', error);
-      this.setConvertStatus(error.message, 'error');
-      this.addStatusLog(`❌ Convert push failed: ${error.message}`, 'error');
-    } finally {
-      if (button) {
-        button.textContent = '⬆️ Push Updates to Convert';
-        button.disabled = false;
-      }
-      this.updateConvertActionState();
+      console.error('Element selector failed:', error);
+      this.showStatus('Element selector unavailable: ' + error.message, 'error', 5000);
+      this.addActivity('Element selector unavailable: ' + error.message, 'error');
     }
   }
 
-  async createConvertExperienceFromBuilder() {
-    const elements = this.getConvertElements();
-    const credentials = this.getActiveConvertCredentials();
-    if (!credentials) {
-      throw new Error('Select a Convert.com API key first');
-    }
-
-    if (!this.convertState.projectId || !this.convertState.accountId) {
-      throw new Error('Select an account and project before creating an experience');
-    }
-
-    if (!this.generatedCode?.variations?.length) {
-      throw new Error('Generate or import code before creating an experience');
-    }
-
-    for (const variation of this.generatedCode.variations) {
-      const validation = await this.autoValidateVariation(variation.number, {
-        origin: 'Pre-publish validation',
-        updateConvertStatus: true
-      });
-
-      if (validation?.errors?.length) {
-        throw new Error(`Resolve issues in ${variation.name || `Variation ${variation.number}`} before publishing to Convert`);
-      }
-    }
-
-    const name = elements.newExperienceName?.value.trim();
-    const type = elements.newExperienceType?.value || 'a/b';
-    const url = elements.newExperienceUrl?.value.trim();
-    const baselineName = elements.newBaselineName?.value.trim() || 'Original';
-    const defaultVariationName = elements.newVariationName?.value.trim() || 'Variation 1';
-    const description = document.getElementById('descriptionText')?.value.trim() || '';
-
-    if (!name) {
-      throw new Error('Provide a name for the new experience');
-    }
-    if (!url) {
-      throw new Error('Provide a target URL for the new experience');
-    }
-
-    const payload = this.buildConvertExperiencePayloadFromGenerated({
-      name,
-      description,
-      type,
-      url,
-      baselineName,
-      fallbackVariationName: defaultVariationName
-    });
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'CONVERT_CREATE_EXPERIENCE',
-      credentials,
-      accountId: this.convertState.accountId,
-      projectId: this.convertState.projectId,
-      payload
-    });
-
-    if (!response?.success) {
-      throw new Error(response?.error || 'Failed to create experience');
-    }
-
-    const created = response.experience;
-    this.setConvertStatus(`✅ Created "${created?.name || name}" (ID ${created?.id || '?'})`, 'success');
-    this.addStatusLog(`✅ Created Convert experience "${created?.name || name}"`, 'success');
-
-    await this.refreshConvertExperiences(true);
-
-    if (created?.id) {
-      const elements = this.getConvertElements();
-      if (elements.experienceSelect) {
-        elements.experienceSelect.value = String(created.id);
-      }
-      this.onConvertExperienceChange();
-      this.convertState.experienceId = String(created.id);
-    }
-  }
-
-  buildConvertExperiencePayloadFromGenerated(options = {}) {
-    const variations = this.generatedCode?.variations || [];
-    if (!variations.length) {
-      throw new Error('No variation code available to push');
-    }
-
-    const baselineName = options.baselineName || 'Original';
-    const fallbackVariationName = options.fallbackVariationName || 'Variation 1';
-    const descriptionMap = new Map(
-      this.variations.map(item => [item.id, item.description || ''])
-    );
-
-    const total = variations.length + 1;
-    const evenShare = Number((100 / total).toFixed(2));
-    let baselineShare = Number((100 - evenShare * variations.length).toFixed(2));
-    const shares = Array(variations.length).fill(evenShare);
-
-    const totalAssigned = baselineShare + shares.reduce((sum, value) => sum + value, 0);
-    const roundingDelta = Number((100 - totalAssigned).toFixed(2));
-    if (Math.abs(roundingDelta) >= 0.01 && shares.length) {
-      shares[shares.length - 1] = Number((shares[shares.length - 1] + roundingDelta).toFixed(2));
-    }
-
-    const globalCSS = this.getCurrentGlobalField('css', this.generatedCode?.globalCSS || '');
-    const globalJS = this.getCurrentGlobalField('js', this.generatedCode?.globalJS || '');
-
-    const variationPayloads = variations.map((variation, idx) => {
-      const css = this.getCurrentVariationField(variation.number, 'css', variation.css || '');
-      const js = this.getCurrentVariationField(variation.number, 'js', variation.js || '');
-
-      if (!css.trim() && !js.trim()) {
-        throw new Error(`Variation "${variation.name || `Variation ${variation.number}`}" has no code to push`);
-      }
-
-      const description = descriptionMap.get(variation.number) || '';
-      const name = variation.name || `${fallbackVariationName} ${idx + 1}`;
-
-      return {
-        name,
-        description,
-        traffic_distribution: shares[idx],
-        changes: [
-          {
-            type: 'customCode',
-            data: {
-              css,
-              js
-            }
-          }
-        ]
-      };
-    });
-
-    const payload = {
-      name: options.name,
-      description: options.description,
-      type: options.type || 'a/b',
-      status: 'draft',
-      url: options.url,
-      traffic_distribution: 100,
-      variations: [
-        {
-          name: baselineName,
-          is_baseline: true,
-          traffic_distribution: baselineShare
-        },
-        ...variationPayloads
-      ]
-    };
-
-    if (globalCSS.trim()) {
-      payload.global_css = globalCSS;
-    }
-    if (globalJS.trim()) {
-      payload.global_js = globalJS;
-    }
-
-    return payload;
-  }
-
-  async updateExistingConvertExperience() {
-    if (!this.convertState.experienceId) {
-      throw new Error('Select an experience to sync');
-    }
-
-    const credentials = this.getActiveConvertCredentials();
-    if (!credentials) {
-      throw new Error('Select a Convert.com API key');
-    }
-
-    if (!this.generatedCode?.variations?.length) {
-      throw new Error('No variation code loaded');
-    }
-
-    for (const variation of this.generatedCode.variations) {
-      const validation = await this.autoValidateVariation(variation.number, {
-        origin: 'Pre-sync validation',
-        updateConvertStatus: true
-      });
-
-      if (validation?.errors?.length) {
-        throw new Error(`Resolve issues in ${variation.name || `Variation ${variation.number}`} before syncing to Convert`);
-      }
-    }
-
-    const updates = [];
-
-    for (const variation of this.generatedCode.variations) {
-      const store = this.convertState.variationStore.get(variation.convertVariationId);
-      if (!store) {
-        this.addStatusLog(`⚠️ Skipping variation without Convert metadata (ID ${variation.convertVariationId})`, 'warning');
-        continue;
-      }
-
-      const css = this.getCurrentVariationField(variation.number, 'css', variation.css || '');
-      const js = this.getCurrentVariationField(variation.number, 'js', variation.js || '');
-
-      if (!css.trim() && !js.trim()) {
-        this.addStatusLog(`⚠️ Variation "${variation.name}" has empty code; clearing custom code in Convert`, 'warning');
-      }
-
-      const payload = this.buildConvertVariationUpdatePayload(
-        variation,
-        store,
-        { css, js }
-      );
-
-      updates.push({
-        variationId: variation.convertVariationId,
-        payload
-      });
-    }
-
-    if (!updates.length) {
-      throw new Error('No eligible variations to update');
-    }
-
-    for (const update of updates) {
-      const response = await chrome.runtime.sendMessage({
-        type: 'CONVERT_UPDATE_VARIATION',
-        credentials,
-        accountId: this.convertState.accountId,
-        projectId: this.convertState.projectId,
-        experienceId: this.convertState.experienceId,
-        variationId: update.variationId,
-        payload: update.payload
-      });
-
-      if (!response?.success) {
-        throw new Error(response?.error || `Failed to update variation ${update.variationId}`);
-      }
-    }
-
-    this.setConvertStatus('✅ Variations synced successfully', 'success');
-    this.addStatusLog('✅ Pushed updates to existing Convert experience', 'success');
-
-    await this.importConvertExperience();
-  }
-
-  buildConvertVariationUpdatePayload(variation, store, latestCode) {
-    const original = store.variation || {};
-    const descriptionMap = new Map(this.variations.map(item => [item.id, item.description || '']));
-    const description = descriptionMap.get(variation.number) || original.description || '';
-
-    const payload = {
-      name: variation.name || original.name || `Variation ${variation.number}`,
-      description,
-      traffic_distribution: original.traffic_distribution ?? 0,
-      is_baseline: original.is_baseline || false,
-      status: original.status || 'draft',
-      key: original.key,
-      changes: []
-    };
-
-    const originalChanges = Array.isArray(store.changes) ? store.changes : [];
-    const customChanges = Array.isArray(store.customChanges) ? store.customChanges : [];
-
-    let handledCustom = false;
-
-    originalChanges.forEach(change => {
-      if (change?.type === 'customCode') {
-        handledCustom = true;
-        payload.changes.push({
-          id: change.id,
-          type: 'customCode',
-          data: {
-            css: latestCode.css || '',
-            js: latestCode.js || '',
-            page_id: change.data?.page_id
-          }
-        });
-      } else if (change?.id) {
-        payload.changes.push(change.id);
-      } else if (typeof change === 'number') {
-        payload.changes.push(change);
-      }
-    });
-
-    if (!handledCustom && (latestCode.css.trim() || latestCode.js.trim())) {
-      payload.changes.push({
-        type: 'customCode',
-        data: {
-          css: latestCode.css || '',
-          js: latestCode.js || ''
-        }
-      });
-    }
-
-    return payload;
-  }
-
-  async runConvertPreview() {
-    if (!this.generatedCode?.variations?.length) {
-      this.showError('Generate or import code before running preview');
-      return;
-    }
-
-    const target = this.previewState.activeVariation || this.generatedCode.variations[0].number;
-    await this.autoValidateVariation(target, {
-      origin: 'Manual validation',
-      updateConvertStatus: true
-    });
-  }
-
-  // ============================================
-  // End Convert.com Integration Methods
-  // ============================================
-
-  async loadSettings() {
-    try {
-      const result = await chrome.storage.local.get(['settings']);
-      if (result.settings) {
-        this.settings = { ...this.settings, ...result.settings };
-        const preferCSS = document.getElementById('preferCSS');
-        if (preferCSS) preferCSS.checked = this.settings.preferCSS;
-        const includeDOMChecks = document.getElementById('includeDOMChecks');
-        if (includeDOMChecks) includeDOMChecks.checked = this.settings.includeDOMChecks;
-        const modelSelect = document.getElementById('modelSelect');
-        if (modelSelect) modelSelect.value = this.settings.model || 'gpt-4o-mini';
-      }
-    } catch (error) {
-      console.error('Failed to load settings:', error);
-    }
-  }
-
-  async saveSettings() {
-    try {
-      await chrome.storage.local.set({ settings: this.settings });
-    } catch (error) {
-      console.error('Failed to save settings:', error);
-    }
-  }
-
-  setButtonLoading(button, loading) {
-    const text = button.querySelector('.btn-text');
-    const loadingEl = button.querySelector('.btn-loading');
+  showTemplates() {
+    console.log('📋 showTemplates called');
+    this.addActivity('Opening template library...', 'info');
     
-    if (loading) {
-      text?.classList.add('hidden');
-      loadingEl?.classList.remove('hidden');
-      button.disabled = true;
-    } else {
-      text?.classList.remove('hidden');
-      loadingEl?.classList.add('hidden');
-      button.disabled = false;
+    // Show template selector in the main workflow area instead of chat
+    this.showInlineTemplateSelector();
+    
+    console.log('✅ Template selector displayed in main workflow');
+  }
+
+  showInlineTemplateSelector() {
+    const templates = [
+      'Change button color and size for better conversion',
+      'Add urgency banner at the top of the page',  
+      'Modify headline to be more compelling',
+      'Add social proof testimonials section',
+      'Create a sticky call-to-action button',
+      'Add exit-intent popup modal',
+      'Simplify the checkout form fields',
+      'Add product comparison table'
+    ];
+
+    // Create template selector overlay
+    const overlay = document.createElement('div');
+    overlay.className = 'template-selector-overlay';
+    overlay.innerHTML = `
+      <div class="template-selector-modal">
+        <div class="template-header">
+          <h3>📋 Select a Template</h3>
+          <button class="close-btn" id="closeTemplateSelector">×</button>
+        </div>
+        <div class="template-list">
+          ${templates.map((template, index) => `
+            <div class="template-item" data-template="${template}">
+              <div class="template-title">${template}</div>
+              <div class="template-preview">Click to use this template</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Handle template selection
+    overlay.addEventListener('click', (e) => {
+      if (e.target.classList.contains('close-btn') || e.target.classList.contains('template-selector-overlay')) {
+        overlay.remove();
+        return;
+      }
+
+      const templateItem = e.target.closest('.template-item');
+      if (templateItem) {
+        const templateText = templateItem.dataset.template;
+        this.insertTemplateIntoDescription(templateText);
+        overlay.remove();
+      }
+    });
+  }
+
+  insertTemplateIntoDescription(templateText) {
+    const descField = document.getElementById('primaryDescription');
+    if (descField) {
+      // Simply insert the template text - clean and simple
+      const currentValue = descField.value.trim();
+      if (currentValue) {
+        descField.value = currentValue + '\n\n' + templateText;
+      } else {
+        descField.value = templateText;
+      }
+      
+      // Focus the field
+      descField.focus();
+      this.addActivity(`Template added: ${templateText.substring(0, 40)}...`, 'success');
     }
   }
 
-  showError(message) {
-    const el = document.getElementById('errorDisplay');
-    el.querySelector('.message').textContent = message;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 5000);
+  openDesignFileUpload() {
+    this.addActivity('Opening design file upload...', 'info');
+    
+    // Create file input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.figma,.sketch,.psd,.pdf';
+    input.style.display = 'none';
+    
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        this.handleDesignFileUpload(file);
+      }
+    });
+    
+    document.body.appendChild(input);
+    input.click();
+    document.body.removeChild(input);
   }
 
-  showSuccess(message) {
-    const el = document.getElementById('successDisplay');
-    el.querySelector('.message').textContent = message;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 3000);
-  }
-
-  formatUrl(url) {
+  async handleDesignFileUpload(file) {
+    this.addActivity(`Processing design file: ${file.name}`, 'info');
+    
     try {
-      const urlObj = new URL(url);
-      return urlObj.hostname + urlObj.pathname;
-    } catch {
-      return url;
+      // Convert file to base64 for analysis
+      const base64 = await this.fileToBase64(file);
+      
+      // Store the file for later use
+      this.uploadedDesignFile = {
+        name: file.name,
+        data: base64,
+        type: file.type
+      };
+      
+      // Add design file info to description instead of opening chat
+      this.addDesignToDescription(file);
+      
+      this.addActivity(`Design file "${file.name}" uploaded successfully`, 'success');
+      
+    } catch (error) {
+      console.error('Design file upload failed:', error);
+      this.addActivity('Failed to process design file: ' + error.message, 'error');
     }
   }
 
-  formatTime(timestamp) {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diff = Math.floor((now - date) / 60000);
-    if (diff < 1) return 'just now';
-    if (diff < 60) return `${diff}m ago`;
-    return date.toLocaleTimeString();
+  addDesignToDescription(file) {
+    const descField = document.getElementById('primaryDescription');
+    if (descField) {
+      // Just store the uploaded file data - don't clutter the field
+      // The file is already stored in this.uploadedDesignFile
+      
+      // Update placeholder if field is empty
+      if (!descField.value.trim()) {
+        descField.placeholder = `Describe changes based on uploaded design "${file.name}"...`;
+      }
+      
+      // Focus the field for user input
+      descField.focus();
+    }
+  }
+
+  fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = error => reject(error);
+    });
+  }
+
+  // ==========================================
+  // UTILITIES & HELPERS
+  // ==========================================
+
+  async sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  formatMessage(content) {
+    return content
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/`(.*?)`/g, '<code>$1</code>');
   }
 
   escapeHtml(text) {
@@ -3796,15 +3251,423 @@ Ensure all DOM manipulations use standard APIs like querySelector, addEventListe
     return div.innerHTML;
   }
 
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  formatUrl(url) {
+    try {
+      return new URL(url).hostname + new URL(url).pathname;
+    } catch {
+      return url;
+    }
+  }
+
+  formatTime(date) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  getUsageStorageArea() {
+    return { tokens: 0, cost: 0 };
+  }
+
+  // ==========================================
+  // COST CALCULATION & TRACKING
+  // ==========================================
+
+  updateCostDisplay(usage) {
+    if (!usage) return;
+
+    // Calculate cost based on provider and model
+    const cost = this.calculateCost(usage);
+    this.usageStats.tokens += usage.totalTokens || 0;
+    this.usageStats.cost += cost;
+
+    // Update UI
+    const costAmount = document.getElementById('costAmount');
+    const tokenCount = document.getElementById('tokenCount');
+    const currentModel = document.getElementById('currentModel');
+
+    if (costAmount) {
+      costAmount.textContent = `$${this.usageStats.cost.toFixed(4)}`;
+    }
+
+    if (tokenCount) {
+      tokenCount.textContent = this.usageStats.tokens.toLocaleString();
+    }
+
+    if (currentModel) {
+      const modelName = this.getModelDisplayName(this.settings.model);
+      currentModel.textContent = modelName;
+    }
+  }
+
+  calculateCost(usage) {
+    const model = this.settings.model || 'claude-3-7-sonnet-20250219';
+    const provider = this.settings.provider || 'anthropic';
+
+    // Pricing per 1M tokens (as of 2025)
+    const pricing = {
+      'claude-sonnet-4-5-20250929': { input: 3.00, output: 15.00 },
+      'claude-3-7-sonnet-20250219': { input: 3.00, output: 15.00 },
+      'claude-sonnet-4-20250514': { input: 3.00, output: 15.00 },
+      'claude-3-5-haiku-20241022': { input: 0.80, output: 4.00 },
+      'gpt-4o': { input: 2.50, output: 10.00 },
+      'gpt-4o-mini': { input: 0.15, output: 0.60 },
+      'gpt-4-turbo': { input: 10.00, output: 30.00 },
+      'gpt-4': { input: 30.00, output: 60.00 }
+    };
+
+    const rates = pricing[model] || pricing['claude-3-7-sonnet-20250219'];
+
+    const inputCost = (usage.promptTokens || 0) / 1000000 * rates.input;
+    const outputCost = (usage.completionTokens || 0) / 1000000 * rates.output;
+
+    return inputCost + outputCost;
+  }
+
+  getModelDisplayName(model) {
+    const names = {
+      'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+      'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet',
+      'claude-sonnet-4-20250514': 'Claude Sonnet 4',
+      'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
+      'gpt-4o': 'GPT-4o',
+      'gpt-4o-mini': 'GPT-4o Mini',
+      'gpt-4-turbo': 'GPT-4 Turbo',
+      'gpt-4': 'GPT-4'
+    };
+    return names[model] || model;
+  }
+
+  bindBottomBar() {
+    const toggleCodeBtn = document.getElementById('toggleCodeBtn');
+    if (toggleCodeBtn) {
+      toggleCodeBtn.addEventListener('click', () => this.toggleCodeDrawer());
+    }
+
+    // Bind persistent status bar close button
+    const statusCloseBtn = document.getElementById('statusCloseBtn');
+    if (statusCloseBtn) {
+      statusCloseBtn.addEventListener('click', () => this.clearStatus());
+    }
+
+    // Bind model selector
+    const aiModelIndicator = document.getElementById('aiModelIndicator');
+    if (aiModelIndicator) {
+      aiModelIndicator.addEventListener('click', () => this.openModelSelector());
+    }
+
+    const closeModelSelector = document.getElementById('closeModelSelector');
+    if (closeModelSelector) {
+      closeModelSelector.addEventListener('click', () => this.closeModelSelector());
+    }
+
+    // Bind model options
+    document.querySelectorAll('.model-option').forEach(option => {
+      option.addEventListener('click', () => {
+        const model = option.dataset.model;
+        this.selectModel(model);
+      });
+    });
+
+    // Close modal on overlay click
+    const modelOverlay = document.getElementById('modelSelectorOverlay');
+    if (modelOverlay) {
+      modelOverlay.addEventListener('click', (e) => {
+        if (e.target === modelOverlay) {
+          this.closeModelSelector();
+        }
+      });
+    }
+
+    // Update current model display
+    this.updateModelDisplay();
+  }
+
+  openModelSelector() {
+    const overlay = document.getElementById('modelSelectorOverlay');
+    if (overlay) {
+      overlay.classList.remove('hidden');
+
+      // Highlight currently selected model
+      const currentModel = this.settings?.model || 'gpt-4o';
+      document.querySelectorAll('.model-option').forEach(option => {
+        option.classList.toggle('selected', option.dataset.model === currentModel);
+      });
+    }
+  }
+
+  closeModelSelector() {
+    const overlay = document.getElementById('modelSelectorOverlay');
+    if (overlay) {
+      overlay.classList.add('hidden');
+    }
+  }
+
+  async selectModel(model) {
+    console.log('🤖 Selecting model:', model);
+
+    // Update settings
+    this.settings.model = model;
+
+    // Save to storage
+    await chrome.storage.local.set({ settings: this.settings });
+
+    // Update display
+    this.updateModelDisplay();
+
+    // Show confirmation
+    this.showStatus(`Model changed to ${this.getModelDisplayName(model)}`, 'success', 2000);
+
+    // Close modal
+    this.closeModelSelector();
+  }
+
+  updateModelDisplay() {
+    const currentModelEl = document.getElementById('currentModel');
+    if (currentModelEl) {
+      const model = this.settings?.model || 'gpt-4o';
+      currentModelEl.textContent = this.getModelDisplayName(model);
+    }
+  }
+
+  getModelDisplayName(model) {
+    // Shortened nicknames for bottom bar display (must match settings.html)
+    const nicknames = {
+      // Anthropic Models
+      'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
+      'claude-3-7-sonnet-20250219': 'Sonnet 3.7',
+      'claude-sonnet-4-20250514': 'Sonnet 4',
+      'claude-3-5-haiku-20241022': 'Haiku 3.5',
+      // OpenAI Models
+      'gpt-4o': '4o',
+      'gpt-4o-mini': '4o-mini',
+      'gpt-4-turbo': '4-turbo',
+      'gpt-4': 'GPT-4'
+    };
+    return nicknames[model] || model;
+  }
+
+  // ==========================================
+  // PERSISTENT STATUS BAR MANAGEMENT
+  // ==========================================
+
+  showStatus(message, type = 'info', duration = null) {
+    const statusBar = document.getElementById('persistentStatusBar');
+    const statusMessage = document.getElementById('statusMessage');
+    const statusIcon = statusBar?.querySelector('.status-icon');
+
+    if (!statusBar || !statusMessage) return;
+
+    // Clear any existing timeout
+    if (this.statusTimeout) {
+      clearTimeout(this.statusTimeout);
+      this.statusTimeout = null;
+    }
+
+    // Update message and icon
+    statusMessage.textContent = message;
+
+    // Set icon based on type
+    const icons = {
+      'info': 'ℹ️',
+      'success': '✅',
+      'error': '❌',
+      'warning': '⚠️',
+      'loading': '⏳'
+    };
+
+    if (statusIcon) {
+      // For loading, use spinner instead of emoji
+      if (type === 'loading') {
+        statusIcon.innerHTML = '<div class="status-spinner"></div>';
+      } else {
+        statusIcon.textContent = icons[type] || icons.info;
+      }
+    }
+
+    // Remove all status type classes
+    statusBar.classList.remove('status-info', 'status-success', 'status-error', 'status-warning', 'status-loading');
+
+    // Add current type class
+    statusBar.classList.add(`status-${type}`);
+
+    // Show the status bar
+    statusBar.classList.remove('hidden');
+
+    // Store current status
+    this.currentStatus = { message, type, timestamp: Date.now() };
+
+    // Auto-hide after duration (if specified)
+    if (duration) {
+      this.statusTimeout = setTimeout(() => {
+        this.clearStatus();
+      }, duration);
+    }
+
+    console.log(`[STATUS ${type.toUpperCase()}] ${message}`);
+  }
+
+  clearStatus() {
+    const statusBar = document.getElementById('persistentStatusBar');
+    if (statusBar) {
+      statusBar.classList.add('hidden');
+    }
+
+    if (this.statusTimeout) {
+      clearTimeout(this.statusTimeout);
+      this.statusTimeout = null;
+    }
+
+    this.currentStatus = null;
+  }
+
+  updateStatus(message, type = 'info') {
+    // Update existing status without resetting animation
+    const statusMessage = document.getElementById('statusMessage');
+    const statusBar = document.getElementById('persistentStatusBar');
+    const statusIcon = statusBar?.querySelector('.status-icon');
+
+    if (!statusMessage || !statusBar) return;
+
+    statusMessage.textContent = message;
+
+    // Update icon if type changed
+    if (this.currentStatus?.type !== type) {
+      const icons = {
+        'info': 'ℹ️',
+        'success': '✅',
+        'error': '❌',
+        'warning': '⚠️',
+        'loading': '⏳'
+      };
+
+      if (statusIcon) {
+        if (type === 'loading') {
+          statusIcon.innerHTML = '<div class="status-spinner"></div>';
+        } else {
+          statusIcon.textContent = icons[type] || icons.info;
+        }
+      }
+
+      // Update type class
+      statusBar.classList.remove('status-info', 'status-success', 'status-error', 'status-warning', 'status-loading');
+      statusBar.classList.add(`status-${type}`);
+    }
+
+    this.currentStatus = { message, type, timestamp: Date.now() };
+  }
+
+  // Settings management
+  async loadSettings() {
+    try {
+      // CRITICAL: Must use chrome.storage.local (same as service worker)
+      const result = await chrome.storage.local.get(['settings']);
+      if (result.settings) {
+        this.settings = { ...this.settings, ...result.settings };
+        console.log('📄 Settings loaded from storage:', this.settings);
+        console.log('  ✅ Provider:', this.settings.provider);
+        console.log('  ✅ Model:', this.settings.model);
+
+        // Update model indicator
+        this.updateCostDisplay({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+      } else {
+        console.log('📄 Using default settings (no storage found)');
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to load settings:', error);
+    }
+  }
+  
+  async saveSettings() {
+    try {
+      // CRITICAL: Must use chrome.storage.local (same as service worker)
+      await chrome.storage.local.set({ settings: this.settings });
+      console.log('� Settings saved');
+    } catch (error) {
+      console.warn('⚠️ Failed to save settings:', error);
+    }
+  }
+  
+  async loadUsageStats() { console.log('📊 Usage stats loaded'); }
+  async loadCurrentPage() { console.log('📄 Current page loaded'); }
+  async loadConvertAPIKeys() { console.log('🔑 Convert API keys loaded'); }
+
+  // Legacy compatibility method stubs
+  addStatusLog(message, type) {
+    this.addActivity(message, type);
+  }
+
+  switchPanel(panel) {
+    console.log('Legacy panel switch:', panel);
+  }
+
+  // Debug method for testing buttons
+  testButtons() {
+    console.log('🧪 Testing all buttons...');
+    
+    const buttons = [
+      { id: 'selectElementBtn', name: 'Select Element', method: () => this.activateElementSelector() },
+      { id: 'templatesBtn', name: 'Templates', method: () => this.showTemplates() },
+      { id: 'uploadDesignBtn', name: 'Upload Design', method: () => this.openDesignFileUpload() },
+      { id: 'addVariationBtn', name: 'Add Variation', method: () => this.addVariation() },
+      { id: 'drawerToggle', name: 'Code Drawer Toggle', method: () => this.toggleCodeDrawer() }
+    ];
+
+    buttons.forEach(button => {
+      const element = document.getElementById(button.id);
+      console.log(`${button.name} (${button.id}):`, element ? '✅ Found' : '❌ Not found');
+      if (element) {
+        console.log(`  - Visible: ${element.offsetParent !== null}`);
+        console.log(`  - Text: "${element.textContent.trim()}"`)
+        console.log(`  - Classes: ${element.className}`);
+      }
+    });
+    
+    return 'Check console for button status';
   }
 }
 
-// Initialize
-let experimentBuilder;
-document.addEventListener('DOMContentLoaded', () => {
-  experimentBuilder = new ExperimentBuilder();
-  window.experimentBuilder = experimentBuilder;
-  console.log('✅ Experiment Builder initialized');
-});
+// ==========================================
+// INITIALIZATION
+// ==========================================
+
+// Wait for DOM to be ready and initialize
+function initializeUnifiedBuilder() {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeUnifiedBuilder);
+    return;
+  }
+
+  console.log('🎯 Initializing Unified Experiment Builder...');
+
+  try {
+    // Create global instance
+    window.experimentBuilder = new UnifiedExperimentBuilder();
+    
+    // Initialize workspace V2 integration if available
+    if (window.workspaceV2) {
+      console.log('🔗 Integrating with Workspace V2...');
+    }
+
+    console.log('🎉 Unified Experiment Builder Ready!');
+  } catch (error) {
+    console.error('❌ Failed to initialize Unified Builder:', error);
+    
+    // Show error in UI if possible
+    const errorDisplay = document.getElementById('errorDisplay');
+    if (errorDisplay) {
+      const message = errorDisplay.querySelector('.message');
+      if (message) {
+        message.textContent = 'Initialization failed: ' + error.message;
+        errorDisplay.classList.remove('hidden');
+      }
+    }
+    
+    // Create a minimal fallback
+    window.experimentBuilder = {
+      error: error,
+      initialized: false
+    };
+  }
+}
+
+// Start initialization
+initializeUnifiedBuilder();

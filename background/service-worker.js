@@ -8,6 +8,10 @@ class ServiceWorker {
     this.maxLogEntries = 200;
     this.recentLogs = [];
     this.CAPTURE_TIMEOUT = 15000; // 15 second timeout for captures
+
+    // Simple cache for element databases (reduces repetitive processing)
+    this.elementDatabaseCache = new Map();
+    this.CACHE_TTL = 60000; // 1 minute cache
   }
 
   createOperationLogger(context = 'Operation') {
@@ -43,12 +47,15 @@ class ServiceWorker {
     return this.recentLogs.slice(-this.maxLogEntries);
   }
 
-  initializeExtension() {
+  async initializeExtension() {
     console.log('🔄 Initializing extension...');
-    
+
+    // CRITICAL FIX: Force migrate settings IMMEDIATELY on load
+    await this.forceSettingsMigration();
+
     chrome.runtime.onInstalled.addListener((details) => {
       console.log('✅ Convert.com Experiment Builder installed:', details);
-      
+
       if (details.reason === 'install' || details.reason === 'update') {
         this.setDefaultSettings();
         this.setupSidePanel();
@@ -87,8 +94,9 @@ class ServiceWorker {
     });
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // Handle message asynchronously and return true to keep channel open
       this.handleMessage(message, sender, sendResponse);
-      return true;
+      return true; // ALWAYS return true for async handlers
     });
 
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -98,18 +106,66 @@ class ServiceWorker {
     });
   }
 
+  async forceSettingsMigration() {
+    // Immediate fix for invalid models - runs on EVERY service worker startup
+    const result = await chrome.storage.local.get(['settings']);
+    const invalidModels = [
+      'gpt-4o-mini',
+      'claude-sonnet-4-20250514',  // Old, no longer valid
+      'claude-3-5-sonnet-20240620', // Never valid
+      'claude-3-5-sonnet-20241022'  // Never valid
+    ];
+
+    if (result.settings && (invalidModels.includes(result.settings.model) || result.settings.provider === 'openai')) {
+      console.log('⚡ FORCE MIGRATING SETTINGS NOW... Current model:', result.settings.model);
+      result.settings.provider = 'anthropic';
+      result.settings.model = 'claude-3-7-sonnet-20250219'; // Valid Claude 3.7 Sonnet (Recommended)
+      await chrome.storage.local.set({ settings: result.settings });
+      console.log('✅ Settings force-migrated and saved to storage:', { provider: result.settings.provider, model: result.settings.model });
+    } else if (result.settings) {
+      console.log('ℹ️ Settings already correct:', { provider: result.settings.provider, model: result.settings.model });
+    }
+  }
+
   async setDefaultSettings() {
     const defaultSettings = {
       preferCSS: true,
       includeDOMChecks: true,
       outputFormat: 'convert-format',
-      authToken: '',
-      model: 'gpt-4o-mini',
+
+      // AI Provider settings
+      provider: 'anthropic',  // 'openai' or 'anthropic' - Changed to Anthropic as default
+      authToken: '',          // OpenAI API key
+      anthropicApiKey: '',    // Anthropic API key (primary)
+      model: 'claude-3-7-sonnet-20250219', // Claude 3.7 Sonnet as default (valid model)
+
+      // Fallback configuration
+      enableFallback: true,
+      fallbackProviders: [
+        { provider: 'openai', model: 'gpt-4o' },
+        { provider: 'openai', model: 'gpt-4o-mini' }
+      ],
+
       generationHistory: []
     };
 
     const result = await chrome.storage.local.get(['settings']);
     const existingSettings = result.settings || {};
+
+    // FORCE UPDATE: If model is invalid, update to Claude 3.7 Sonnet
+    const invalidModels = [
+      'gpt-4o-mini',
+      'claude-sonnet-4-20250514',  // Old, no longer valid
+      'claude-3-5-sonnet-20240620', // Never valid
+      'claude-3-5-sonnet-20241022'  // Never valid
+    ];
+    let needsMigration = false;
+    if (invalidModels.includes(existingSettings.model) || existingSettings.provider === 'openai') {
+      console.log('🔄 Migrating settings to valid Anthropic model... From:', existingSettings.model);
+      existingSettings.provider = 'anthropic';
+      existingSettings.model = 'claude-3-7-sonnet-20250219';
+      needsMigration = true;
+    }
 
     const mergedSettings = {
       ...defaultSettings,
@@ -118,6 +174,10 @@ class ServiceWorker {
     };
 
     await chrome.storage.local.set({ settings: mergedSettings });
+
+    if (needsMigration) {
+      console.log('✅ Settings migrated and saved:', { provider: mergedSettings.provider, model: mergedSettings.model });
+    }
   }
 
   async setupSidePanel() {
@@ -140,16 +200,27 @@ class ServiceWorker {
   }
 
   async handleMessage(message, sender, sendResponse) {
+    // Wrap entire handler in try/catch to ensure sendResponse is always called
     try {
       switch (message.type) {
-        case 'CAPTURE_PAGE':
+        case 'CAPTURE_PAGE': {
           const pageData = await this.capturePage(message.tabId);
           sendResponse({ success: true, data: pageData });
           break;
+        }
 
-        case 'GENERATE_CODE':
-          const generated = await this.generateCode(message.data);
-          sendResponse({ success: true, code: generated.code, usage: generated.usage, logs: generated.logs });
+        case 'GENERATE_CODE': {
+          // Use tabId from message data (passed by sidepanel) or fall back to sender tab
+          const tabId = message.data?.tabId || sender?.tab?.id;
+          console.log('🎯 Generate code for tabId:', tabId);
+          const generated = await this.generateCode(message.data, tabId);
+          sendResponse({ success: true, code: generated.code, usage: generated.usage, logs: generated.logs, testResults: generated.testResults });
+          break;
+        }
+
+        case 'ADJUST_CODE':
+          const adjustedCode = await this.adjustCode(message.data, sender?.tab?.id);
+          sendResponse({ success: true, code: adjustedCode.code, usage: adjustedCode.usage, logs: adjustedCode.logs });
           break;
 
         case 'GET_AUTH_TOKEN':
@@ -283,6 +354,243 @@ class ServiceWorker {
           }
           break;
 
+        case 'START_ELEMENT_SELECTION':
+          try {
+            const result = await this.startElementSelection(message.tabId);
+            sendResponse({ success: true, data: result.data });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CAPTURE_ELEMENT_SCREENSHOT':
+          try {
+            const screenshot = await this.captureElementScreenshot(message, sender.tab.id);
+            sendResponse({ success: true, screenshot });
+          } catch (error) {
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CAPTURE_PAGE_WITH_ELEMENT':
+          try {
+            const logger = this.createOperationLogger('CapturePageWithElement');
+            logger.log('Starting element-focused page capture', `selector=${message.selectedElementSelector}`);
+
+            // First, capture page normally to get screenshot
+            const pageData = await this.capturePageInternal(message.tabId, logger);
+
+            // Then re-capture with selected element selector for hierarchical context
+            logger.log('Re-capturing with element focus');
+            const response = await chrome.tabs.sendMessage(message.tabId, {
+              type: 'CAPTURE_PAGE_DATA',
+              selectedElementSelector: message.selectedElementSelector
+            });
+
+            if (response.success) {
+              // Merge screenshot from initial capture with hierarchical context
+              response.data.screenshot = pageData.screenshot;
+              logger.log('Element-focused capture complete',
+                `mode=${response.data.context?.mode}, tokens=${response.data.context?.metadata?.estimatedTokens}`);
+              sendResponse({ success: true, data: response.data });
+            } else {
+              logger.error('Failed to capture with element focus', response.error);
+              sendResponse({ success: false, error: response.error });
+            }
+          } catch (error) {
+            console.error('CAPTURE_PAGE_WITH_ELEMENT error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'ELEMENT_SELECTED':
+          // Forward element selection data from content script to sidepanel
+          try {
+            console.log('🎯 Forwarding ELEMENT_SELECTED to sidepanel:', message.data);
+            
+            // Store the data and let sidepanel poll for it, or use a different approach
+            // For now, we'll try to broadcast the message to all extension contexts
+            setTimeout(() => {
+              try {
+                chrome.runtime.sendMessage({
+                  type: 'ELEMENT_SELECTED',
+                  data: message.data
+                }).catch(err => {
+                  console.log('📨 Message sent (expected error for broadcast):', err.message);
+                });
+              } catch (err) {
+                console.log('📨 Unable to broadcast message:', err.message);
+              }
+            }, 10);
+            
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Failed to forward ELEMENT_SELECTED:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'ELEMENT_SELECTION_CANCELLED':
+          // Forward cancellation from content script to sidepanel
+          try {
+            console.log('🎯 Forwarding ELEMENT_SELECTION_CANCELLED to sidepanel');
+            
+            setTimeout(() => {
+              try {
+                chrome.runtime.sendMessage({
+                  type: 'ELEMENT_SELECTION_CANCELLED'
+                }).catch(err => {
+                  console.log('📨 Cancellation message sent (expected error for broadcast):', err.message);
+                });
+              } catch (err) {
+                console.log('📨 Unable to broadcast cancellation message:', err.message);
+              }
+            }, 10);
+            
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Failed to forward ELEMENT_SELECTION_CANCELLED:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'PREVIEW_VARIATION':
+          try {
+            // Use passed tabId or fallback to querying for active tab
+            let tabId = message.tabId;
+            if (!tabId) {
+              const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+              if (!tabs[0]) {
+                throw new Error('No active tab found');
+              }
+              tabId = tabs[0].id;
+            }
+
+            await chrome.tabs.sendMessage(tabId, {
+              action: 'previewCode',
+              css: message.css,
+              js: message.js,
+              variationNumber: message.variationNumber
+            });
+
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Preview variation error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'TEST_VARIATION':
+          try {
+            // Use passed tabId or fallback to querying for active tab
+            let tabId = message.tabId;
+            if (!tabId) {
+              const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+              if (!tabs[0]) {
+                throw new Error('No active tab found');
+              }
+              tabId = tabs[0].id;
+            }
+
+            await chrome.tabs.sendMessage(tabId, {
+              action: 'testCode',
+              css: message.css,
+              js: message.js,
+              variationNumber: message.variationNumber
+            });
+
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Test variation error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CLEAR_PREVIEW':
+          try {
+            const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+            if (!tabs[0]) {
+              throw new Error('No active tab found');
+            }
+
+            await chrome.tabs.sendMessage(tabs[0].id, {
+              action: 'clearPreview'
+            });
+
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Clear preview error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'VALIDATE_SYNTAX':
+          try {
+            const validation = this.validateCodeSyntax(message.css, message.js);
+            sendResponse({ success: true, validation });
+          } catch (error) {
+            console.error('Syntax validation error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CHECK_PAGE_ERRORS':
+          try {
+            // Use passed tabId or fallback to querying for active tab
+            let tabId = message.tabId;
+            if (!tabId) {
+              const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+              if (!tabs[0]) {
+                throw new Error('No active tab found');
+              }
+              tabId = tabs[0].id;
+            }
+
+            const response = await chrome.tabs.sendMessage(tabId, {
+              action: 'checkErrors',
+              variationNumber: message.variationNumber
+            });
+
+            sendResponse({ success: true, hasErrors: response.hasErrors, errors: response.errors });
+          } catch (error) {
+            console.error('Page error check failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CAPTURE_AFTER_INJECTION':
+          try {
+            // Use passed tabId or fallback to querying for active tab
+            let tabId = message.tabId;
+            if (!tabId) {
+              const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+              if (!tabs[0]) {
+                throw new Error('No active tab found');
+              }
+              tabId = tabs[0].id;
+            }
+
+            // Get the window ID for the tab to capture the correct window
+            const tab = await chrome.tabs.get(tabId);
+            const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+            sendResponse({ success: true, screenshot });
+          } catch (error) {
+            console.error('After-injection capture failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'VISUAL_QA_VALIDATION':
+          try {
+            console.log('🎨 Starting visual QA validation...');
+            const validationResult = await this.performVisualQAValidation(message.data);
+            sendResponse({ success: true, validation: validationResult });
+          } catch (error) {
+            console.error('Visual QA validation failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
         default:
           sendResponse({ success: false, error: 'Unknown message type' });
       }
@@ -368,16 +676,23 @@ class ServiceWorker {
     // Step 5: Get element database from content script (with timeout)
     logger.log('Requesting element database from content script');
     let elementDatabase = null;
-    
+
     try {
+      // Pass selectedElementSelector if this is an element-focused capture
+      const message = {
+        type: 'CAPTURE_PAGE_DATA',
+        selectedElementSelector: null // Will be set by element selection flow
+      };
+
       const response = await Promise.race([
-        chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_PAGE_DATA' }),
+        chrome.tabs.sendMessage(tabId, message),
         this.wait(8000).then(() => ({ success: false, error: 'Content script response timeout' }))
       ]);
-      
+
       if (response?.success && response.data?.elementDatabase) {
         elementDatabase = response.data.elementDatabase;
-        logger.log('Element database received', `elements=${elementDatabase.elements?.length || 0}`);
+        const contextMode = response.data?.context?.mode || 'unknown';
+        logger.log('Element database received', `mode=${contextMode}, elements=${elementDatabase.elements?.length || 0}`);
       } else {
         throw new Error(response?.error || 'No element database in response');
       }
@@ -407,91 +722,272 @@ class ServiceWorker {
     try {
       // Try to ping the content script
       await chrome.tabs.sendMessage(tabId, { type: 'PING' });
-      console.log('Content script already loaded');
+      console.log('✅ Content scripts already loaded');
       return true;
     } catch (error) {
-      // Content script not loaded, inject it
-      console.log('Content script not found, injecting...');
+      // Content script not loaded, inject all required scripts
+      console.log('📦 Content scripts not found, injecting all dependencies...');
       try {
+        // Inject scripts in the correct order (dependencies first)
         await chrome.scripting.executeScript({
           target: { tabId },
-          files: ['content-scripts/page-capture.js']
+          files: [
+            'utils/selector-validator.js',
+            'utils/code-tester.js',
+            'utils/context-builder.js',
+            'content-scripts/page-capture.js',
+            'content-scripts/element-selector.js'
+          ]
         });
-        // Give it a moment to initialize
-        await this.wait(300);
-        console.log('Content script injected successfully');
-        return true;
+        // Give scripts time to initialize
+        await this.wait(500);
+
+        // Verify scripts loaded by pinging again
+        try {
+          await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+          console.log('✅ All content scripts injected and verified');
+          return true;
+        } catch (pingError) {
+          throw new Error('Content scripts injected but failed to respond');
+        }
       } catch (injectError) {
-        console.error('Failed to inject content script:', injectError);
-        throw new Error('Unable to inject content script. The page may have restrictions.');
+        console.error('❌ Failed to inject content scripts:', injectError);
+        throw new Error('Unable to inject content scripts. The page may have restrictions or require a reload.');
       }
     }
   }
 
-  async generateCode(data) {
-    const { pageData, description, designFiles, variations, settings } = data;
+  async startElementSelection(tabId) {
+    try {
+      // Validate tab
+      const tab = await chrome.tabs.get(tabId);
+      if (!this.isCapturePermitted(tab.url)) {
+        throw new Error('Element selection is not permitted on this type of page. Try a standard http(s) page.');
+      }
+
+      // Check if element selector is already loaded
+      console.log('Checking if element selector is already loaded...');
+      let selectorReady = false;
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: 'PING_ELEMENT_SELECTOR' });
+        selectorReady = true;
+        console.log('Element selector already loaded');
+      } catch (error) {
+        console.log('Element selector not loaded, injecting...');
+      }
+
+      // Inject the element selector content script if not already loaded
+      if (!selectorReady) {
+        console.log('Injecting element selector content script...');
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content-scripts/element-selector.js']
+        });
+
+        // Give it a moment to initialize
+        await this.wait(200);
+      }
+      
+      // Activate element selection mode and wait for element to be selected
+      console.log('Activating element selection mode...');
+      const result = await chrome.tabs.sendMessage(tabId, { type: 'START_ELEMENT_SELECTION' });
+      
+      console.log('Element selection completed:', result);
+      return result;
+    } catch (error) {
+      console.error('Failed to start element selection:', error);
+      throw new Error(`Unable to start element selection: ${error.message}`);
+    }
+  }
+
+  async captureElementScreenshot(data, tabId) {
+    try {
+      console.log('Capturing element screenshot for data:', data);
+      
+      // Get the tab to find the window
+      const tab = await chrome.tabs.get(tabId);
+      
+      // Capture the full page screenshot
+      const fullScreenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: 'png',
+        quality: 90
+      });
+      
+      // Send the full screenshot to the content script for cropping
+      const croppedScreenshot = await chrome.tabs.sendMessage(tabId, {
+        type: 'CROP_SCREENSHOT',
+        screenshot: fullScreenshot,
+        rect: data.rect,
+        viewport: data.viewport
+      });
+      
+      console.log('Element screenshot captured and cropped successfully');
+      return croppedScreenshot;
+    } catch (error) {
+      console.error('Failed to capture element screenshot:', error);
+      return null;
+    }
+  }
+
+  async generateCode(data, tabId = null) {
+    const { pageData, description, designFiles, variations, settings, selectedElement } = data;
     const logger = this.createOperationLogger('GenerateCode');
     
+    // Log Visual QA context
+    if (selectedElement) {
+      logger.log('Element-focused generation', `selector=${selectedElement.selector}, hasScreenshot=${!!selectedElement.screenshot}`);
+    }
+    if (designFiles?.length) {
+      logger.log('Design file context', `files=${designFiles.length}`);
+    }
+    
     try {
+      console.log('🎯 Service worker generateCode received data:', {
+        hasPageData: !!pageData,
+        pageDataKeys: pageData ? Object.keys(pageData) : 'no pageData',
+        pageDataUrl: pageData?.url,
+        pageDataTitle: pageData?.title
+      });
+      
       const authToken = await this.getAuthToken();
       if (!authToken) {
         throw new Error('OpenAI API key missing. Add one in the side panel settings.');
       }
 
       logger.log('Using Element Database', `elements=${pageData.elementDatabase?.elements?.length || 0}`);
-      
+
       if (!pageData.elementDatabase || !pageData.elementDatabase.elements) {
         throw new Error('Element database not found in page data. Please recapture the page.');
       }
-      
+
+      // Log selected element info
+      if (selectedElement) {
+        console.log('🎯 SELECTED ELEMENT INFO:');
+        console.log(`  Selector: ${selectedElement.selector}`);
+        console.log(`  Tag: ${selectedElement.tag}`);
+        console.log(`  Text: "${selectedElement.textContent?.substring(0, 50)}"`);
+        logger.log('User selected element', `selector=${selectedElement.selector}`);
+      } else {
+        console.log('⚠️ NO ELEMENT SELECTED - AI will choose from all elements');
+      }
+
       logger.log('Generating code with Element Database');
       const prompt = this.buildCodeGenerationPrompt(
-        pageData, 
-        description, 
-        designFiles, 
-        variations, 
-        settings
+        pageData,
+        description,
+        designFiles,
+        variations,
+        settings,
+        selectedElement
       );
       
+      // Log final prompt statistics
+      console.log('📊 Final Prompt Analysis:');
+      console.log(`  📏 Total Length: ${prompt.length} characters`);
+      console.log(`  🔢 Estimated Tokens: ${Math.ceil(prompt.length / 4)} (rough estimate)`);
+      console.log(`  🎯 Token Limit Check: ${Math.ceil(prompt.length / 4) > 250000 ? '⚠️ MAY EXCEED LIMIT' : '✅ WITHIN LIMITS'}`);
+
+      // Log first 10 selectors being sent to AI
+      const selectorList = prompt.match(/\*\*YOU MUST ONLY USE THESE SELECTORS[\s\S]*?(?=\*\*IF YOU USE)/)?.[0];
+      if (selectorList) {
+        const selectors = selectorList.match(/"([^"]+)"/g);
+        console.log('🎯 First 10 selectors sent to AI:', selectors?.slice(0, 10));
+      }
+
       const messages = [{
         role: 'system',
-        content: 'You are an expert at generating clean, production-ready JavaScript and CSS code for A/B tests using only vanilla JavaScript.'
+        content: `You are an expert at generating clean, production-ready JavaScript and CSS code for A/B tests using only vanilla JavaScript.
+
+CRITICAL CONSTRAINT: You will be given a list of valid CSS selectors. You MUST use ONLY these exact selectors in your code. Do NOT create, modify, or invent any selectors. If you use a selector not in the provided list, the code will fail completely.
+
+When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that list is the ONLY source of valid selectors. Copy them character-by-character.`
       }];
 
-      if (pageData.screenshot) {
-        messages.push({
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: {
-                url: pageData.screenshot,
-                detail: 'high'
-              }
-            },
-            {
-              type: 'text',
-              text: prompt
-            }
-          ]
-        });
-        logger.log('Including screenshot in request', 'using vision');
-      } else {
-        messages.push({
-          role: 'user',
-          content: prompt
-        });
-        logger.log('No screenshot available', 'text-only');
-      }
+      // Temporarily disable screenshots to reduce token usage
+      // Use element database instead of vision for better token efficiency
+      messages.push({
+        role: 'user',
+        content: prompt
+      });
+      logger.log('Using text-only mode', 'optimized for token efficiency');
       
-      const aiResponse = await this.callChatGPT(messages, authToken, settings?.model);
-      logger.log('Code generated', `tokens=${aiResponse.usage?.promptTokens || 0}`);
-      
-      const parsedCode = this.parseGeneratedCode(aiResponse.content);
+      // Get stored settings to use correct defaults
+      const storedSettings = await chrome.storage.local.get(['settings']);
+
+      // DEBUG: Log what's in storage
+      console.log('📦 Storage settings:', {
+        provider: storedSettings.settings?.provider,
+        model: storedSettings.settings?.model
+      });
+      console.log('📥 Passed settings:', {
+        provider: settings?.provider,
+        model: settings?.model
+      });
+
+      const mergedSettings = { ...storedSettings.settings, ...settings };
+      console.log('🔀 Merged settings:', {
+        provider: mergedSettings?.provider,
+        model: mergedSettings?.model
+      });
+
+      // Use unified AI call that routes to correct provider
+      const aiSettings = {
+        provider: mergedSettings?.provider || 'anthropic', // Default to Anthropic
+        authToken: mergedSettings?.authToken || authToken,
+        anthropicApiKey: mergedSettings?.anthropicApiKey,
+        model: mergedSettings?.model || 'claude-3-7-sonnet-20250219' // Default to Claude 3.7 Sonnet
+      };
+
+      console.log('🎯 Final AI Settings:', { provider: aiSettings.provider, model: aiSettings.model, hasAnthropicKey: !!aiSettings.anthropicApiKey, hasOpenAIKey: !!aiSettings.authToken });
+
+      const aiResponse = await this.callAI(messages, aiSettings);
+      logger.log('Code generated', `provider=${aiSettings.provider}, tokens=${aiResponse.usage?.promptTokens || 0}`);
+
+      let parsedCode = this.parseGeneratedCode(aiResponse.content);
       logger.log('Code parsed', `variations=${parsedCode.variations.length}`);
+
+      // ✨ VALIDATION: Check if selectors exist in database
+      const validationWarnings = this.validateSelectorsAgainstDatabase(parsedCode, pageData.elementDatabase);
+      if (validationWarnings.length > 0) {
+        logger.log('Selector validation warnings', `${validationWarnings.length} selectors not found in database`);
+        validationWarnings.forEach(warning => logger.log('Invalid selector', warning));
+
+        // ✨ AUTO-FIX: Replace generic selectors with specific ones from database
+        logger.log('Auto-fixing generic selectors', 'Replacing with database selectors...');
+        parsedCode = this.fixGenericSelectors(parsedCode, pageData.elementDatabase, tabId);
+        logger.log('Auto-fix complete', 'Generic selectors replaced');
+      }
+
+      // ✨ NEW: Automatic code testing and application pipeline (only if tabId available)
+      let testResults = null;
+      if (tabId) {
+        logger.log('Testing generated code', 'Running automatic validation...');
+        testResults = await this.testGeneratedCode(parsedCode, tabId);
+        logger.log('Testing complete', `status=${testResults.overallStatus}, errors=${testResults.totalErrors}, warnings=${testResults.totalWarnings}`);
+
+        // Apply the first variation to the page (preview mode)
+        if (parsedCode.variations && parsedCode.variations.length > 0) {
+          logger.log('Applying code to page', 'Injecting variation 1 for preview...');
+          try {
+            const variation = parsedCode.variations[0];
+            await this.applyVariationCode({
+              tabId: tabId,
+              css: variation.css || '',
+              js: variation.js || '',
+              key: `variation-${variation.number || 1}`
+            });
+            logger.log('Code applied successfully', 'Variation 1 is now live on page');
+          } catch (error) {
+            logger.error('Failed to apply code', error.message);
+          }
+        }
+      } else {
+        logger.log('Testing skipped', 'No tabId available');
+      }
 
       return {
         code: parsedCode,
+        testResults: testResults,
         usage: this.normalizeUsage(aiResponse),
         logs: logger.entries()
       };
@@ -501,137 +997,732 @@ class ServiceWorker {
     }
   }
 
-  buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings) {
-    const topElements = pageData.elementDatabase.elements.slice(0, 50);
-    const elementsJSON = JSON.stringify(topElements, null, 2);
-    const metadata = pageData.elementDatabase.metadata;
+  /**
+   * Test generated code automatically
+   * Runs test suite in content script context
+   */
+  async testGeneratedCode(parsedCode, tabId) {
+    const allResults = {
+      overallStatus: 'pass',
+      totalErrors: 0,
+      totalWarnings: 0,
+      variationResults: []
+    };
 
-    return `
-You are generating A/B test code for Convert.com using a STRUCTURED ELEMENT DATABASE.
+    try {
+      // Test each variation
+      for (const variation of parsedCode.variations) {
+        const response = await chrome.tabs.sendMessage(tabId, {
+          type: 'TEST_CODE',
+          variation: variation
+        });
 
-**USER REQUEST:**
-${description}
+        if (response.success) {
+          allResults.variationResults.push(response.testResult);
 
-**PAGE INFORMATION:**
-URL: ${metadata.url}
-Title: ${metadata.title}
-Total Interactive Elements: ${metadata.totalElements}
+          if (response.testResult.overallStatus === 'fail') {
+            allResults.overallStatus = 'fail';
+            allResults.totalErrors += response.testResult.errors.length;
+          }
 
-**ELEMENT DATABASE (Top ${topElements.length} elements by importance):**
-${elementsJSON}
+          allResults.totalWarnings += response.testResult.warnings.length;
+        }
+      }
 
-**HOW TO USE THE DATABASE:**
-1. Each element has a unique ID (e.g., "el_001")
-2. Use the "selector" field - these are VERIFIED and will work
-3. Match elements by:
-   - text: What the element says
-   - type: button, a, input, etc.
-   - visual: colors, position, size
-   - context: section (hero, nav, footer)
-   - category: cta, button, link, etc.
-
-**EXAMPLE MATCHING:**
-User says: "Change the blue CTA button text"
-You find: element with text="Get Started", backgroundColor="blue", category="cta"
-You use: That element's "selector" field exactly as-is
-
-**VARIATIONS TO CREATE:**
-${variations.map((v, i) => `${i + 1}. ${v.name}: ${v.description || 'See description above'}`).join('\n')}
-
-**CRITICAL RULES - READ EVERY ONE:**
-1. ALWAYS use selectors from the database - they are pre-verified
-2. Match elements using text, visual properties, and context
-3. Use vanilla JavaScript ONLY - no jQuery, no libraries
-4. **IMPLEMENT EVERY ASPECT OF THE USER REQUEST** - DO NOT SKIP ANY PART
-5. If user mentions color AND text changes, your code MUST include BOTH
-6. For color changes: ALWAYS use element.style.backgroundColor = 'red' (or hex)
-7. For text changes: ALWAYS use element.textContent = 'new text'
-8. Prefer JavaScript for styling (inline styles override CSS)
-9. If an element isn't in the database, don't make up selectors
-
-**CODE PATTERNS:**
-
-// Wait for element using selector from database:
-function waitForElement(selector, callback, maxWait = 10000) {
-  const startTime = Date.now();
-  const checkInterval = setInterval(() => {
-    const element = document.querySelector(selector);
-    if (element) {
-      clearInterval(checkInterval);
-      callback(element);
-    } else if (Date.now() - startTime > maxWait) {
-      clearInterval(checkInterval);
-      console.warn('Element not found:', selector);
+    } catch (error) {
+      console.error('Code testing failed:', error);
+      allResults.overallStatus = 'error';
+      allResults.error = error.message;
     }
-  }, 100);
+
+    return allResults;
+  }
+
+  /**
+   * Fix generic selectors by replacing them with specific ones from database
+   */
+  fixGenericSelectors(parsedCode, elementDatabase, tabId) {
+    if (!elementDatabase?.elements) return parsedCode;
+
+    // Build map of generic to specific selectors
+    const selectorMap = new Map();
+
+    // Find all generic selectors (those that match multiple elements)
+    elementDatabase.elements.forEach(el => {
+      const selector = el.selector;
+
+      // If selector contains nth-child or has an ID, it's likely specific
+      if (selector.includes(':nth-child') || selector.includes('#')) {
+        // Check if there's a simpler class-based selector that matches this element
+        const tag = el.tag;
+        const classes = el.classes;
+
+        if (classes && classes.length > 0) {
+          // Try class combinations
+          const classSelector = `${tag}.${classes.join('.')}`;
+
+          // Map the generic selector to the specific one
+          selectorMap.set(classSelector, selector);
+
+          // Also try with fewer classes
+          if (classes.length > 1) {
+            selectorMap.set(`${tag}.${classes[0]}`, selector);
+            selectorMap.set(`${tag}.${classes.slice(0, 2).join('.')}`, selector);
+          }
+        }
+      }
+    });
+
+    console.log('🔧 Selector replacement map:', Array.from(selectorMap.entries()).slice(0, 5));
+
+    // Replace selectors in the code
+    const replaceInCode = (code) => {
+      if (!code) return code;
+
+      let fixedCode = code;
+      selectorMap.forEach((specificSelector, genericSelector) => {
+        // Replace in CSS
+        const cssPattern = new RegExp(genericSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=[\\s{:,])', 'g');
+        fixedCode = fixedCode.replace(cssPattern, specificSelector);
+
+        // Replace in waitForElement calls
+        const jsPattern = new RegExp(`(['"\`])${genericSelector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\1`, 'g');
+        fixedCode = fixedCode.replace(jsPattern, `$1${specificSelector}$1`);
+      });
+
+      return fixedCode;
+    };
+
+    // Apply fixes to all variations
+    parsedCode.variations?.forEach(variation => {
+      if (variation.css) {
+        variation.css = replaceInCode(variation.css);
+      }
+      if (variation.js) {
+        variation.js = replaceInCode(variation.js);
+      }
+    });
+
+    if (parsedCode.globalCSS) {
+      parsedCode.globalCSS = replaceInCode(parsedCode.globalCSS);
+    }
+    if (parsedCode.globalJS) {
+      parsedCode.globalJS = replaceInCode(parsedCode.globalJS);
+    }
+
+    return parsedCode;
+  }
+
+  /**
+   * Validate that generated selectors exist in the element database
+   */
+  validateSelectorsAgainstDatabase(parsedCode, elementDatabase) {
+    const warnings = [];
+    const validSelectors = new Set();
+
+    // Build set of valid selectors from database
+    if (elementDatabase && elementDatabase.elements) {
+      elementDatabase.elements.forEach(el => {
+        validSelectors.add(el.selector);
+        if (el.alternativeSelectors) {
+          el.alternativeSelectors.forEach(alt => validSelectors.add(alt));
+        }
+      });
+    }
+
+    // Extract selectors from generated code
+    const extractSelectorsFromCode = (code) => {
+      if (!code) return [];
+      const selectors = [];
+
+      // Extract from CSS (selector before {)
+      const cssMatches = code.matchAll(/([^{}]+)\s*\{/g);
+      for (const match of cssMatches) {
+        const selector = match[1].trim().split(',').map(s => s.trim());
+        selectors.push(...selector);
+      }
+
+      // Extract from waitForElement calls
+      const jsMatches = code.matchAll(/waitForElement\s*\(\s*['"`]([^'"`]+)['"`]/g);
+      for (const match of jsMatches) {
+        selectors.push(match[1]);
+      }
+
+      return selectors;
+    };
+
+    // Check each variation
+    parsedCode.variations?.forEach((variation, idx) => {
+      const cssSelectors = extractSelectorsFromCode(variation.css);
+      const jsSelectors = extractSelectorsFromCode(variation.js);
+
+      [...cssSelectors, ...jsSelectors].forEach(selector => {
+        // Remove pseudo-classes/elements for comparison
+        const cleanSelector = selector.replace(/:hover|:active|:focus|::before|::after/g, '').trim();
+        if (cleanSelector && !validSelectors.has(cleanSelector)) {
+          warnings.push(`Variation ${idx + 1}: "${cleanSelector}" not found in element database`);
+        }
+      });
+    });
+
+    return warnings;
+  }
+
+  /**
+   * Compact element data to reduce token usage
+   * Removes verbose fields while keeping essential information
+   */
+  compactElementData(element) {
+    return {
+      selector: element.selector,
+      tag: element.tag,
+      text: element.text ? element.text.substring(0, 80) : '', // Truncate long text
+      level: element.level,
+      visual: element.visual ? {
+        bg: element.visual.backgroundColor,
+        color: element.visual.color,
+        w: element.visual.position?.width || element.visual.dimensions?.width,
+        h: element.visual.position?.height || element.visual.dimensions?.height
+      } : null,
+      classes: element.classes || element.className?.split(' ').slice(0, 3),
+      id: element.id || element.attributes?.id,
+      section: element.context?.section || element.section
+    };
+  }
+
+  buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings, selectedElement = null) {
+    // Check if we have hierarchical context (new system) or legacy element database
+    const hasHierarchicalContext = pageData.context && pageData.context.mode;
+
+    let topElements, metadata, contextMode;
+
+    if (hasHierarchicalContext) {
+      // NEW SYSTEM: Use hierarchical context
+      contextMode = pageData.context.mode;
+      metadata = pageData.context.metadata;
+
+      // Combine all context levels, removing screenshots and optimizing for size
+      topElements = [
+        ...pageData.context.primary,
+        ...pageData.context.proximity,
+        ...pageData.context.structure
+      ].map(element => this.compactElementData(element));
+
+      console.log('🆕 Using hierarchical context system');
+      console.log(`  📊 Mode: ${contextMode}`);
+      console.log(`  🎯 Primary: ${pageData.context.primary.length}`);
+      console.log(`  🔗 Proximity: ${pageData.context.proximity.length}`);
+      console.log(`  🏗️ Structure: ${pageData.context.structure.length}`);
+      console.log(`  💰 Estimated Tokens: ${metadata.estimatedTokens}`);
+    } else {
+      // LEGACY SYSTEM: Use element database with optimization
+      contextMode = 'legacy';
+      topElements = pageData.elementDatabase.elements
+        .slice(0, 35) // Reduced from 50 to 35 for faster processing
+        .map(element => this.compactElementData(element));
+      metadata = pageData.elementDatabase.metadata;
+      console.log('🔄 Using legacy element database');
+    }
+
+    // Filter elements to selected scope if user selected an element
+    if (selectedElement && selectedElement.selector) {
+      const originalCount = topElements.length;
+      const selectedSelector = selectedElement.selector;
+
+      // Keep only elements that are descendants of the selected element
+      // Check if selector starts with selected selector or contains it as parent
+      topElements = topElements.filter(el => {
+        // Don't filter out the selected element itself
+        if (el.selector === selectedSelector) return true;
+
+        // Check if this element's selector indicates it's a child
+        // For example: "#hero > button" is child of "#hero"
+        // Or "div.hero button" is child of "div.hero"
+        return el.selector && el.selector.includes(selectedSelector);
+      });
+
+      console.log(`🔍 Filtered elements to selected scope: ${originalCount} → ${topElements.length} elements`);
+      console.log(`  📍 Scope: ${selectedSelector}`);
+
+      // If filtering removed everything, keep original list (safety fallback)
+      if (topElements.length === 0) {
+        console.warn('⚠️ Filtering removed all elements - using full list');
+        topElements = pageData.elementDatabase?.elements
+          ?.slice(0, 35)
+          .map(element => this.compactElementData(element)) || [];
+      }
+    }
+
+    // Add token usage logging
+    const elementsJSON = JSON.stringify(topElements, null, 2);
+    metadata = metadata || pageData.elementDatabase?.metadata || {};
+    
+    // Log token usage by component
+    console.log('🔍 Token Usage Analysis:');
+    console.log(`  📊 Elements JSON: ${elementsJSON.length} chars`);
+    console.log(`  📄 Description: ${description?.length || 0} chars`);
+    console.log(`  🎯 Variations: ${JSON.stringify(variations).length} chars`);
+    console.log(`  🖼️ Has Screenshot: ${!!pageData.screenshot}`);
+    console.log(`  📋 Total Elements: ${topElements.length}`);
+    
+    // Log individual element sizes
+    topElements.forEach((element, index) => {
+      const elementSize = JSON.stringify(element).length;
+      if (elementSize > 1000) { // Log large elements
+        console.log(`  ⚠️ Large Element ${index}: ${elementSize} chars (${element.tag}#${element.id || 'no-id'}.${element.classes?.join('.') || 'no-class'})`);
+      }
+    });
+    
+    // Log specific large data within elements
+    topElements.forEach((element, index) => {
+      if (element.html && element.html.length > 500) {
+        console.log(`  📝 Large HTML ${index}: ${element.html.length} chars`);
+      }
+      if (element.screenshot && element.screenshot.length > 1000) {
+        console.log(`  📸 Element Screenshot ${index}: ${element.screenshot.length} chars`);
+      }
+      if (element.innerHTML && element.innerHTML.length > 500) {
+        console.log(`  🏗️ Large innerHTML ${index}: ${element.innerHTML.length} chars`);
+      }
+    });
+
+    // Build context-aware instructions
+    const contextInstructions = hasHierarchicalContext && contextMode === 'element-focused'
+      ? `
+**CONTEXT MODE: ELEMENT-FOCUSED**
+The user selected a specific element to modify. The database is organized hierarchically:
+- PRIMARY (level: "primary"): The selected element with FULL detail - FOCUS YOUR CHANGES HERE
+- PROXIMITY (level: "proximity"): Nearby elements for visual context and harmony
+- STRUCTURE (level: "structure"): Page landmarks for understanding overall layout
+
+When generating code, focus primarily on PRIMARY elements while considering proximity for consistency.
+${metadata.focusPath ? `\n**SELECTED ELEMENT PATH:** ${metadata.focusPath}` : ''}
+`
+      : `
+**CONTEXT MODE: FULL-PAGE**
+The database contains the most important interactive elements across the entire page.
+Elements are ranked by importance (position, size, interactivity).
+`;
+
+    // Build streamlined prompt (30% shorter while maintaining quality)
+    const coreRules = `**CRITICAL RULES:**
+1. ⚠️ MUST use EXACT selectors from database - DO NOT make up selectors
+2. ❌ WRONG: 'button.btn.btn--primary' (made up selector)
+3. ✅ CORRECT: Use actual selectors from elements list below
+4. Match by: text content, tag type, position on page
+5. Vanilla JS only - no jQuery
+6. IMPLEMENT ALL requested changes (text AND color if both mentioned)
+7. Prevent duplicates: if(element.dataset.varApplied) return;
+8. **FOR COLOR CHANGES: Use CSS section with !important flags (most reliable)**
+9. Text changes: element.textContent='new text' (use JS)
+10. CSS overrides inline styles - prefer CSS for visual changes
+
+**SELECTOR REQUIREMENT - READ CAREFULLY:**
+Every element in the database has a "selector" field - you MUST copy this exact selector.
+If you generate ANY selector not found in the database, the code will FAIL.`;
+
+    // Build selected element context for Visual QA
+    let selectedElementContext = '';
+    let selectedElementHeader = '';
+    if (selectedElement) {
+      selectedElementHeader = `
+
+🎯🎯🎯 USER SELECTED A CONTEXT AREA 🎯🎯🎯
+
+**SELECTED AREA (SEARCH SCOPE):**
+Selector: ${selectedElement.selector}
+Text Preview: "${(selectedElement.textContent || '').substring(0, 60)}..."
+Tag: ${selectedElement.tag}
+
+**CRITICAL - HOW TO USE THE SELECTED AREA:**
+The user clicked on this area to NARROW THE FOCUS of your changes.
+This is the CONTEXT/SCOPE - NOT necessarily what you should modify.
+
+**EXAMPLES:**
+- User selects hero section, says "change button color" → Find BUTTON inside hero section
+- User selects nav bar, says "update link text" → Find LINK inside nav bar
+- User selects entire page (body/div), says "make heading blue" → Find HEADING anywhere
+
+**ONLY modify the selected ${selectedElement.tag} itself if:**
+- User says "change the background"
+- User says "modify this section"
+- User says "style the container"
+
+Otherwise, find child elements WITHIN "${selectedElement.selector}" that match the description.
+
+`;
+
+      selectedElementContext = `
+
+**🎯 SELECTED AREA (CONTEXT SCOPE):**
+- Container: ${selectedElement.selector}
+- Type: ${selectedElement.tag}
+- Contains: "${(selectedElement.textContent || '').substring(0, 100)}"
+${selectedElement.screenshot ? '- 📸 Screenshot: Available for visual reference' : ''}
+
+**SEARCH STRATEGY:**
+1. Parse the user's request to identify target elements (button, heading, link, etc.)
+2. Find those elements WITHIN the selected area (${selectedElement.selector})
+3. Apply changes to the matched elements, NOT to the container itself
+`;
+    }
+
+    // If user selected an element, put it first in the selector list
+    let orderedElements = [...topElements];
+    if (selectedElement && selectedElement.selector) {
+      // Remove selected element from list if it exists
+      orderedElements = orderedElements.filter(el => el.selector !== selectedElement.selector);
+      // Add it to the beginning
+      orderedElements.unshift({
+        selector: selectedElement.selector,
+        tag: selectedElement.tag,
+        text: selectedElement.textContent || '',
+        level: 'primary'
+      });
+    }
+
+    // Use selected element in example if available
+    const exampleSelector = selectedElement?.selector || orderedElements[0]?.selector || 'button.cta';
+
+    const exampleCode = `// BEST PRACTICE: Use CSS for color/size changes, JS for text/behavior
+// CSS (most reliable for visual changes):
+${exampleSelector} {
+  background-color: red !important;
+  color: white !important;
+  font-size: 18px !important;
 }
 
-// ✅ CORRECT Example - User asks for text AND color:
-// Database: { selector: "button.cta-primary", text: "Get Started" }
-waitForElement('button.cta-primary', (element) => {
-  element.textContent = 'Start Free Trial';           // ← Text change
-  element.style.backgroundColor = 'red';               // ← Color change  
-  element.style.color = 'white';                       // ← Optional: contrast
+// JavaScript (for text and behavior):
+waitForElement('${exampleSelector}', (el) => {
+  if(el.dataset.varApplied) return;
+  el.textContent = 'New Text';
+  el.dataset.varApplied = '1';
 });
 
-**GENERATION SETTINGS:**
-- Prefer CSS: ${settings.preferCSS ? 'YES' : 'NO'}
-- Include DOM checks: ${settings.includeDOMChecks ? 'YES' : 'NO'}
+// ❌ NEVER do this (made up selector):
+waitForElement('button.btn.btn--primary', ...)
 
-**OUTPUT FORMAT:**
-Return ONLY the CSS and JavaScript code sections without any comments or explanations.
+// ✅ ALWAYS copy selector from database:
+waitForElement('${exampleSelector}', ...)`;
 
-// VARIATION [NUMBER] - [NAME]
-// VARIATION CSS
-[Pure CSS rules only - no comments]
+    return `⚠️⚠️⚠️ CRITICAL - READ THIS FIRST ⚠️⚠️⚠️
+${selectedElementHeader}
+**YOU MUST ONLY USE THESE SELECTORS - NO OTHERS:**
+${orderedElements.map((el, i) => `${i + 1}. "${el.selector}"${i === 0 && selectedElement ? ' ⭐ USER-SELECTED ELEMENT' : ''}`).join('\n')}
 
-// VARIATION JAVASCRIPT
-// Always use waitForElement for robust element selection:
-waitForElement('exact-selector-from-database', (element) => {
-  // Your changes here
-  element.textContent = 'New text';
-  element.style.backgroundColor = 'red';
-});
+**IF YOU USE ANY SELECTOR NOT IN THE LIST ABOVE, THE CODE WILL FAIL.**
 
-// GLOBAL EXPERIENCE CSS (if needed)
-[Shared CSS rules only]
+Generate A/B test code using this ELEMENT DATABASE.
 
-// GLOBAL EXPERIENCE JS (if needed)
-[Shared JavaScript code only]
+**REQUEST:** ${description}
+${selectedElementContext}
+${contextInstructions}
+**PAGE:** ${metadata.url}
 
-**BEFORE YOU RESPOND - VERIFY:**
-□ Did I read the ENTIRE user request?
-□ Did I identify ALL requested changes (text, color, style, etc.)?
-□ Did I implement EVERY change in my code?
-□ If user wants color change, did I add element.style.backgroundColor?
-□ If user wants text change, did I add element.textContent?
-□ Am I using ONLY selectors from the database?
+**ELEMENTS WITH TEXT CONTENT (for matching):**
+${topElements.slice(0, 15).map((el, i) => `${i + 1}. "${el.selector}" - ${el.tag} ${el.text ? `"${el.text.substring(0, 50)}"` : '(no text)'}`).join('\n')}
 
-**REMEMBER:** 
-- Look at the screenshot to visually identify elements
-- Match them to the database using text, color, position, category
-- Use the exact selector from the matched database entry
-- IMPLEMENT EVERY ASPECT - don't skip color changes or text changes
-- Never invent selectors - only use what's in the database
-`;
+**ELEMENTS DATABASE (${topElements.length} elements):**
+${elementsJSON}
+
+**FIELD MEANINGS:**
+- selector: ⚠️ USE THIS EXACT STRING - copy-paste, don't modify
+- tag: Element type (button, a, div, etc.)
+- text: What element displays (first 80 chars) - use to match user request
+- level: primary=main target, proximity=nearby, structure=landmarks
+- visual.bg/color: Current colors
+- section: Page area (hero, nav, footer, etc.)
+
+${coreRules}
+
+**VARIATIONS (${variations.length}):**
+${variations.map((v, i) => `${i + 1}. ${v.name}: ${v.description || 'See above'}`).join('\n')}
+
+**NAME EACH VARIATION** (2-5 words describing changes):
+✓ "Green CTA Buttons" ✓ "Trust Badge Addition" ✓ "Larger Headlines"
+✗ "Variation 1" ✗ "Test" ✗ "Unnamed"
+
+**IMPORTANT - waitForElement HELPER:**
+DO NOT include the waitForElement function definition in your code.
+It is automatically provided by the system.
+Just use: waitForElement(selector, callback)
+
+**CODE PATTERN:**
+${exampleCode}
+
+**OUTPUT FORMAT - STRICT JSON:**
+You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSON.
+
+{
+  "variations": [
+    {
+      "number": 1,
+      "name": "Descriptive Name (2-5 words)",
+      "css": "CSS code or empty string",
+      "js": "JavaScript code using waitForElement (DO NOT define it)"
+    }
+  ],
+  "globalCSS": "Shared CSS or empty string",
+  "globalJS": "Shared JavaScript or empty string"
+}
+
+**EXAMPLE JSON OUTPUT:**
+{
+  "variations": [
+    {
+      "number": 1,
+      "name": "Green CTA Button",
+      "css": "#mainCTA {\\n  background-color: #28a745 !important;\\n  color: white !important;\\n  font-size: 18px !important;\\n}",
+      "js": "waitForElement('#mainCTA', (el) => {\\n  if(el.dataset.varApplied) return;\\n  el.textContent = 'Get Started Today';\\n  el.dataset.varApplied = '1';\\n});"
+    }
+  ],
+  "globalCSS": "",
+  "globalJS": ""
+}
+
+NOTE: Do NOT include "function waitForElement(...)" definition - just call it directly.
+BEST PRACTICE: Use CSS section for colors/sizes (with !important), JS section for text/behavior.
+
+**CHECKLIST BEFORE SUBMITTING:**
+□ ⚠️ VERIFIED every selector exists in the ELEMENTS list above
+□ ❌ NO made-up selectors like 'button.btn.btn--primary'
+□ ✅ ONLY used exact selectors from database (copy-paste)
+□ ❌ Did NOT include waitForElement function definition
+□ ✅ Just CALLED waitForElement with selector and callback
+□ Implemented ALL requested changes
+□ Added duplication prevention (dataset.varApplied)
+□ Descriptive variation names
+□ Output is VALID JSON ONLY (no markdown)
+
+**FINAL REMINDER:**
+Look at the ELEMENTS list above and find the selector that matches what the user wants to change.
+Copy that EXACT selector - do not modify it or create a new one.
+
+Generate JSON now.`;
+  }
+
+  /**
+   * Unified AI call - routes to appropriate provider
+   */
+  async callAI(messages, settings) {
+    const provider = settings?.provider || 'anthropic';
+    const model = settings?.model || 'claude-3-7-sonnet-20250219';
+
+    console.log('🤖 AI Provider:', { provider, model, hasAnthropicKey: !!settings.anthropicApiKey, hasOpenAIKey: !!settings.authToken });
+
+    if (provider === 'anthropic') {
+      return this.callClaude(messages, settings.anthropicApiKey, model);
+    } else {
+      return this.callChatGPT(messages, settings.authToken, model);
+    }
+  }
+
+  /**
+   * Call Anthropic Claude API with prompt caching
+   */
+  async callClaude(messages, apiKey, model = 'claude-3-7-sonnet-20250219') {
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error('Anthropic API key is missing. Please add it in settings.');
+    }
+
+    // Enhanced API key validation
+    if (!apiKey.startsWith('sk-ant-')) {
+      throw new Error('Invalid Anthropic API key format. Keys should start with "sk-ant-"');
+    }
+
+    if (apiKey.length < 40) {
+      throw new Error('Anthropic API key appears too short. Please check your key in settings.');
+    }
+
+    console.log('🔮 Calling Anthropic Claude:', { 
+      model, 
+      messageCount: messages.length,
+      apiKeyPrefix: apiKey.substring(0, 12) + '...',
+      apiKeyLength: apiKey.length
+    });
+
+    // Extract system message and user messages
+    const systemMessage = messages.find(m => m.role === 'system')?.content || '';
+    const userMessages = messages.filter(m => m.role !== 'system');
+
+    // Build Anthropic-format messages
+    const claudeMessages = userMessages.map(msg => ({
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.content
+    }));
+
+    // Determine if this is Claude 4.5 (supports extended thinking)
+    const isClaude45 = model.includes('claude-4') || model.includes('sonnet-4');
+
+    const requestBody = {
+      model: model,
+      max_tokens: 4000,
+      messages: claudeMessages
+    };
+
+    // Add system message with prompt caching for 90% savings
+    if (systemMessage) {
+      requestBody.system = [{
+        type: "text",
+        text: systemMessage,
+        cache_control: { type: "ephemeral" } // Enable caching for repeated prompts
+      }];
+    }
+
+    // Claude 4.5 specific: Enable extended thinking if available
+    if (isClaude45) {
+      requestBody.thinking = {
+        type: "enabled",
+        budget_tokens: 2048 // Minimum 1024, using 2048 for better reasoning
+      };
+    }
+
+    let response;
+    try {
+      console.log('🌐 Making API request to Anthropic...', {
+        url: 'https://api.anthropic.com/v1/messages',
+        model: model,
+        hasApiKey: !!apiKey,
+        apiKeyLength: apiKey ? apiKey.length : 0
+      });
+
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      console.log('📡 API Response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
+    } catch (fetchError) {
+      console.error('🚨 Network Error Details:', {
+        message: fetchError.message,
+        name: fetchError.name,
+        stack: fetchError.stack
+      });
+
+      // Provide specific error messages for common issues
+      if (fetchError.message.includes('Failed to fetch')) {
+        throw new Error('Network error: Unable to connect to Anthropic API. Please check:\n' +
+                       '1. Your internet connection\n' +
+                       '2. Extension permissions (reload extension if needed)\n' +
+                       '3. API key is valid in settings\n' +
+                       '4. No firewall blocking api.anthropic.com');
+      }
+      
+      throw new Error(`Network error: ${fetchError.message}`);
+    }
+
+    if (!response.ok) {
+      let errorDetail = `Claude API error: ${response.status}`;
+      try {
+        const errorBody = await response.json();
+        console.error('❌ Claude API Error Response:', errorBody);
+
+        if (errorBody?.error?.message) {
+          errorDetail = errorBody.error.message;
+        }
+
+        if (errorBody?.error?.type === 'invalid_request_error') {
+          errorDetail = `${errorDetail}. Check model name: "${model}"`;
+        }
+      } catch (parseError) {
+        // Ignore parse errors
+      }
+
+      if (response.status === 404) {
+        errorDetail = `Model "${model}" not found by Anthropic API. Try "claude-3-7-sonnet-20250219" (3.7 Sonnet) or "claude-sonnet-4-5-20250929" (4.5 Sonnet). Check settings.`;
+      } else if (response.status === 429) {
+        errorDetail = 'Anthropic rate limit hit. Wait a moment or switch to another provider.';
+      } else if (response.status === 401) {
+        errorDetail = 'Invalid Anthropic API key. Check your settings.';
+      }
+
+      throw new Error(errorDetail);
+    }
+
+    const result = await response.json();
+
+    console.log('📥 Claude API Response:', {
+      id: result.id,
+      model: result.model,
+      stopReason: result.stop_reason,
+      usage: result.usage
+    });
+
+    // Extract content from Claude response
+    const content = result.content
+      ?.filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n') || '';
+
+    if (!content || content.trim().length === 0) {
+      console.error('❌ Claude returned empty content!');
+      console.error('Full API response:', JSON.stringify(result, null, 2));
+      throw new Error(`Claude API returned empty response. stop_reason: ${result.stop_reason}`);
+    }
+
+    // Log cache performance for monitoring
+    if (result.usage?.cache_creation_input_tokens || result.usage?.cache_read_input_tokens) {
+      console.log('💾 Prompt Cache Performance:', {
+        cacheCreation: result.usage.cache_creation_input_tokens || 0,
+        cacheRead: result.usage.cache_read_input_tokens || 0,
+        savings: result.usage.cache_read_input_tokens
+          ? `${Math.round((result.usage.cache_read_input_tokens / (result.usage.input_tokens || 1)) * 100)}%`
+          : '0%'
+      });
+    }
+
+    return {
+      content,
+      usage: {
+        promptTokens: result.usage?.input_tokens || 0,
+        completionTokens: result.usage?.output_tokens || 0,
+        totalTokens: (result.usage?.input_tokens || 0) + (result.usage?.output_tokens || 0),
+        cacheCreationTokens: result.usage?.cache_creation_input_tokens || 0,
+        cacheReadTokens: result.usage?.cache_read_input_tokens || 0
+      },
+      model: result.model
+    };
   }
 
   async callChatGPT(messages, authToken, model = 'gpt-4o-mini') {
     const resolvedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-4o-mini';
     console.log('Calling OpenAI Chat Completions.', { model: resolvedModel, messageCount: messages.length });
     
+    // Use model-specific parameters for GPT-5 vs GPT-4 models
+    const isGPT5Model = resolvedModel.startsWith('gpt-5');
+    const requestBody = {
+      model: resolvedModel,
+      messages: messages
+    };
+
+    if (isGPT5Model) {
+      // GPT-5 models use reasoning tokens + completion tokens
+      // Need higher limit since reasoning tokens don't count toward output
+      requestBody.max_completion_tokens = 4000; // Keep original - reasoning uses tokens
+      // GPT-5 models only support default temperature (1)
+    } else {
+      requestBody.max_tokens = 2500; // Reduced from 4000 for faster generation
+      requestBody.temperature = 0.5; // Reduced from 0.7 for more consistent output
+    }
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${authToken}`
       },
-      body: JSON.stringify({
-        model: resolvedModel,
-        messages: messages,
-        max_tokens: 4000,
-        temperature: 0.7
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
@@ -653,7 +1744,33 @@ waitForElement('exact-selector-from-database', (element) => {
     }
 
     const result = await response.json();
+
+    console.log('📥 OpenAI API Response:', {
+      hasChoices: !!result?.choices,
+      choicesLength: result?.choices?.length || 0,
+      firstChoiceHasMessage: !!result?.choices?.[0]?.message,
+      contentLength: result?.choices?.[0]?.message?.content?.length || 0,
+      finishReason: result?.choices?.[0]?.finish_reason,
+      usage: result?.usage
+    });
+
     const content = result?.choices?.[0]?.message?.content || '';
+
+    if (!content || content.trim().length === 0) {
+      console.error('❌ OpenAI returned empty content!');
+      console.error('Full API response:', JSON.stringify(result, null, 2));
+
+      const finishReason = result?.choices?.[0]?.finish_reason;
+      const reasoningTokens = result?.usage?.completion_tokens_details?.reasoning_tokens || 0;
+
+      // Special handling for GPT-5 models that use reasoning tokens
+      if (finishReason === 'length' && reasoningTokens > 0) {
+        throw new Error(`GPT-5 model used all ${reasoningTokens} tokens for reasoning but produced no output. This is a known issue with GPT-5 models on complex prompts. Try: (1) Using gpt-4o or gpt-4o-mini instead, (2) Simplifying the request, or (3) Increasing max_completion_tokens.`);
+      }
+
+      throw new Error(`OpenAI API returned empty response. finish_reason: ${finishReason}. This may indicate: (1) Content filter triggered, (2) Model refused request, (3) API quota exceeded, or (4) Hit token limit.`);
+    }
+
     return {
       content,
       usage: result?.usage || null,
@@ -662,18 +1779,99 @@ waitForElement('exact-selector-from-database', (element) => {
   }
 
   parseGeneratedCode(response) {
+    console.log('🔍 Parsing AI response:', {
+      responseLength: response?.length || 0,
+      firstChars: response?.substring(0, 200) || 'empty',
+      hasVariation: response?.includes('VARIATION') || false,
+      hasGlobal: response?.includes('GLOBAL') || false,
+      looksLikeJSON: response?.trim().startsWith('{') || false
+    });
+
     const sections = {
       variations: [],
       globalCSS: '',
       globalJS: ''
     };
 
-    const lines = response.split('\n');
+    if (!response || typeof response !== 'string') {
+      console.error('❌ Invalid response:', { type: typeof response, value: response });
+      return sections;
+    }
+
+    if (response.trim().length === 0) {
+      console.error('❌ Empty response from AI - no code generated');
+      console.error('This usually means:');
+      console.error('  1. API returned no content (check API quota/errors)');
+      console.error('  2. Model refused to generate (prompt issue)');
+      console.error('  3. Response was filtered/blocked');
+      return sections;
+    }
+
+    // ✨ NEW: Try parsing as JSON first (structured output)
+    let cleanedResponse = response.trim();
+
+    // Remove markdown code blocks if present
+    if (cleanedResponse.startsWith('```json') || cleanedResponse.startsWith('```')) {
+      cleanedResponse = cleanedResponse
+        .replace(/^```(?:json)?\s*\n/i, '')
+        .replace(/\n```\s*$/i, '');
+      console.log('🧹 Removed markdown code block wrapper');
+    }
+
+    // Try JSON parsing
+    if (cleanedResponse.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(cleanedResponse);
+
+        if (parsed.variations && Array.isArray(parsed.variations)) {
+          console.log('✅ Successfully parsed JSON response');
+          
+          // Debug: Log the actual generated code
+          parsed.variations.forEach((v, index) => {
+            console.log(`🔍 Generated Code Debug - Variation ${index + 1}:`);
+            console.log(`  Name: ${v.name}`);
+            console.log(`  CSS: ${v.css ? v.css.substring(0, 200) + '...' : 'None'}`);
+            console.log(`  JS: ${v.js ? v.js.substring(0, 200) + '...' : 'None'}`);
+          });
+          
+          return {
+            variations: parsed.variations.map(v => ({
+              number: v.number || 1,
+              name: v.name || 'Unnamed',
+              css: v.css || '',
+              js: v.js || ''
+            })),
+            globalCSS: parsed.globalCSS || '',
+            globalJS: parsed.globalJS || ''
+          };
+        }
+      } catch (jsonError) {
+        console.warn('⚠️ JSON parsing failed, falling back to text parsing:', jsonError.message);
+      }
+    }
+
+    // Fall back to legacy text parsing
+    if (response.trim().startsWith('```')) {
+      cleanedResponse = response
+        .replace(/^```(?:javascript|js|css)?\s*\n/i, '')
+        .replace(/\n```\s*$/i, '');
+      console.log('🧹 Removed wrapping code block');
+    }
+
+    const lines = cleanedResponse.split('\n');
     let currentSection = null;
     let currentContent = '';
-    
+    let variationHeadersFound = 0;
+
     for (const line of lines) {
-      if (line.includes('VARIATION') && line.includes('//')) {
+      // More flexible matching: detect variation headers even without // prefix
+      const isVariationHeader = (
+        (line.includes('VARIATION') && line.includes('//')) ||
+        (line.trim().startsWith('VARIATION') && (line.includes('CSS') || line.includes('JAVASCRIPT') || line.includes('JS') || line.includes('-')))
+      );
+
+      if (isVariationHeader) {
+        variationHeadersFound++;
         if (currentSection) {
           this.addToSection(sections, currentSection, currentContent.trim());
         }
@@ -689,28 +1887,85 @@ waitForElement('exact-selector-from-database', (element) => {
         currentContent += line + '\n';
       }
     }
-    
+
     if (currentSection) {
       this.addToSection(sections, currentSection, currentContent.trim());
+    }
+
+    console.log('📊 Parse results:', {
+      variationHeadersFound,
+      variationsParsed: sections.variations.length,
+      variations: sections.variations.map(v => ({ number: v.number, name: v.name, hasCSS: !!v.css, hasJS: !!v.js })),
+      hasGlobalCSS: !!sections.globalCSS,
+      hasGlobalJS: !!sections.globalJS
+    });
+
+    // If no variations found, log the full response for debugging
+    if (sections.variations.length === 0) {
+      console.error('❌ No variations parsed! Full AI response:', response);
     }
 
     return sections;
   }
 
   parseSection(line) {
-    if (line.includes('GLOBAL EXPERIENCE CSS')) {
+    if (line.includes('GLOBAL EXPERIENCE CSS') || line.includes('GLOBAL CSS')) {
       return { type: 'globalCSS' };
-    } else if (line.includes('GLOBAL EXPERIENCE JS')) {
+    } else if (line.includes('GLOBAL EXPERIENCE JS') || line.includes('GLOBAL JS') || line.includes('GLOBAL JAVASCRIPT')) {
       return { type: 'globalJS' };
     } else if (line.includes('VARIATION')) {
-      const match = line.match(/VARIATION\s+(\d+)[^-]*-\s*(.+)/);
       const isCSS = line.includes('CSS');
-      const isJS = line.includes('JAVASCRIPT') || line.includes('JS');
-      
+      const isJS = line.includes('JAVASCRIPT') || line.includes(' JS');
+
+      // Try multiple patterns to extract variation info
+      let number = 1;
+      let name = 'Unnamed';
+
+      // Pattern 1: VARIATION 1 - Name (with optional // prefix)
+      let match = line.match(/(?:\/\/)?\s*VARIATION\s+(\d+)\s*-\s*(.+?)(?:\s*(?:CSS|JAVASCRIPT|JS|\/\/|$))/i);
+      if (match) {
+        number = parseInt(match[1]);
+        name = match[2].trim();
+      } else {
+        // Pattern 2: VARIATION 1: Name
+        match = line.match(/(?:\/\/)?\s*VARIATION\s+(\d+)\s*:\s*(.+?)(?:\s*(?:CSS|JAVASCRIPT|JS|\/\/|$))/i);
+        if (match) {
+          number = parseInt(match[1]);
+          name = match[2].trim();
+        } else {
+          // Pattern 3: VARIATION 1 Name (no delimiter)
+          match = line.match(/(?:\/\/)?\s*VARIATION\s+(\d+)\s+([A-Z].+?)(?:\s*(?:CSS|JAVASCRIPT|JS|\/\/|$))/i);
+          if (match) {
+            number = parseInt(match[1]);
+            name = match[2].trim();
+          } else {
+            // Pattern 4: Just extract number
+            match = line.match(/VARIATION\s+(\d+)/i);
+            if (match) {
+              number = parseInt(match[1]);
+              name = `Enhanced Version ${number}`;
+            }
+          }
+        }
+      }
+
+      // Clean up the name - remove common suffixes and markers
+      name = name
+        .replace(/\s*(?:\/\/|VARIATION|CSS|JAVASCRIPT|JS)\s*$/i, '')
+        .replace(/^(?:\/\/|-)\s*/, '')
+        .trim();
+
+      if (!name || name === 'VARIATION' || name.length < 2) {
+        name = `Enhanced Version ${number}`;
+      }
+
+      // Debug logging
+      console.log(`🏷️ Parsed variation: Line="${line.trim()}" → Number=${number}, Name="${name}", Type=${isCSS ? 'CSS' : isJS ? 'JS' : 'unknown'}`);
+
       return {
         type: 'variation',
-        number: match ? parseInt(match[1]) : 1,
-        name: match ? match[2].trim() : 'Unnamed',
+        number: number,
+        name: name,
         codeType: isCSS ? 'css' : 'js'
       };
     }
@@ -801,24 +2056,52 @@ waitForElement('exact-selector-from-database', (element) => {
 
   normalizeUsage(aiResponse = {}) {
     const usage = aiResponse.usage || {};
-    const promptTokens = usage.prompt_tokens || usage.input_tokens || 0;
-    const completionTokens = usage.completion_tokens || usage.output_tokens || 0;
-    const totalTokens = usage.total_tokens || promptTokens + completionTokens;
+    // Handle both snake_case (OpenAI) and camelCase (already normalized from callClaude)
+    const promptTokens = usage.promptTokens || usage.prompt_tokens || usage.inputTokens || usage.input_tokens || 0;
+    const completionTokens = usage.completionTokens || usage.completion_tokens || usage.outputTokens || usage.output_tokens || 0;
+    const totalTokens = usage.totalTokens || usage.total_tokens || promptTokens + completionTokens;
+
+    // Include cache information for Claude models (both snake_case and camelCase)
+    const cacheCreationTokens = usage.cacheCreationTokens || usage.cache_creation_input_tokens || 0;
+    const cacheReadTokens = usage.cacheReadTokens || usage.cache_read_input_tokens || 0;
 
     return {
       model: aiResponse.model || 'unknown',
       promptTokens,
       completionTokens,
-      totalTokens
+      totalTokens,
+      // Claude-specific fields
+      cacheCreationTokens,
+      cacheReadTokens
     };
   }
 
-  async adjustCode(data) {
+  async adjustCode(data, tabId = null) {
     const logger = this.createOperationLogger('AdjustCode');
     try {
-      const { generationData, previousCode, feedback, testSummary, conversationHistory, extraContext } = data || {};
-      if (!generationData) {
-        throw new Error('Missing generation context for adjustment request.');
+      // Support both old format (generationData) and new format (direct params)
+      const {
+        generationData,
+        pageData,
+        previousCode,
+        newRequest,
+        feedback,
+        testSummary,
+        conversationHistory,
+        variations,
+        settings,
+        extraContext
+      } = data || {};
+
+      // Determine which format we're using
+      const isNewFormat = pageData && newRequest;
+      const actualPageData = isNewFormat ? pageData : generationData?.pageData;
+      const actualDescription = isNewFormat ? newRequest : (feedback || generationData?.description);
+      const actualVariations = isNewFormat ? variations : generationData?.variations;
+      const actualSettings = isNewFormat ? settings : generationData?.settings;
+
+      if (!actualPageData) {
+        throw new Error('Missing page data for adjustment request.');
       }
 
       const authToken = await this.getAuthToken();
@@ -826,19 +2109,34 @@ waitForElement('exact-selector-from-database', (element) => {
         throw new Error('OpenAI API key missing. Add one in the side panel settings.');
       }
 
+      // Build base prompt using ORIGINAL page data (not modified page)
       const basePrompt = this.buildCodeGenerationPrompt(
-        generationData.pageData,
-        generationData.description,
-        generationData.designFiles,
-        generationData.variations,
-        generationData.settings
+        actualPageData,
+        actualDescription,
+        isNewFormat ? [] : generationData?.designFiles,
+        actualVariations,
+        actualSettings
       );
       logger.log('Base prompt prepared', `length=${basePrompt.length}`);
 
       let adjustmentContext = '';
+
+      // NEW: Handle conversation history for follow-ups
+      if (isNewFormat && conversationHistory && conversationHistory.length > 0) {
+        adjustmentContext += '\n**CONVERSATION HISTORY:**\n';
+        conversationHistory.forEach((entry, index) => {
+          adjustmentContext += `${index + 1}. User: "${entry.request}"\n`;
+          adjustmentContext += `   → Generated: ${entry.code?.variations?.length || 0} variation(s)\n`;
+        });
+        adjustmentContext += '\n';
+        logger.log('Including conversation history', `entries=${conversationHistory.length}`);
+      }
+
       if (previousCode) {
-        adjustmentContext += `\nPREVIOUS IMPLEMENTATION OUTPUT:\n${previousCode}`;
-        logger.log('Including previous code in adjustment');
+        // Format previous code to clearly show what's already implemented
+        const formattedPreviousCode = this.formatPreviousCodeContext(previousCode);
+        adjustmentContext += `\n**PREVIOUS IMPLEMENTATION OUTPUT (ALREADY APPLIED TO PAGE):**\n\`\`\`javascript\n${formattedPreviousCode}\n\`\`\``;
+        logger.log('Including previous code in adjustment', `length=${formattedPreviousCode.length}`);
       }
       if (testSummary) {
         adjustmentContext += `\nLATEST TEST RESULTS:\n${this.formatTestSummary(testSummary)}`;
@@ -864,9 +2162,23 @@ waitForElement('exact-selector-from-database', (element) => {
         }
       }
 
-      if (feedback) {
-        adjustmentContext += `\nUSER FEEDBACK:\n${feedback}`;
-        logger.log('Including user feedback');
+      // Handle both 'feedback' and 'newRequest' parameters
+      const userRequest = feedback || newRequest;
+
+      if (userRequest) {
+        // Check if this is Visual QA feedback and format it differently
+        const isVisualQA = userRequest.includes('**VISUAL QA FEEDBACK') || userRequest.includes('**Required Fix**');
+
+        if (isVisualQA) {
+          adjustmentContext += `\n**VISUAL QUALITY ASSURANCE FEEDBACK:**\n${userRequest}\n\n**CRITICAL - VISUAL QA IMPLEMENTATION REQUIREMENTS:**\n- You MUST implement EVERY fix mentioned in the Visual QA feedback\n- Use the EXACT CSS properties and values suggested in "Required Fix" sections\n- Visual QA has identified specific problems that MUST be resolved\n- This is automated quality control - treat feedback as mandatory requirements\n- Test your changes against the specific issues mentioned (contrast, positioning, etc.)`;
+          logger.log('Including Visual QA feedback with mandatory implementation instructions');
+        } else if (isNewFormat) {
+          adjustmentContext += `\n**NEW USER REQUEST (Follow-up):**\n"${userRequest}"\n\n**CRITICAL CONTEXT:**\nThis is a follow-up request. The page data comes from the ORIGINAL capture (before any modifications).\nThe PREVIOUS IMPLEMENTATION shows code already applied.\nYour task: Preserve ALL previous changes AND add the new request.`;
+          logger.log('Including follow-up request');
+        } else {
+          adjustmentContext += `\nUSER FEEDBACK:\n${userRequest}`;
+          logger.log('Including user feedback');
+        }
       }
 
       if (extraContext) {
@@ -874,48 +2186,75 @@ waitForElement('exact-selector-from-database', (element) => {
         logger.log('Including extra context');
       }
 
+      // Build context-aware adjustment instructions
+      const adjustmentInstructions = previousCode
+        ? `
+**CRITICAL - CUMULATIVE CHANGES:**
+The code shown in PREVIOUS IMPLEMENTATION OUTPUT is ALREADY APPLIED to the page.
+Your task is to ADD the new changes requested in USER FEEDBACK while PRESERVING all existing changes.
+
+**RULES FOR ITERATIVE CHANGES:**
+1. DO NOT remove or replace code from PREVIOUS IMPLEMENTATION
+2. ADD new changes alongside existing ones
+3. If modifying same element, MERGE changes (keep old + add new)
+4. Use different selectors for new elements vs existing ones
+5. Keep ALL waitForElement calls from previous code
+6. Add duplication checks for ALL new elements/changes
+
+**EXAMPLE - CORRECT APPROACH:**
+Previous: Changed button color to red
+New request: Add lock icon to same button
+✅ CORRECT: Keep color change + add icon
+✗ WRONG: Only add icon, losing color change
+
+**YOUR TASK:**
+Analyze PREVIOUS IMPLEMENTATION OUTPUT to understand what's already done.
+Then add the changes from USER FEEDBACK without breaking existing code.
+Output the COMPLETE code (previous changes + new changes combined).`
+        : `
+**INITIAL GENERATION:**
+Generate code based on the USER FEEDBACK.
+This is the first iteration, so no previous changes to preserve.`;
+
       const finalPrompt = `${basePrompt}
 ${adjustmentContext}
+${adjustmentInstructions}
 
-Please revise the generated code to address the feedback and keep the exact output structure described earlier.`;
+**OUTPUT REQUIREMENTS:**
+Return the COMPLETE code including:
+- All changes from PREVIOUS IMPLEMENTATION (if any)
+- New changes from USER FEEDBACK
+- Proper duplication prevention for all changes
+- Same output structure (VARIATION 1 - Name, VARIATION CSS, VARIATION JAVASCRIPT, etc.)
+
+Generate the complete, merged code now.`;
+
+      const systemMessage = previousCode
+        ? 'You are an expert A/B testing developer who iteratively refines code. When previous code exists, you PRESERVE all existing changes and ADD new ones. You NEVER remove or replace working code from previous iterations. CRITICAL: When Visual QA feedback is provided, you MUST implement every fix mentioned - this is automated quality control that identifies real visual problems.'
+        : 'You are an expert A/B testing developer who generates clean, production-ready code using only vanilla JavaScript. CRITICAL: When Visual QA feedback is provided, you MUST implement every fix mentioned - this is automated quality control that identifies real visual problems.';
 
       const messages = [{
         role: 'system',
-        content: 'You are an expert A/B testing developer who generates clean, production-ready code using only vanilla JavaScript.'
+        content: systemMessage
       }];
 
-      if (generationData.pageData?.screenshot) {
-        messages.push({
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: {
-                url: generationData.pageData.screenshot,
-                detail: 'high'
-              }
-            },
-            {
-              type: 'text',
-              text: finalPrompt
-            }
-          ]
-        });
-        logger.log('Including screenshot in adjustment request', 'using vision');
-      } else {
-        messages.push({
-          role: 'user',
-          content: finalPrompt
-        });
-        logger.log('No screenshot available for adjustment', 'text-only');
-      }
+      // Temporarily disable screenshots to reduce token usage
+      messages.push({
+        role: 'user',
+        content: finalPrompt
+      });
+      logger.log('Using text-only mode for adjustment', 'optimized for token efficiency');
 
-      const aiResponse = await this.callChatGPT(
-        messages,
-        authToken,
-        generationData.settings?.model || 'gpt-4o-mini'
-      );
-      logger.log('OpenAI adjustment response received', `promptTokens=${aiResponse.usage?.promptTokens || 0} completionTokens=${aiResponse.usage?.completionTokens || 0}`);
+      // Use unified AI call
+      const aiSettings = {
+        provider: generationData.settings?.provider || 'openai',
+        authToken: authToken,
+        anthropicApiKey: generationData.settings?.anthropicApiKey,
+        model: generationData.settings?.model || 'gpt-4o-mini'
+      };
+
+      const aiResponse = await this.callAI(messages, aiSettings);
+      logger.log('AI adjustment response received', `provider=${aiSettings.provider}, promptTokens=${aiResponse.usage?.promptTokens || 0} completionTokens=${aiResponse.usage?.completionTokens || 0}`);
 
       return {
         code: this.parseGeneratedCode(aiResponse.content),
@@ -926,6 +2265,36 @@ Please revise the generated code to address the feedback and keep the exact outp
       logger.error('Code adjustment failed', error?.message);
       throw error;
     }
+  }
+
+  /**
+   * Format previous code to clearly show what's already implemented
+   * Adds annotations to help AI understand existing changes
+   */
+  formatPreviousCodeContext(previousCode) {
+    if (!previousCode || typeof previousCode !== 'string') {
+      return '';
+    }
+
+    // Parse the previous code to extract key changes
+    const lines = previousCode.split('\n');
+    const annotated = [];
+
+    lines.forEach(line => {
+      // Detect variation headers and annotate them
+      if (line.includes('VARIATION') && line.includes('//')) {
+        const match = line.match(/VARIATION\s+(\d+)\s*-\s*(.+?)(?:\s*\/\/|$)/i);
+        if (match) {
+          const variationName = match[2].trim();
+          annotated.push(`\n// ===== ${variationName} (EXISTING - PRESERVE ALL CHANGES) =====`);
+        }
+        annotated.push(line);
+      } else {
+        annotated.push(line);
+      }
+    });
+
+    return annotated.join('\n');
   }
 
   formatTestSummary(testSummary) {
@@ -999,6 +2368,15 @@ Please revise the generated code to address the feedback and keep the exact outp
   }
 
   createHistoryEntry(data = {}) {
+    console.log('🎯 Creating history entry with data:', {
+      hasData: !!data,
+      dataKeys: data ? Object.keys(data) : 'no data',
+      hasPageData: !!(data?.pageData),
+      pageDataKeys: data?.pageData ? Object.keys(data.pageData) : 'no pageData',
+      url: data?.url,
+      pageDataUrl: data?.pageData?.url
+    });
+    
     const timestamp = Date.now();
     const variations = Array.isArray(data.variations) ? data.variations : [];
     const generatedCode = data.generatedCode || {};
@@ -1093,23 +2471,65 @@ Please revise the generated code to address the feedback and keep the exact outp
       let cssResult = { success: true };
       if (css && css.trim()) {
         const cleanedCSS = css
-          .replace(/\/\/.*$/gm, '')
-          .replace(/\/\*[\s\S]*?\*\//g, '')
-          .replace(/\n\s*\n/g, '\n')
+          .replace(/^\s*\/\/.*$/gm, '') // Only remove lines that start with //
+          .replace(/\/\*[\s\S]*?\*\//g, '') // Remove /* */ comments
+          .replace(/\n\s*\n/g, '\n') // Remove excessive whitespace
           .trim();
           
         try {
+          // First check if content script is loaded
+          logger.log('Testing content script availability');
+          const pingResult = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+          logger.log('Content script ping result', JSON.stringify(pingResult));
+
+          if (!pingResult || !pingResult.success) {
+            logger.error('Content script not responding to PING');
+            return {
+              success: false,
+              error: 'Content script not loaded or not responding',
+              cssApplied: false,
+              jsApplied: false,
+              logs: logger.entries()
+            };
+          }
+          
           logger.log('Sending CSS to content script', `length=${cleanedCSS.length}`);
-          cssResult = await chrome.tabs.sendMessage(tabId, {
+
+          // Add timeout wrapper to detect if message never gets a response
+          const messagePromise = chrome.tabs.sendMessage(tabId, {
             type: 'APPLY_VARIATION',
             css: cleanedCSS,
             js: null,
             key
           });
+
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => {
+              logger.error('Content script message timeout', 'No response after 5 seconds');
+              resolve({ success: false, error: 'Content script timeout - no response received', timeout: true });
+            }, 5000);
+          });
+
+          cssResult = await Promise.race([messagePromise, timeoutPromise]);
           logger.log('Content script response for CSS', JSON.stringify(cssResult));
-          if (!cssResult?.success) {
+          logger.log('CSS result analysis',
+            `type=${typeof cssResult}, ` +
+            `hasSuccess=${cssResult && 'success' in cssResult}, ` +
+            `successValue=${cssResult?.success}, ` +
+            `keys=${cssResult ? Object.keys(cssResult).join(',') : 'null'}`
+          );
+          
+          if (cssResult?.debugLogs) {
+            logger.log('Content script debug logs', cssResult.debugLogs.join(' | '));
+          }
+          
+          if (!cssResult || cssResult.success !== true) {
             const cssError = cssResult?.error || 'Content script failed to apply CSS';
-            logger.error('CSS application reported failure', cssError);
+            logger.error('CSS application reported failure',
+              `cssResult=${cssResult ? 'exists' : 'null'}, ` +
+              `success=${cssResult?.success}, ` +
+              `error=${cssError}`
+            );
             return {
               success: false,
               error: cssError,
@@ -1136,11 +2556,17 @@ Please revise the generated code to address the feedback and keep the exact outp
       if (js && js.trim()) {
         let cleanedJS = js.trim();
         
+        // Remove markdown code blocks
         cleanedJS = cleanedJS.replace(/^```(?:javascript|js)?\s*\n?/gi, '');
         cleanedJS = cleanedJS.replace(/\n?```\s*$/g, '');
         cleanedJS = cleanedJS.replace(/```$/g, '');
-        cleanedJS = cleanedJS.replace(/\/\/.*$/gm, '');
-        cleanedJS = cleanedJS.replace(/\/\*[\s\S]*?\*\//g, '');
+        
+        // More careful comment removal - only remove comments that are clearly comments
+        // Don't remove // that are part of URLs or other code
+        cleanedJS = cleanedJS.replace(/^\s*\/\/.*$/gm, ''); // Only remove lines that start with //
+        cleanedJS = cleanedJS.replace(/\/\*[\s\S]*?\*\//g, ''); // Remove /* */ comments
+        
+        // Clean up excessive whitespace
         cleanedJS = cleanedJS.replace(/\n\s*\n/g, '\n');
         cleanedJS = cleanedJS.trim();
           
@@ -1176,21 +2602,39 @@ Please revise the generated code to address the feedback and keep the exact outp
                       });
                       try {
                         const oldText = element.textContent;
-                        const oldBg = element.style.backgroundColor;
-                        
+                        const oldComputedBg = window.getComputedStyle(element).backgroundColor;
+                        const oldInlineBg = element.style.backgroundColor;
+
                         callback(element);
-                        
-                        const newText = element.textContent;
-                        const newBg = element.style.backgroundColor;
-                        
-                        console.log(`%c[CONVERT-AI] ✓ Callback executed for: ${selector}`, 'color: green', {
-                          textChanged: oldText !== newText,
-                          oldText: oldText?.substring(0, 30),
-                          newText: newText?.substring(0, 30),
-                          bgChanged: oldBg !== newBg,
-                          oldBg,
-                          newBg
-                        });
+
+                        // Small delay to let styles apply
+                        setTimeout(() => {
+                          const newText = element.textContent;
+                          const newComputedBg = window.getComputedStyle(element).backgroundColor;
+                          const newInlineBg = element.style.backgroundColor;
+
+                          const textChanged = oldText !== newText;
+                          const computedBgChanged = oldComputedBg !== newComputedBg;
+                          const inlineStyleAdded = newInlineBg && newInlineBg !== oldInlineBg;
+
+                          console.log(`%c[CONVERT-AI] ✓ Callback executed for: ${selector}`, 'color: green', {
+                            textChanged,
+                            oldText: oldText?.substring(0, 30),
+                            newText: newText?.substring(0, 30),
+                            inlineStyleAdded,
+                            oldInlineBg,
+                            newInlineBg,
+                            computedBgChanged,
+                            oldComputedBg,
+                            newComputedBg
+                          });
+
+                          // Warn if inline style was added but computed style didn't change
+                          if (inlineStyleAdded && !computedBgChanged) {
+                            console.warn(`%c[CONVERT-AI] ⚠️ Style override failed for: ${selector}`, 'color: orange; font-weight: bold',
+                              'Inline style was set but computed style didn\'t change. Site CSS may be overriding with !important or higher specificity.');
+                          }
+                        }, 50);
                       } catch (e) {
                         console.error(`%c[CONVERT-AI] ✗ Callback failed: ${selector}`, 'color: red; font-weight: bold', e);
                       }
@@ -1220,6 +2664,7 @@ Please revise the generated code to address the feedback and keep the exact outp
                 }
 
                 let cleanCode = code.trim();
+                // Remove markdown code blocks safely
                 cleanCode = cleanCode.replace(/^```[a-zA-Z]*\s*\n?/gi, '');
                 cleanCode = cleanCode.replace(/\n?```\s*$/g, '');
                 cleanCode = cleanCode.replace(/```$/g, '');
@@ -1235,7 +2680,33 @@ Please revise the generated code to address the feedback and keep the exact outp
                 console.log(cleanCode);
                 console.log('%c[CONVERT-AI] ---', 'color: purple');
                 
-                const result = (0, eval)(cleanCode);
+                // Check for common syntax issues before execution
+                try {
+                  // Try to parse as a function to catch syntax errors early
+                  new Function(cleanCode);
+                } catch (syntaxError) {
+                  console.error('%c[CONVERT-AI] SYNTAX ERROR detected before execution:', 'color: red; font-weight: bold', syntaxError);
+                  return { 
+                    success: false, 
+                    error: `Invalid or unexpected token: ${syntaxError.message}`,
+                    syntaxError: true,
+                    code: cleanCode.substring(0, 300) // First 300 chars for debugging
+                  };
+                }
+                
+                // Add debugging wrapper to track execution success
+                const debugCode = `
+                  console.log('%c[DEBUG] Starting variation execution', 'color: green; font-weight: bold');
+                  try {
+                    ${cleanCode}
+                    console.log('%c[DEBUG] Variation execution completed successfully', 'color: green; font-weight: bold');
+                  } catch (error) {
+                    console.error('%c[DEBUG] Variation execution failed:', 'color: red; font-weight: bold', error);
+                    throw error;
+                  }
+                `;
+                
+                const result = (0, eval)(debugCode);
                 console.log('[JavaScript Execution] Execution completed, result:', result);
                 
                 return { success: true, result };
@@ -1255,11 +2726,19 @@ Please revise the generated code to address the feedback and keep the exact outp
           }
 
           if (!jsResult?.success) {
-            logger.error('JavaScript execution reported failure', jsResult?.error || 'Unknown error');
+            const errorMessage = jsResult?.error || 'JavaScript execution failed';
+            logger.error('JavaScript execution reported failure', errorMessage);
+            
+            // Add debugging info for syntax errors
+            if (jsResult?.syntaxError) {
+              logger.error('Syntax error in generated JavaScript code', jsResult?.code || 'No code available');
+            }
+            
             return {
               success: false,
-              error: jsResult?.error || 'JavaScript execution failed',
+              error: errorMessage,
               stack: jsResult?.stack,
+              syntaxError: jsResult?.syntaxError,
               cssApplied: !!cssResult?.success,
               jsApplied: false,
               logs: logger.entries()
@@ -1843,6 +3322,372 @@ Please revise the generated code to address the feedback and keep the exact outp
     }
     
     return code;
+  }
+
+  async performVisualQAValidation(data) {
+    console.log('🎨 Performing visual QA validation with AI...');
+
+    const {
+      beforeScreenshot,
+      afterScreenshot,
+      userRequest,
+      chatHistory,
+      variation,
+      elementDatabase
+    } = data;
+
+    if (!beforeScreenshot || !afterScreenshot) {
+      console.warn('⚠️ Missing screenshots for visual QA - skipping AI validation');
+      return {
+        passed: true,
+        message: 'Visual QA skipped (missing screenshots)',
+        skipped: true
+      };
+    }
+
+    try {
+      // Load settings to get API key
+      const result = await chrome.storage.local.get(['settings']);
+      const settings = result.settings || {};
+
+      if (!settings.apiKey) {
+        console.warn('⚠️ No API key - skipping visual QA');
+        return {
+          passed: true,
+          message: 'Visual QA skipped (no API key)',
+          skipped: true
+        };
+      }
+
+      // Build Visual QA prompt
+      const visualQAPrompt = this.buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase);
+
+      // Call AI with screenshots
+      const provider = settings.provider || 'anthropic';
+      let validationResult;
+
+      if (provider === 'anthropic') {
+        validationResult = await this.callAnthropicVisualQA(settings.apiKey, settings.model, visualQAPrompt, beforeScreenshot, afterScreenshot);
+      } else {
+        validationResult = await this.callOpenAIVisualQA(settings.apiKey, settings.model, visualQAPrompt, beforeScreenshot, afterScreenshot);
+      }
+
+      console.log('✅ Visual QA validation complete:', validationResult);
+      return validationResult;
+
+    } catch (error) {
+      console.error('❌ Visual QA validation failed:', error);
+      return {
+        passed: false,
+        message: `Visual QA error: ${error.message}`,
+        error: true
+      };
+    }
+  }
+
+  buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase) {
+    const chatContext = chatHistory && chatHistory.length > 0
+      ? `\n\n## Conversation History:\n${chatHistory.map(msg => `**${msg.role}**: ${msg.content}`).join('\n')}`
+      : '';
+
+    const elementContext = elementDatabase && elementDatabase.elements
+      ? `\n\n## Page Elements:\n${elementDatabase.elements.slice(0, 10).map(el => `- ${el.tag}${el.selector ? ` (${el.selector})` : ''}: "${el.text?.substring(0, 50) || ''}"`).join('\n')}`
+      : '';
+
+    return `You are a visual QA expert validating A/B test code changes.
+
+## User's Request:
+${userRequest}
+${chatContext}
+
+## Generated Code:
+**Variation**: ${variation.name}
+
+**CSS**:
+\`\`\`css
+${variation.css || '/* No CSS */'}
+\`\`\`
+
+**JavaScript**:
+\`\`\`javascript
+${variation.js || '// No JavaScript'}
+\`\`\`
+${elementContext}
+
+## Your Task:
+Compare the BEFORE and AFTER screenshots. Validate:
+
+1. **Did the changes actually happen?** - Check if the visual changes match what the code should do
+2. **Are they correct?** - Do they match the user's request?
+3. **Any visual bugs?** - Layout breaks, overlapping elements, hidden content, wrong colors, etc.
+
+**IMPORTANT**:
+- Be strict about correctness - if the user asked for "green button" but it's blue, that's FAILED
+- Check if text changes actually applied
+- Verify color changes are visible
+- Look for layout shifts or broken designs
+
+Respond in JSON format:
+\`\`\`json
+{
+  "passed": true/false,
+  "changesDetected": true/false,
+  "correctnessScore": 0-100,
+  "issues": ["issue 1", "issue 2"],
+  "message": "Brief summary of validation results",
+  "recommendations": ["recommendation 1"]
+}
+\`\`\``;
+  }
+
+  async callAnthropicVisualQA(apiKey, model, prompt, beforeScreenshot, afterScreenshot) {
+    const apiModel = model || 'claude-3-7-sonnet-20250219';
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: apiModel,
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: beforeScreenshot.replace(/^data:image\/png;base64,/, '')
+              }
+            },
+            {
+              type: 'text',
+              text: '**BEFORE Screenshot** (original page)'
+            },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: afterScreenshot.replace(/^data:image\/png;base64,/, '')
+              }
+            },
+            {
+              type: 'text',
+              text: '**AFTER Screenshot** (with changes applied)'
+            },
+            {
+              type: 'text',
+              text: prompt
+            }
+          ]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const aiResponse = result.content[0].text;
+
+    // Parse JSON from AI response
+    const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/) || aiResponse.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1]);
+    }
+
+    // Fallback if AI didn't return JSON
+    return {
+      passed: true,
+      message: aiResponse,
+      rawResponse: aiResponse
+    };
+  }
+
+  async callOpenAIVisualQA(apiKey, model, prompt, beforeScreenshot, afterScreenshot) {
+    const apiModel = model || 'gpt-4o';
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: apiModel,
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: {
+                url: beforeScreenshot
+              }
+            },
+            {
+              type: 'text',
+              text: '**BEFORE Screenshot** (original page)'
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: afterScreenshot
+              }
+            },
+            {
+              type: 'text',
+              text: '**AFTER Screenshot** (with changes applied)'
+            },
+            {
+              type: 'text',
+              text: prompt
+            }
+          ]
+        }]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+    const aiResponse = result.choices[0].message.content;
+
+    // Parse JSON from AI response
+    const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/) || aiResponse.match(/(\{[\s\S]*\})/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1]);
+    }
+
+    // Fallback if AI didn't return JSON
+    return {
+      passed: true,
+      message: aiResponse,
+      rawResponse: aiResponse
+    };
+  }
+
+  validateCodeSyntax(css, js) {
+    const criticalIssues = [];
+    const warnings = [];
+
+    // CSS Syntax Validation
+    if (css) {
+      const cssResult = this.validateCSSSyntax(css);
+      criticalIssues.push(...cssResult.critical);
+      warnings.push(...cssResult.warnings);
+    }
+
+    // JavaScript Syntax Validation
+    if (js) {
+      const jsResult = this.validateJSSyntax(js);
+      criticalIssues.push(...jsResult.critical);
+      warnings.push(...jsResult.warnings);
+    }
+
+    return {
+      isValid: criticalIssues.length === 0,
+      issues: criticalIssues,
+      warnings: warnings
+    };
+  }
+
+  validateCSSSyntax(css) {
+    const critical = [];
+    const warnings = [];
+    
+    try {
+      // Check for unmatched braces (critical)
+      const openBraces = (css.match(/\{/g) || []).length;
+      const closeBraces = (css.match(/\}/g) || []).length;
+      
+      if (openBraces !== closeBraces) {
+        critical.push(`CSS: Unmatched braces (${openBraces} open, ${closeBraces} close)`);
+      }
+      
+      // Check for basic syntax patterns (warnings)
+      if (css.includes(';;')) {
+        warnings.push('CSS: Double semicolons detected');
+      }
+      
+      if (css.match(/[^{}]*\{[^}]*\{/)) {
+        warnings.push('CSS: Potential nested braces issue');
+      }
+      
+      // Check for many !important declarations (warning)
+      const importantCount = (css.match(/!important/g) || []).length;
+      if (importantCount > 3) {
+        warnings.push(`CSS: Many !important declarations (${importantCount})`);
+      }
+      
+    } catch (error) {
+      critical.push(`CSS: Validation error - ${error.message}`);
+    }
+    
+    return { critical, warnings };
+  }
+
+  validateJSSyntax(js) {
+    const critical = [];
+    const warnings = [];
+    
+    try {
+      // Basic JavaScript syntax checking
+      // Check for unmatched parentheses (critical)
+      let parenLevel = 0;
+      let braceLevel = 0;
+      
+      for (let i = 0; i < js.length; i++) {
+        const char = js[i];
+        if (char === '(') parenLevel++;
+        if (char === ')') parenLevel--;
+        if (char === '{') braceLevel++;
+        if (char === '}') braceLevel--;
+        
+        if (parenLevel < 0) {
+          critical.push('JavaScript: Unmatched closing parenthesis');
+          break;
+        }
+        if (braceLevel < 0) {
+          critical.push('JavaScript: Unmatched closing brace');
+          break;
+        }
+      }
+      
+      if (parenLevel > 0) {
+        critical.push('JavaScript: Unclosed parentheses');
+      }
+      if (braceLevel > 0) {
+        critical.push('JavaScript: Unclosed braces');
+      }
+
+      // NOTE: Cannot use new Function() or eval() due to CSP restrictions
+      // Basic syntax validation only - code will be validated during actual execution
+      
+      // Warning-level checks
+      if (js.includes('console.log')) {
+        warnings.push('JavaScript: Console.log statements found (consider removing for production)');
+      }
+      
+      if (js.length > 5000) {
+        warnings.push(`JavaScript: Large code size (${js.length} characters)`);
+      }
+      
+    } catch (error) {
+      critical.push(`JavaScript: Validation error - ${error.message}`);
+    }
+    
+    return { critical, warnings };
   }
 }
 

@@ -13,7 +13,7 @@
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: #0f0f0f;
       min-height: 100vh;
       padding: 40px 20px;
     }
@@ -21,17 +21,19 @@
     .container {
       max-width: 800px;
       margin: 0 auto;
-      background: white;
+      background: #1a1a1a;
       border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
       overflow: hidden;
+      border: 1px solid #2a2a2a;
     }
 
     .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+      background: #1f1f1f;
+      color: #e0e0e0;
       padding: 30px;
       text-align: center;
+      border-bottom: 1px solid #2a2a2a;
     }
 
     .header h1 {
@@ -46,6 +48,7 @@
 
     .content {
       padding: 30px;
+      background: #1a1a1a;
     }
 
     .section {
@@ -60,17 +63,34 @@
       font-size: 20px;
       font-weight: 600;
       margin-bottom: 16px;
-      color: #2d3748;
+      color: #e0e0e0;
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
     .section-description {
-      color: #718096;
+      color: #a0a0a0;
       font-size: 14px;
       margin-bottom: 20px;
       line-height: 1.6;
+    }
+
+    .section-description a {
+      color: #4a9eff;
+      text-decoration: none;
+    }
+
+    .section-description a:hover {
+      text-decoration: underline;
+    }
+
+    .section-description strong {
+      color: #e0e0e0;
+    }
+
+    .section-description ol, .section-description ul {
+      color: #a0a0a0;
     }
 
     .api-key-form {
@@ -78,9 +98,9 @@
       flex-direction: column;
       gap: 12px;
       padding: 20px;
-      background: #f7fafc;
+      background: #242424;
       border-radius: 8px;
-      border: 2px dashed #e2e8f0;
+      border: 2px dashed #3a3a3a;
     }
 
     .form-group {
@@ -92,21 +112,28 @@
     .form-group label {
       font-size: 13px;
       font-weight: 600;
-      color: #4a5568;
+      color: #b0b0b0;
     }
 
     .form-group input, .form-group select {
       padding: 10px 12px;
-      border: 1px solid #e2e8f0;
+      border: 1px solid #3a3a3a;
       border-radius: 6px;
       font-size: 14px;
       transition: all 0.2s;
+      background: #2a2a2a;
+      color: #e0e0e0;
     }
 
     .form-group input:focus, .form-group select:focus {
       outline: none;
-      border-color: #667eea;
-      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+      border-color: #4a9eff;
+      box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.2);
+    }
+
+    .form-group select option {
+      background: #2a2a2a;
+      color: #e0e0e0;
     }
 
     .btn {
@@ -149,15 +176,15 @@
       align-items: center;
       justify-content: space-between;
       padding: 16px;
-      background: white;
-      border: 1px solid #e2e8f0;
+      background: #242424;
+      border: 1px solid #3a3a3a;
       border-radius: 8px;
       transition: all 0.2s;
     }
 
     .api-key-item:hover {
-      border-color: #cbd5e0;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      border-color: #4a4a4a;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 
     .api-key-info {
@@ -166,14 +193,14 @@
 
     .api-key-label {
       font-weight: 600;
-      color: #2d3748;
+      color: #e0e0e0;
       margin-bottom: 4px;
     }
 
     .api-key-value {
       font-family: 'Monaco', 'Courier New', monospace;
       font-size: 12px;
-      color: #718096;
+      color: #a0a0a0;
     }
 
     .api-key-actions {
@@ -218,9 +245,124 @@
 
     .openai-section {
       padding: 20px;
-      background: #fef5e7;
+      background: #242424;
       border-radius: 8px;
-      border: 1px solid #f9e79f;
+      border: 1px solid #3a3a3a;
+    }
+
+    .template-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 20px;
+      background: #242424;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+
+    .template-item:hover {
+      border-color: #4a4a4a;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .template-info {
+      flex: 1;
+    }
+
+    .template-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .template-name {
+      font-weight: 600;
+      color: #e0e0e0;
+      font-size: 16px;
+    }
+
+    .template-description {
+      color: #a0a0a0;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+
+    .template-variations {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .variation-tag {
+      background: #3a3a3a;
+      color: #b0b0b0;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .template-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .variation-form {
+      padding: 16px;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+
+    .variation-form:last-child {
+      margin-bottom: 0;
+    }
+
+    .variation-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .variation-number {
+      font-weight: 600;
+      color: #b0b0b0;
+    }
+
+    .remove-variation-btn {
+      background: #f56565;
+      color: white;
+      border: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .remove-variation-btn:hover {
+      background: #e53e3e;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+      background: #2a2a2a;
+      color: #e0e0e0;
+      border: 1px solid #3a3a3a;
+    }
+
+    textarea:focus {
+      border-color: #4a9eff;
+      box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.2);
+    }
+
+    h2, h3 {
+      color: #e0e0e0;
     }
   </style>
 </head>
@@ -297,27 +439,83 @@
         </div>
       </div>
 
-      <!-- OpenAI API Key Section -->
+      <!-- AI Provider Selection -->
       <div class="section">
         <div class="section-title">
           <span>🤖</span>
+          <span>AI Provider</span>
+        </div>
+        <div class="section-description">
+          Choose your AI provider. <strong>Anthropic Claude is recommended</strong> for better rate limits and quality.
+        </div>
+
+        <div class="form-group">
+          <label for="providerSelect">Provider</label>
+          <select id="providerSelect">
+            <option value="anthropic">Anthropic Claude (Recommended - Better limits & quality)</option>
+            <option value="openai">OpenAI GPT (May hit rate limits)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- OpenAI API Key Section -->
+      <div class="section" id="openaiSection">
+        <div class="section-title">
+          <span>🔑</span>
           <span>OpenAI API Key</span>
         </div>
         <div class="section-description">
-          Required for AI-powered code generation. Your key is stored locally and never shared.
+          Required for OpenAI GPT models. Your key is stored locally and never shared.
+          <br><br>
+          <strong>Get your key:</strong> <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #667eea;">platform.openai.com/api-keys</a>
         </div>
 
         <div class="openai-section">
           <div class="form-group">
             <label for="openaiApiKey">OpenAI API Key</label>
-            <input 
-              type="password" 
-              id="openaiApiKey" 
+            <input
+              type="password"
+              id="openaiApiKey"
               placeholder="sk-..."
             >
           </div>
           <button class="btn btn-primary" id="saveOpenAIKeyBtn" style="margin-top: 12px;">
             Save OpenAI Key
+          </button>
+        </div>
+      </div>
+
+      <!-- Anthropic API Key Section -->
+      <div class="section" id="anthropicSection">
+        <div class="section-title">
+          <span>🔑</span>
+          <span>Anthropic API Key</span>
+        </div>
+        <div class="section-description">
+          Required for Claude models. <strong>Claude offers 50 requests/min</strong> vs OpenAI's 3-5 req/min.
+          <br><br>
+          <strong>Benefits:</strong>
+          <ul style="margin-left: 20px; margin-top: 8px; color: #a0a0a0;">
+            <li>✅ 10x higher rate limits</li>
+            <li>✅ 90% cost savings with prompt caching</li>
+            <li>✅ Better instruction following</li>
+            <li>✅ More consistent output</li>
+          </ul>
+          <br>
+          <strong>Get your key:</strong> <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a>
+        </div>
+
+        <div class="openai-section">
+          <div class="form-group">
+            <label for="anthropicApiKey">Anthropic API Key</label>
+            <input
+              type="password"
+              id="anthropicApiKey"
+              placeholder="sk-ant-..."
+            >
+          </div>
+          <button class="btn btn-primary" id="saveAnthropicKeyBtn" style="margin-top: 12px;">
+            Save Anthropic Key
           </button>
         </div>
       </div>
@@ -331,15 +529,168 @@
         <div class="form-group">
           <label for="modelSelect">Select Model</label>
           <select id="modelSelect">
-            <option value="gpt-4o">GPT-4o (Recommended - Best quality)</option>
-            <option value="gpt-4o-mini">GPT-4o Mini (Faster, cheaper)</option>
-            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+            <!-- Anthropic Models -->
+            <optgroup label="Anthropic Claude (Recommended)" id="claudeModels">
+              <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5 (Latest - Best)</option>
+              <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Recommended)</option>
+              <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+              <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Fastest)</option>
+            </optgroup>
+            <!-- OpenAI Models -->
+            <optgroup label="OpenAI GPT" id="openaiModels">
+              <option value="gpt-4o">GPT-4o (Best quality)</option>
+              <option value="gpt-4o-mini">GPT-4o Mini (Faster, cheaper)</option>
+              <option value="gpt-4-turbo">GPT-4 Turbo</option>
+            </optgroup>
           </select>
+        </div>
+      </div>
+
+      <!-- Code Generation Preferences -->
+      <div class="section">
+        <div class="section-title">
+          <span>⚡</span>
+          <span>Code Generation Preferences</span>
+        </div>
+        <div class="section-description">
+          Configure how the AI generates Convert.com code
+        </div>
+        <div class="form-group" style="gap: 16px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="preferCSS" checked style="width: 18px; height: 18px; cursor: pointer;">
+            <span>Prefer CSS over JavaScript</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="includeDOMChecks" checked style="width: 18px; height: 18px; cursor: pointer;">
+            <span>Include DOM ready checks (waitForElement)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Template Manager -->
+      <div class="section">
+        <div class="section-title">
+          <span>📝</span>
+          <span>Template Manager</span>
+        </div>
+        <div class="section-description">
+          Create and edit custom variation templates to speed up your A/B testing workflow
+        </div>
+
+        <!-- Add New Template Form -->
+        <div class="api-key-form" id="newTemplateForm" style="display: none;">
+          <div class="form-group">
+            <label for="templateId">Template ID (lowercase, no spaces)</label>
+            <input 
+              type="text" 
+              id="templateId" 
+              placeholder="e.g., my-custom-template"
+              pattern="[a-z0-9-]+"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label for="templateName">Template Name</label>
+            <input 
+              type="text" 
+              id="templateName" 
+              placeholder="e.g., My Custom Template"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label for="templateDescription">Description</label>
+            <input 
+              type="text" 
+              id="templateDescription" 
+              placeholder="Brief description of what this template does"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label for="templateIcon">Icon (emoji)</label>
+            <input 
+              type="text" 
+              id="templateIcon" 
+              placeholder="🎨"
+              maxlength="2"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label>Variations (add at least one)</label>
+            <div id="variationsContainer">
+              <!-- Variations will be added here -->
+            </div>
+            <button type="button" class="btn btn-primary btn-small" id="addVariationBtn">
+              Add Variation
+            </button>
+          </div>
+          <div style="display: flex; gap: 12px; margin-top: 16px;">
+            <button class="btn btn-primary" id="saveTemplateBtn">
+              Save Template
+            </button>
+            <button class="btn btn-danger" id="cancelTemplateBtn">
+              Cancel
+            </button>
+          </div>
+        </div>
+
+        <!-- Template Actions -->
+        <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+          <button class="btn btn-primary" id="addNewTemplateBtn">
+            ➕ Add New Template
+          </button>
+          <button class="btn btn-primary" id="importTemplateBtn">
+            📥 Import Template
+          </button>
+          <button class="btn btn-primary" id="exportTemplatesBtn">
+            📤 Export All Templates
+          </button>
+        </div>
+
+        <!-- Templates List -->
+        <div id="templatesList" class="api-keys-list">
+          <!-- Templates will be populated here -->
         </div>
       </div>
     </div>
   </div>
 
+  <!-- Template Edit Modal -->
+  <div id="templateEditModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; padding: 30px; width: 90%; max-width: 600px; max-height: 80%; overflow-y: auto;">
+      <h2 style="margin-bottom: 20px; color: #2d3748;">Edit Template</h2>
+      <div id="editTemplateContent">
+        <!-- Edit form will be populated here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Template Modal -->
+  <div id="importTemplateModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; padding: 30px; width: 90%; max-width: 500px;">
+      <h2 style="margin-bottom: 20px; color: #2d3748;">Import Template</h2>
+      <div class="form-group">
+        <label for="importTemplateData">Template JSON Data</label>
+        <textarea 
+          id="importTemplateData" 
+          placeholder="Paste template JSON data here..."
+          style="width: 100%; height: 200px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 6px; font-family: Monaco, monospace; font-size: 12px;"
+        ></textarea>
+      </div>
+      <div style="display: flex; gap: 12px; margin-top: 20px;">
+        <button class="btn btn-primary" id="confirmImportBtn">
+          Import Template
+        </button>
+        <button class="btn btn-danger" id="cancelImportBtn">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../utils/default-templates.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

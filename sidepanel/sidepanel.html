@@ -5,521 +5,455 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Convert.com Experiment Builder</title>
     <link rel="stylesheet" href="sidepanel.css">
+    <link rel="stylesheet" href="workspace-v2.css">
+    <link rel="stylesheet" href="dark-mode.css">
 </head>
 <body>
-    <div class="app">
-        <div class="sticky-header-container">
-            <header class="header">
-                <h1>🔬 Experiment Builder</h1>
-                <p class="subtitle">AI-powered Convert.com workflow</p>
-            </header>
-
-            <nav class="primary-nav" aria-label="Primary">
-            <button class="nav-btn active" data-panel="build">
-                <span class="nav-icon">🛠️</span>
-                <span>Build</span>
-            </button>
-            <button class="nav-btn" data-panel="review">
-                <span class="nav-icon">🧪</span>
-                <span>Review</span>
-            </button>
-            <button class="nav-btn" data-panel="code">
-                <span class="nav-icon">💻</span>
-                <span>Code</span>
-            </button>
-            <button class="nav-btn" data-panel="convert">
-                <span class="nav-icon">🚀</span>
-                <span>Convert</span>
-            </button>
-        </nav>
+    <!-- Unified Workspace Interface -->
+    <div class="app-v2" id="mainApp">
+        <div class="unified-header">
+            <div class="header-main">
+                <h1>Experiment Builder</h1>
+                <p class="subtitle">Describe changes, get Convert.com code</p>
+            </div>
+            <div class="header-actions">
+                <button id="commandPaletteBtn" class="btn-icon" title="Command Palette (⌘K)">
+                    ⌘K
+                </button>
+                <button id="settingsBtn" class="btn-icon" title="Settings">
+                    ⚙️
+                </button>
+            </div>
         </div>
 
-        <main class="panel-container">
-            <section id="panel-build" class="panel-view active" aria-labelledby="build">
-                <div class="workflow">
-                    <div class="step">
-                        <div class="step-header">
-                            <span class="step-number">1</span>
-                            <div class="step-heading">
-                                <h2>Capture Current Page</h2>
-                                <p class="step-note">Take a fresh snapshot so the AI works with the live DOM.</p>
-                            </div>
-                        </div>
-                        <div class="step-content">
-                            <div class="page-info">
-                                <span class="url" id="currentUrl">No page loaded</span>
-                            </div>
+        <!-- Persistent Status Bar (shows only when there's an active status) -->
+        <div class="persistent-status-bar hidden" id="persistentStatusBar">
+            <div class="status-bar-content">
+                <span class="status-icon">⏳</span>
+                <span class="status-message" id="statusMessage">Ready</span>
+            </div>
+            <button class="status-close-btn" id="statusCloseBtn" title="Dismiss">×</button>
+        </div>
 
-                            <!-- Capture Mode Selector -->
-                            <div class="capture-mode-selector">
-                                <button class="btn-toggle active" id="captureModeFull" data-mode="full">
-                                    📄 Full Page
-                                </button>
-                                <button class="btn-toggle" id="captureModeElement" data-mode="element">
-                                    🎯 Select Element
-                                </button>
-                            </div>
-
-                            <!-- Element Selection Hint -->
-                            <div class="element-selection-hint hidden" id="elementSelectionHint">
-                                <span class="icon">👆</span>
-                                <span>Click "Capture Page" then click any element on the page to isolate it</span>
-                            </div>
-
-                            <!-- Selected Element Preview -->
-                            <div class="selected-element-preview hidden" id="selectedElementPreview">
-                                <div class="element-preview-header">
-                                    <span class="preview-title">Selected Element:</span>
-                                    <button class="btn-small" id="changeSelectionBtn">Change Selection</button>
-                                </div>
-                                <img id="elementScreenshot" class="element-screenshot" alt="Selected Element" />
-                                <div class="element-info">
-                                    <code id="elementSelector">.example-selector</code>
-                                    <div class="element-meta" id="elementMeta">
-                                        <span id="elementDimensions">200×50px</span> • 
-                                        <span id="elementTag">BUTTON</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <button id="captureBtn" class="btn btn-primary">
-                                <span class="btn-text">📸 Capture Page</span>
-                                <span class="btn-loading hidden">Capturing...</span>
-                            </button>
-                            <div id="pagePreview" class="preview hidden">
-                                <img id="screenshotPreview" alt="Page Screenshot" />
-                                <div class="preview-info">
-                                    <span id="captureTime"></span>
-                                    <button id="recaptureBtn" class="btn-link">Recapture</button>
-                                </div>
-                            </div>
+        <!-- Activity Log Dropdown (70% screen height from top) -->
+        <div class="activity-log-dropdown hidden" id="activityLogDropdown">
+            <div class="activity-log-panel">
+                <div class="activity-log-header">
+                    <div class="activity-header-left">
+                        <h3>📋 Activity Log</h3>
+                        <span class="activity-count-badge" id="activityCountBadge">0 activities</span>
+                    </div>
+                    <div class="activity-header-actions">
+                        <button class="btn-link" id="copyActivityLogBtn" title="Copy all activities to clipboard">📋 Copy</button>
+                        <button class="btn-link" id="clearActivityLogBtn">Clear All</button>
+                        <button class="modal-close" id="closeActivityLog">×</button>
+                    </div>
+                </div>
+                <div class="activity-log-content" id="activityLogContent">
+                    <div class="activity-item info">
+                        <span class="activity-icon">ℹ️</span>
+                        <div class="activity-details">
+                            <span class="activity-text">Ready to create experiments</span>
+                            <span class="activity-time">just now</span>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
 
-                    <div class="step optional">
-                        <div class="step-header">
-                            <span class="step-number">2</span>
-                            <div class="step-heading">
-                                <h2>Shared Context (optional)</h2>
-                                <p class="step-note">Only add guardrails or goals that apply to every variation.</p>
+        <div class="workspace-container">
+            <!-- LEFT: Adaptive Main Work Area -->
+            <main class="work-area" id="workArea">
+                <!-- State: Fresh Start -->
+                <div class="work-state" id="freshState" data-state="fresh">
+                    <div class="welcome-state">
+                        <div class="state-icon">🎯</div>
+                        <h2>Ready to build your experiment</h2>
+                        <p>Describe the changes you want to make, and I'll generate Convert.com code automatically.</p>
+                        
+                        <div class="help-hint" id="helpHint">
+                            💡 <span>Need help? <button class="btn-link" id="openChatBtn">Open the Chat Assistant →</button></span>
+                        </div>
+
+                        <div class="quick-actions">
+                            <button class="btn-primary btn-large" id="selectElementFirstBtn">
+                                <span>🎯 Select Element & Start</span>
+                                <span class="btn-loading hidden">
+                                    <span class="spinner"></span>
+                                    Selecting...
+                                </span>
+                            </button>
+                            <button class="btn-secondary btn-large" id="captureAndStartBtn">
+                                <span class="btn-text">📸 Capture Full Page</span>
+                                <span class="btn-loading hidden">
+                                    <span class="spinner"></span>
+                                    Capturing...
+                                </span>
+                                <span class="shortcut">⌘P</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- State: Building -->
+                <div class="work-state hidden" id="buildingState" data-state="building">
+                    <div class="build-interface">
+                        <div class="build-header">
+                            <h2>💬 Describe Your Changes</h2>
+                            <p>Tell me what you want to change on the page, and I'll generate the Convert.com code.</p>
+                        </div>
+
+                        <div class="page-context" id="pageContext">
+                            <div class="context-item">
+                                <img id="pageScreenshot" class="page-thumb" alt="Page Screenshot" />
+                                <div class="context-info">
+                                    <span class="context-url" id="contextUrl">Current page</span>
+                                    <button class="btn-link" id="recapturePageBtn">Recapture</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="step-content">
-                            <div class="instruction-helper">
-                                <div class="helper-actions">
-                                    <button type="button" class="btn-text" id="showSuggestionsBtn">
-                                        💡 Need ideas?
+
+                        <div class="variation-builder" id="variationBuilder">
+                            <div class="primary-variation">
+                                <label for="primaryDescription">What changes do you want to make?</label>
+                                <textarea 
+                                    id="primaryDescription" 
+                                    placeholder="Example: Make the call-to-action button red and 20% larger..."
+                                    rows="3"
+                                ></textarea>
+                                <div class="builder-tools">
+                                    <button class="tool-btn" id="selectElementBtn" title="Select page element">
+                                        🎯 Select Element
                                     </button>
-                                    <button type="button" class="btn-text" id="showExamplesBtn">
-                                        📚 See examples
+                                    <button class="tool-btn" id="uploadDesignBtn" title="Upload design file">
+                                        📁 Upload Design
                                     </button>
-                                    <button type="button" class="btn-text" id="showTemplatesBtn">
+                                    <button class="tool-btn" id="templatesBtn" title="Browse templates">
                                         📋 Templates
                                     </button>
                                 </div>
+                            </div>
 
-                                <!-- Suggestion chips -->
-                                <div class="suggestion-chips" id="suggestionChips" style="display: none;">
-                                    <div class="chip-label">Quick suggestions:</div>
-                                    <div class="chips-container" id="chipsContainer">
-                                        <!-- Chips will be populated by JavaScript -->
+                            <div class="additional-variations hidden" id="additionalVariations">
+                                <!-- Additional variations will be added here -->
+                            </div>
+
+                            <button class="btn-link" id="addVariationBtn">+ Add Another Variation</button>
+                        </div>
+
+                        <div class="build-actions">
+                            <button class="btn-primary btn-large" id="generateBtn">
+                                <span class="btn-text">🚀 Generate & Preview</span>
+                                <span class="btn-loading hidden">
+                                    <span class="spinner"></span>
+                                    Generating...
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- State: Generated Results -->
+                <div class="work-state hidden" id="resultsState" data-state="results">
+                    <div class="results-interface">
+                        <!-- Redesigned Results Header -->
+                        <div class="results-header-v2">
+                            <div class="results-header-top">
+                                <div class="results-title-section">
+                                    <div class="results-icon">✨</div>
+                                    <div class="results-title-content">
+                                        <h2>Code Generated Successfully</h2>
+                                        <p class="results-subtitle">Your variations are ready to test and deploy</p>
+                                    </div>
+                                </div>
+                                <div class="results-stats">
+                                    <div class="stat-item">
+                                        <span class="stat-value" id="variationCount">0</span>
+                                        <span class="stat-label">Variations</span>
+                                    </div>
+                                    <div class="stat-item">
+                                        <span class="stat-value" id="qaStatus">⏳</span>
+                                        <span class="stat-label">QA Status</span>
                                     </div>
                                 </div>
                             </div>
 
-                            <textarea 
-                                id="descriptionText" 
-                                placeholder="Optional: add shared goals, success metrics, or constraints that every variation should respect. Leave empty if each variation stands on its own."
-                                rows="4"
-                            ></textarea>
-                            <div class="char-counter">
-                                <span id="charCount">0</span> characters
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Design Files (Optional) -->
-                    <div class="step optional">
-                        <div class="step-header">
-                            <span class="step-number">2.5</span>
-                            <div class="step-heading">
-                                <h2>Design Files (optional)</h2>
-                                <p class="step-note">Upload mockups or designs to show AI the desired end state.</p>
-                            </div>
-                        </div>
-                        <div class="step-content">
-                            <div class="design-upload-area" id="designUploadArea">
-                                <input type="file" id="designFileInput" accept="image/*" multiple style="display: none;">
-                                <div class="upload-box" id="uploadBox">
-                                    <span class="icon">📎</span>
-                                    <p>Drop design files here or click to browse</p>
-                                    <small>PNG, JPG, SVG supported • Max 10MB each</small>
-                                </div>
-                                <div class="design-preview-grid" id="designPreviewGrid"></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="step">
-                        <div class="step-header">
-                            <span class="step-number">3</span>
-                            <div class="step-heading">
-                                <h2>Variation Instructions</h2>
-                                <p class="step-note">Give each variation a specific outcome. The focused variation auto-applies in Review.</p>
-                            </div>
-                            <div class="step-header-actions">
-                                <button id="browseTemplatesBtn" class="btn-text" title="Browse Templates">
-                                    📋 Templates
+                            <div class="results-header-actions">
+                                <button class="action-btn action-btn-secondary" id="editDescriptionBtn">
+                                    <span class="action-icon">✏️</span>
+                                    <span class="action-text">Edit Request</span>
                                 </button>
-                                <button id="addVariationBtn" class="btn-icon" title="Add Variation">+</button>
-                            </div>
-                        </div>
-                        <div class="step-content">
-                            <div id="variationsList" class="variations-list"></div>
-                            <p class="hint variation-hint">Tip: describe only what makes this variation unique. The AI already knows the current page state.</p>
-                        </div>
-                    </div>
-
-                    <div class="step">
-                        <div class="step-header">
-                            <span class="step-number">⚙️</span>
-                            <div class="step-heading">
-                                <h2>Generation Model</h2>
-                                <p class="step-note">Choose your AI model. API keys are managed in Settings.</p>
-                            </div>
-                        </div>
-                        <div class="step-content settings-step">
-                            <div class="settings-card">
-                                <div class="settings-card-header">
-                                    <h3>Model Selection</h3>
-                                    <button id="openFullSettingsBtn" class="btn-link">Full settings</button>
-                                </div>
-                                <div class="setting-group">
-                                    <label for="modelSelect">OpenAI Model</label>
-                                    <select id="modelSelect" class="input">
-                                        <option value="gpt-4o-mini">GPT-4o Mini · Fast & efficient</option>
-                                        <option value="gpt-4o">GPT-4o · Highest quality</option>
-                                        <option value="gpt-4.1-mini">GPT-4.1 Mini · Latest fast model</option>
-                                    </select>
-                                </div>
-                                <div class="toggle-grid">
-                                    <label class="toggle">
-                                        <input type="checkbox" id="preferCSS" checked>
-                                        <span class="toggle-text">Prefer CSS over JavaScript</span>
-                                    </label>
-                                    <label class="toggle">
-                                        <input type="checkbox" id="includeDOMChecks" checked>
-                                        <span class="toggle-text">Include DOM ready checks</span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="generate-section">
-                        <button id="generateBtn" class="btn-generate">
-                            <span class="btn-text">✨ Generate &amp; Test Automatically</span>
-                            <span class="btn-loading hidden">
-                                <span class="spinner"></span>
-                                Generating...
-                            </span>
-                        </button>
-                        <p class="generate-hint">Tip: stay on this tab to adjust requirements while the run is in progress.</p>
-                    </div>
-                </div>
-            </section>
-
-            <section id="panel-review" class="panel-view" aria-labelledby="review">
-                <div class="review-columns">
-                    <div class="review-column">
-                        <div id="statusPanel" class="status-panel card hidden">
-                            <div class="card-header">
-                                <div>
-                                    <h3>Status Timeline</h3>
-                                    <p>Live progress for generation, previews, and validation.</p>
-                                </div>
-                                <span id="statusIndicator" class="indicator">●</span>
-                            </div>
-                            <div id="statusLog" class="status-log"></div>
-                            <div class="status-footer">
-                                <span id="usageStats">Tokens: 0 | Cost: $0.00</span>
-                                <button id="copyLogBtn" class="btn-link">Copy log</button>
+                                <button class="action-btn action-btn-secondary" id="regenerateBtn">
+                                    <span class="action-icon">🔄</span>
+                                    <span class="action-text">Regenerate</span>
+                                </button>
+                                <button class="action-btn action-btn-primary" id="exportBtn">
+                                    <span class="action-icon">📤</span>
+                                    <span class="action-text">Export Code</span>
+                                </button>
                             </div>
                         </div>
 
-                        <div class="variation-workspace card">
-                            <div class="card-header">
-                                <div>
-                                    <h3>Active Variation Workspace</h3>
-                                    <p>Focused variation auto-applies when you make changes. Switch focus to work on different variations.</p>
-                                </div>
-                                <button id="editVariationsBtn" class="btn-small btn-secondary">Edit variation instructions</button>
-                            </div>
-                            <div class="variation-focus">
-                                <div class="variation-focus-header">
-                                    <span class="variation-focus-label">🎯 Currently Focused</span>
-                                    <div class="variation-focus-actions">
-                                        <button id="switchFocusBtn" class="btn-link btn-small">Switch focus</button>
-                                    </div>
-                                </div>
-                                <h4 id="focusedVariationTitle">Variation 1</h4>
-                                <p id="focusedVariationSummary">Add variation-specific instructions in the Build tab to see details here.</p>
-                                <div class="variation-focus-status">
-                                    <span id="focusedVariationStatus" class="variation-status-indicator">Not generated</span>
-                                </div>
-                            </div>
-                            <div id="aiActivityBanner" class="ai-activity" data-status="idle">Ready to review updates.</div>
-                            <div id="variationPreview" class="variation-preview hidden">
-                                <div class="variation-preview-header">
-                                    <h4>All Variations</h4>
-                                    <div class="variation-preview-actions">
-                                        <button id="clearPreviewBtn" class="btn-link btn-small" disabled>Clear all previews</button>
-                                    </div>
-                                </div>
-                                <div id="variationPreviewList" class="variation-preview-list"></div>
-                                <p id="variationPreviewHint" class="variation-preview-hint">Preview is off. Choose any variation to apply it to the active tab.</p>
-                            </div>
-
-                            <div id="testScreenshot" class="test-screenshot hidden">
-                                <h4>Latest Test Result</h4>
-                                <img id="screenshotImg" alt="Test Result" />
-                                <div id="screenshotMeta" class="screenshot-meta"></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="review-column">
-                        <div class="chat-panel card">
-                            <div class="card-header">
-                                <div>
-                                    <h3>Chat &amp; Adjust</h3>
-                                    <p>Refine the focused variation without leaving review.</p>
-                                </div>
-                            </div>
-                            <div id="chatThread" class="chat-thread" aria-live="polite">
-                                <div id="chatEmptyState" class="chat-empty">
-                                    <p>Generate code to start a thread. Ask for tweaks, clarifications, or regression checks.</p>
-                                </div>
-                            </div>
-                            <form id="chatComposer" class="chat-composer" autocomplete="off">
-                                <label for="chatInput" class="sr-only">Message</label>
-                                <textarea id="chatInput" rows="3" placeholder="Describe what you'd like to adjust or ask follow-up questions..." required></textarea>
-                                <div class="chat-actions">
-                                    <span class="chat-status" id="chatStatus"></span>
-                                    <button type="submit" id="chatSendBtn" class="btn-primary">Send</button>
-                                </div>
-                            </form>
+                        <div class="variations-grid" id="variationsGrid">
+                            <!-- Generated variations will appear here -->
                         </div>
                     </div>
                 </div>
-            </section>
 
-            <section id="panel-code" class="panel-view" aria-labelledby="code">
-                <div id="resultsPanel" class="results-panel card hidden">
-                    <div class="results-header">
-                        <div>
-                            <h3>Generated Code</h3>
-                            <p class="results-subtitle">Review or edit the source for each variation.</p>
-                        </div>
-                        <div class="results-actions">
-                            <button id="stopIterationBtn" class="btn-danger btn-small hidden">⏹ Stop</button>
-                            <button id="exportAllBtn" class="btn-small">📥 Export</button>
-                            <button id="clearResultsBtn" class="btn-link">Clear</button>
-                        </div>
-                    </div>
-
-                    <div id="codeTabs" class="tabs"></div>
-                    <div id="codeContent" class="code-content"></div>
-                </div>
-            </section>
-
-            <section id="panel-convert" class="panel-view" aria-labelledby="convert">
-                <div id="convertIntegrationSection" class="convert-container card">
-                    <div class="card-header">
-                        <div>
-                            <h3>Convert.com Workspace</h3>
-                            <p>Move between credentials, projects, and launch actions without leaving the panel.</p>
-                        </div>
-                    </div>
-
-                    <div class="convert-grid">
-                        <div class="convert-card">
-                            <h4>1. Choose Credential</h4>
-                            <p class="convert-hint">Keys stay on this device. Manage them any time in Settings.</p>
-                            <select id="convertApiKeySelect" class="input">
-                                <option value="">-- Select API Key --</option>
-                            </select>
-                            <button class="btn-link" id="manageConvertKeysBtn">⚙️ Manage API Keys</button>
+                <!-- State: Deploy -->
+                <div class="work-state hidden" id="deployState" data-state="deploy">
+                    <div class="deploy-interface">
+                        <div class="deploy-header">
+                            <h2>🚀 Deploy to Convert.com</h2>
+                            <p>Push your experiment to Convert.com or export for manual setup.</p>
                         </div>
 
-                        <div class="convert-card">
-                            <h4>2. Pick Account</h4>
-                            <p class="convert-hint">Accounts load after selecting credentials.</p>
-                            <select id="convertAccountSelect" class="input" disabled>
-                                <option value="">-- Select Account --</option>
-                            </select>
-                        </div>
-
-                        <div class="convert-card">
-                            <h4>3. Project &amp; Experience</h4>
-                            <div class="convert-fieldset">
-                                <label class="setting-label-row" for="convertProjectSelect">
-                                    <span>Project</span>
-                                    <button class="btn-link" id="refreshConvertProjectsBtn" disabled>⟲ Refresh</button>
-                                </label>
-                                <select id="convertProjectSelect" class="input" disabled>
-                                    <option value="">-- Select Project --</option>
-                                </select>
-
-                                <label class="setting-label-row" for="convertExperienceSelect">
-                                    <span>Experience</span>
-                                    <button class="btn-link" id="refreshConvertExperiencesBtn" disabled>⟲ Refresh</button>
-                                </label>
-                                <select id="convertExperienceSelect" class="input" disabled>
-                                    <option value="">-- Select Experience --</option>
-                                    <option value="__create__">➕ Create New Experience</option>
-                                </select>
-                            </div>
-
-                            <div id="convertExperienceMeta" class="convert-meta hidden">
-                                <div class="convert-meta-row"><span>Status</span><span id="convertExperienceStatus">-</span></div>
-                                <div class="convert-meta-row"><span>Type</span><span id="convertExperienceType">-</span></div>
-                                <div class="convert-meta-row"><span>Last Updated</span><span id="convertExperienceUpdated">-</span></div>
-                            </div>
-
-                            <div id="convertCreateFields" class="convert-create hidden">
-                                <div class="setting-group">
-                                    <label for="convertNewExperienceName">Experience Name</label>
-                                    <input type="text" id="convertNewExperienceName" class="input" placeholder="Homepage Headline Test">
-                                </div>
-                                <div class="setting-group">
-                                    <label for="convertNewExperienceType">Experience Type</label>
-                                    <select id="convertNewExperienceType" class="input">
-                                        <option value="a/b">A/B Test</option>
-                                        <option value="a/a">A/A Test</option>
-                                        <option value="deploy">Deploy</option>
-                                        <option value="split_url">Split URL</option>
-                                    </select>
-                                </div>
-                                <div class="setting-group">
-                                    <label for="convertNewExperienceUrl">Target URL</label>
-                                    <input type="text" id="convertNewExperienceUrl" class="input" placeholder="https://example.com/page">
-                                </div>
-                                <div class="setting-row-group">
-                                    <div class="setting-group">
-                                        <label for="convertNewBaselineName">Baseline Name</label>
-                                        <input type="text" id="convertNewBaselineName" class="input" placeholder="Original">
-                                    </div>
-                                    <div class="setting-group">
-                                        <label for="convertNewVariationName">Variation Name</label>
-                                        <input type="text" id="convertNewVariationName" class="input" placeholder="Variation 1">
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="convert-card">
-                            <h4>4. Sync Actions</h4>
-                            <p class="convert-hint">Import existing experiences, push updates, or preview from the active tab.</p>
-                            <div class="convert-actions">
-                                <button id="importExperienceBtn" class="btn-secondary" disabled>⬇️ Pull Experience Code</button>
-                                <button id="pushExperienceBtn" class="btn-primary" disabled>⬆️ Push Updates to Convert</button>
-                            </div>
-                            <div class="convert-actions">
-                                <button id="runConvertPreviewBtn" class="btn-secondary" disabled>▶️ Run Current Variation</button>
-                            </div>
-                            <div id="convertStatus" class="convert-status"></div>
+                        <div class="deploy-options" id="deployOptions">
+                            <!-- Deploy options will be populated here -->
                         </div>
                     </div>
                 </div>
-            </section>
-        </main>
+            </main>
 
-        <div id="errorDisplay" class="notification error hidden">
-            <span class="icon">⚠️</span>
-            <span class="message"></span>
-            <button class="close" aria-label="Dismiss">×</button>
         </div>
 
+        <!-- BOTTOM: Expandable Code Drawer -->
+        <div class="code-drawer" id="codeDrawer">
+            <div class="drawer-header" id="drawerHeader">
+                <div class="drawer-title">
+                    <h3>Generated Code</h3>
+                    <span class="code-count" id="codeCount">No code generated</span>
+                </div>
+                <div class="drawer-actions">
+                    <button class="btn-small" id="exportCodeBtn">Export</button>
+                    <button class="drawer-toggle" id="drawerToggle" aria-label="Toggle code drawer">
+                        ↑
+                    </button>
+                </div>
+            </div>
+            <div class="drawer-content" id="drawerContent">
+                <div class="code-placeholder">
+                    <p>Generate code to see it here. You can edit, copy, and export from this panel.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- STICKY BOTTOM STATUS BAR -->
+        <div class="bottom-status-bar" id="bottomStatusBar">
+            <div class="status-bar-section">
+                <button class="status-btn" id="toggleCodeBtn" title="Toggle code panel">
+                    &lt;/&gt;
+                </button>
+            </div>
+            <div class="status-bar-section status-bar-center">
+                <div class="cost-display" id="costDisplay">
+                    <span class="cost-label">Cost:</span>
+                    <span class="cost-amount" id="costAmount">$0.00</span>
+                    <span class="cost-details" id="costDetails" title="Token usage details">
+                        <span id="tokenCount">0</span> tks
+                    </span>
+                </div>
+            </div>
+            <div class="status-bar-section status-bar-right">
+                <button class="ai-model-indicator" id="aiModelIndicator" title="Click to change AI model">
+                    <span class="model-status-dot"></span>
+                    <span id="currentModel">4o</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Model Selector Modal -->
+        <div class="modal-overlay hidden" id="modelSelectorOverlay">
+            <div class="modal-content model-selector-modal">
+                <div class="modal-header">
+                    <h3>Select AI Model</h3>
+                    <button class="modal-close" id="closeModelSelector">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="model-section-header">Anthropic Claude (Recommended)</div>
+                    <div class="model-options">
+                        <div class="model-option" data-model="claude-sonnet-4-5-20250929">
+                            <span class="model-name">Claude Sonnet 4.5</span>
+                            <span class="model-badge recommended">Latest</span>
+                        </div>
+                        <div class="model-option" data-model="claude-3-7-sonnet-20250219">
+                            <span class="model-name">Claude 3.7 Sonnet</span>
+                            <span class="model-badge recommended">Recommended</span>
+                        </div>
+                        <div class="model-option" data-model="claude-sonnet-4-20250514">
+                            <span class="model-name">Claude Sonnet 4</span>
+                        </div>
+                        <div class="model-option" data-model="claude-3-5-haiku-20241022">
+                            <span class="model-name">Claude 3.5 Haiku</span>
+                            <span class="model-badge fastest">Fastest</span>
+                        </div>
+                    </div>
+
+                    <div class="model-section-header">OpenAI GPT</div>
+                    <div class="model-options">
+                        <div class="model-option" data-model="gpt-4o">
+                            <span class="model-name">GPT-4o</span>
+                        </div>
+                        <div class="model-option" data-model="gpt-4o-mini">
+                            <span class="model-name">GPT-4o Mini</span>
+                            <span class="model-badge fastest">Fastest</span>
+                        </div>
+                        <div class="model-option" data-model="gpt-4-turbo">
+                            <span class="model-name">GPT-4 Turbo</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Command Palette Overlay -->
+        <div class="command-palette-overlay hidden" id="commandPaletteOverlay">
+            <div class="command-palette">
+                <div class="palette-search">
+                    <input type="text" id="paletteSearch" placeholder="Type a command..." autocomplete="off">
+                </div>
+                <div class="palette-results" id="paletteResults">
+                    <!-- Commands will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Drawer (Full Height Side Panel) -->
+        <div class="chat-drawer hidden" id="chatDrawer">
+            <div class="chat-drawer-header">
+                <div class="chat-header-content">
+                    <h3>💬 AI Assistant</h3>
+                    <button class="drawer-close-btn" id="closeChatDrawer" title="Close chat (⌘Shift+C)">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 6L6 18M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Current Context Badge -->
+                <div class="chat-context-badge" id="chatContextBadge">
+                    <span class="context-icon">📄</span>
+                    <span class="context-text" id="chatContextText">No page captured</span>
+                </div>
+            </div>
+
+            <!-- Chat Messages Area -->
+            <div class="chat-messages-container" id="chatMessagesContainer">
+                <div class="chat-welcome">
+                    <div class="welcome-icon">👋</div>
+                    <h4>Welcome to AI Assistant</h4>
+                    <p>I can help you build Convert.com experiments. Start by capturing a page or describe what you'd like to change.</p>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Messages will be dynamically inserted here -->
+                </div>
+
+                <!-- Typing Indicator -->
+                <div class="typing-indicator hidden" id="typingIndicator">
+                    <div class="typing-avatar">🤖</div>
+                    <div class="typing-dots">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Input Footer (Fixed to Bottom) -->
+            <div class="chat-drawer-footer">
+                <!-- Attachment Preview (when element selected or screenshot attached) -->
+                <div class="chat-attachment-preview hidden" id="chatAttachmentPreview">
+                    <div class="attachment-content">
+                        <span class="attachment-icon">📎</span>
+                        <span class="attachment-label" id="chatAttachmentLabel">Element selected</span>
+                    </div>
+                    <button class="attachment-remove" id="chatRemoveAttachment" title="Remove attachment">×</button>
+                </div>
+
+                <div class="chat-input-wrapper">
+                    <textarea
+                        id="chatInput"
+                        placeholder="Ask me anything about this experiment..."
+                        rows="1"
+                        maxlength="2000"
+                    ></textarea>
+                    <div class="chat-input-actions">
+                        <button type="button" class="chat-action-btn" id="chatSelectElementBtn" title="Select element on page">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
+                        <button type="button" class="chat-action-btn" id="chatClearBtn" title="Clear conversation">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                        </button>
+                        <button type="submit" class="chat-send-btn" id="chatSendBtn" title="Send message">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chat-footer-meta">
+                    <span class="char-count" id="chatCharCount">0/2000</span>
+                    <span class="chat-hint">⏎ Send • ⇧⏎ New line • ⌘K Commands</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Chat Button -->
+        <button class="chat-fab" id="chatFab" title="Open Chat Assistant (⌘Shift+C)">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+        </button>
+
+        <!-- Global Notifications -->
         <div id="successDisplay" class="notification success hidden">
             <span class="icon">✓</span>
             <span class="message"></span>
         </div>
-    </div>
 
-    <!-- Examples Modal -->
-    <div id="examplesModal" class="modal hidden">
-        <div class="modal-overlay"></div>
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Example Instructions</h3>
-                <button class="modal-close" id="closeExamplesModal">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="examples-grid">
-                    <div class="example-section">
-                        <h4>Button Changes</h4>
-                        <div class="example-card">
-                            <div class="example-label">Simple Color Change</div>
-                            <p class="example-text">"Change CTA button to orange (#FF6B35) with white text"</p>
-                        </div>
-                        <div class="example-card">
-                            <div class="example-label">Comprehensive Update</div>
-                            <p class="example-text">"Make CTA 30% larger, change to green (#4CAF50), add white text, rounded corners (8px), shadow, and smooth hover effect"</p>
-                        </div>
-                    </div>
+        <div id="errorDisplay" class="notification error hidden">
+            <span class="icon">⚠</span>
+            <span class="message"></span>
+        </div>
 
-                    <div class="example-section">
-                        <h4>Layout Changes</h4>
-                        <div class="example-card">
-                            <div class="example-label">Element Positioning</div>
-                            <p class="example-text">"Move hero image from right to left side, make it 50% width, position text content on the right"</p>
-                        </div>
-                        <div class="example-card">
-                            <div class="example-label">Spacing Improvements</div>
-                            <p class="example-text">"Increase spacing between sections by 40px, add more padding inside content boxes (24px all around)"</p>
-                        </div>
-                    </div>
-
-                    <div class="example-section">
-                        <h4>Vague but Effective</h4>
-                        <div class="example-card">
-                            <div class="example-label">Trust Building</div>
-                            <p class="example-text">"Make the pricing section more eye-catching and trustworthy"</p>
-                        </div>
-                        <div class="example-card">
-                            <div class="example-label">Modernization</div>
-                            <p class="example-text">"Give the page a more modern, professional look"</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <!-- Hidden Elements for Legacy Compatibility -->
+        <div class="hidden-legacy-elements" style="display: none;">
+            <div id="legacyCurrentUrl"></div>
+            <div id="variationsList"></div>
+            <div id="chatThread"></div>
+            <div id="statusLog"></div>
+            <div id="resultsPanel"></div>
         </div>
     </div>
 
-    <!-- Template Library Modal -->
-    <div id="templateModal" class="modal hidden">
-        <div class="modal-overlay"></div>
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Experiment Templates</h3>
-                <button class="modal-close" id="closeTemplateModal">×</button>
-            </div>
-            <div class="modal-body">
-                <p class="modal-description">Choose a pre-built experiment template to get started quickly</p>
-                <div class="template-grid" id="templateGrid"></div>
-            </div>
-        </div>
-    </div>
+    <!-- Scripts -->
+    <script src="../utils/feature-flags.js"></script>
+    <script src="../utils/performance-monitor.js"></script>
+    <script src="../utils/regression-test-suite.js"></script>
 
-    <!-- Utility Classes -->
+    <!-- Core Utilities (MUST load before content scripts use them) -->
+    <script src="../utils/context-builder.js"></script>
+    <script src="../utils/selector-validator.js"></script>
+    <script src="../utils/code-tester.js"></script>
     <script src="../utils/session-manager.js"></script>
     <script src="../utils/keyboard-shortcuts.js"></script>
     <script src="../utils/prompt-assistant.js"></script>
     <script src="../utils/design-file-manager.js"></script>
     <script src="../utils/convert-smart-lists.js"></script>
+    <script src="../utils/visual-qa-service.js"></script>
+    <script src="../utils/code-quality-monitor.js"></script>
+    <script src="../utils/chatgpt-api.js"></script>
+    <script src="../utils/code-formatter.js"></script>
 
-    <!-- Main Application -->
+    <!-- Main Application (NO workspace-v2.js - consolidated into sidepanel.js) -->
     <script src="sidepanel.js"></script>
 </body>
 </html>

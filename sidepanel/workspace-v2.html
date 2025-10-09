@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Convert.com Experiment Builder V2</title>
+    <link rel="stylesheet" href="sidepanel.css">
+    <link rel="stylesheet" href="workspace-v2.css">
+</head>
+<body>
+    <div class="app-v2" id="appV2" style="display: none;">
+        <!-- Feature Flag Controlled - New Simplified Interface -->
+        
+        <div class="unified-header">
+            <div class="header-main">
+                <h1>Experiment Builder</h1>
+                <p class="subtitle">Describe changes, get Convert.com code</p>
+            </div>
+            <div class="header-actions">
+                <button id="commandPaletteBtn" class="btn-icon" title="Command Palette (⌘K)">
+                    ⌘K
+                </button>
+                <button id="settingsV2Btn" class="btn-icon" title="Settings">
+                    ⚙️
+                </button>
+            </div>
+        </div>
+
+        <div class="workspace-container">
+            <!-- LEFT: Adaptive Main Work Area -->
+            <main class="work-area" id="workArea">
+                <!-- State-driven content will be injected here -->
+                <div class="work-state" data-state="fresh">
+                    <div class="welcome-state">
+                        <div class="state-icon">📸</div>
+                        <h2>Ready to build your experiment</h2>
+                        <p>Describe the changes you want to make, and I'll generate Convert.com code automatically.</p>
+                        
+                        <div class="quick-actions">
+                            <button class="btn-primary btn-large" id="quickStartBtn">
+                                <span>Describe Your Changes</span>
+                                <span class="shortcut">Enter</span>
+                            </button>
+                            <button class="btn-secondary" id="captureFirstBtn">
+                                Capture Current Page First
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="work-state hidden" data-state="designing">
+                    <!-- Variation design interface -->
+                </div>
+
+                <div class="work-state hidden" data-state="reviewing">
+                    <!-- Preview and refinement interface -->
+                </div>
+
+                <div class="work-state hidden" data-state="deploying">
+                    <!-- Convert.com deployment interface -->
+                </div>
+            </main>
+
+            <!-- RIGHT: Live Chat & Status Panel -->
+            <aside class="live-panel" id="livePanel">
+                <div class="panel-header">
+                    <h3>Chat & Status</h3>
+                    <button class="panel-toggle" id="panelToggle" aria-label="Toggle panel">
+                        ←
+                    </button>
+                </div>
+
+                <!-- Unified Chat Interface -->
+                <div class="chat-container">
+                    <div class="chat-history" id="chatHistoryV2">
+                        <div class="chat-welcome">
+                            <div class="assistant-avatar">🤖</div>
+                            <div class="chat-message">
+                                <p>Hi! I'm ready to help you create Convert.com experiments. Just describe what you want to change on the current page.</p>
+                                <div class="chat-suggestions">
+                                    <button class="suggestion-btn">Change button color to red</button>
+                                    <button class="suggestion-btn">Make headline larger</button>
+                                    <button class="suggestion-btn">Add a banner at the top</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chat-input-area">
+                        <form class="chat-form" id="chatFormV2">
+                            <div class="input-container">
+                                <textarea 
+                                    id="chatInputV2" 
+                                    placeholder="Describe your changes or ask questions..."
+                                    rows="2"
+                                    required
+                                ></textarea>
+                                <div class="input-actions">
+                                    <button type="button" class="tool-btn" id="selectElementV2" title="Select page element">
+                                        🎯
+                                    </button>
+                                    <button type="submit" class="btn-primary" id="sendV2">
+                                        Send
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Live Activity Stream -->
+                <div class="activity-stream" id="activityStreamV2">
+                    <div class="stream-header">
+                        <h4>Activity</h4>
+                        <button class="btn-link" id="clearActivityV2">Clear</button>
+                    </div>
+                    <div class="stream-content" id="streamContentV2">
+                        <div class="activity-item info">
+                            <span class="activity-icon">ℹ️</span>
+                            <span class="activity-text">Ready to create experiments</span>
+                            <span class="activity-time">now</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- BOTTOM: Expandable Code Drawer -->
+        <div class="code-drawer" id="codeDrawer">
+            <div class="drawer-header">
+                <div class="drawer-title">
+                    <h3>Generated Code</h3>
+                    <span class="code-count" id="codeCount">No code generated</span>
+                </div>
+                <div class="drawer-actions">
+                    <button class="btn-small" id="exportCodeV2">Export</button>
+                    <button class="drawer-toggle" id="drawerToggle" aria-label="Toggle code drawer">
+                        ↑
+                    </button>
+                </div>
+            </div>
+            <div class="drawer-content" id="drawerContent">
+                <!-- Code tabs and content will be injected here -->
+            </div>
+        </div>
+
+        <!-- Command Palette Overlay -->
+        <div class="command-palette-overlay hidden" id="commandPaletteOverlay">
+            <div class="command-palette">
+                <div class="palette-search">
+                    <input type="text" id="paletteSearch" placeholder="Type a command..." autocomplete="off">
+                </div>
+                <div class="palette-results" id="paletteResults">
+                    <!-- Commands will be populated here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Original Interface (Feature Flag Controlled) -->
+    <div class="app-v1" id="appV1">
+        <!-- Include existing interface here for fallback -->
+    </div>
+
+    <!-- Scripts -->
+    <script src="../utils/feature-flags.js"></script>
+    <script src="workspace-v2.js"></script>
+    <script src="sidepanel.js"></script>
+</body>
+</html>
