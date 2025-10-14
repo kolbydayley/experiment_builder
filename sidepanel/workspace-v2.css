@@ -616,8 +616,9 @@
 }
 
 .tool-btn {
-  width: 28px;
-  height: 28px;
+  /* Removed fixed width/height to allow proper button sizing with text */
+  min-width: 28px;
+  min-height: 28px;
   border: none;
   background: var(--bg-tertiary, #f3f4f6);
   border-radius: 4px;
@@ -627,6 +628,8 @@
   justify-content: center;
   font-size: 14px;
   transition: all 0.2s ease;
+  padding: 6px 10px;
+  gap: 6px;
 }
 
 .tool-btn:hover {
@@ -730,7 +733,7 @@
   right: 0;
   background: var(--bg, #ffffff);
   border-top: 1px solid var(--border, #e5e7eb);
-  max-height: 50vh;
+  max-height: 75vh; /* Increased from 50vh to 75vh for more coding space */
   z-index: 999;
   transform: translateY(100%); /* Fully hidden by default */
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1165,7 +1168,7 @@
   }
   
   .code-drawer {
-    max-height: 50vh;
+    max-height: 70vh; /* More space on mobile too */
   }
 }
 
@@ -1697,6 +1700,25 @@
   .stat-value {
     font-size: 18px;
   }
+
+  /* Stack variation footer on narrow sidebars */
+  .variation-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .variation-stats {
+    width: 100%;
+    justify-content: space-around;
+  }
+
+  .var-action-btn {
+    width: 100%;
+  }
+
+  .var-action-text {
+    display: inline;
+  }
 }
 
 /* Stat label and value shared with new design */
@@ -1863,8 +1885,10 @@
 
 .variation-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--border, #e5e7eb);

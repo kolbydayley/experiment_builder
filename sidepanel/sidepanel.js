@@ -466,7 +466,8 @@ class UnifiedExperimentBuilder {
           this.updateWorkflowState('building');
           this.focusChatInput();
         } catch (error) {
-          this.showError('Failed to capture page: ' + error.message);
+          // Error already handled by capturePage() - no need to show duplicate
+          console.error('Capture page button error:', error);
         }
       });
     }

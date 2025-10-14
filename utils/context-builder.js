@@ -341,12 +341,23 @@ class ContextBuilder {
   }
 
   /**
+   * Helper to escape CSS identifiers
+   */
+  escapeCSSIdentifier(str) {
+    if (!str) return '';
+    if (typeof CSS !== 'undefined' && CSS.escape) {
+      return CSS.escape(str);
+    }
+    return str.replace(/([!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~])/g, '\\$1');
+  }
+
+  /**
    * Generate reliable CSS selector
    */
   generateSelector(element) {
     // ID is most reliable
     if (element.id) {
-      return `#${element.id}`;
+      return `#${this.escapeCSSIdentifier(element.id)}`;
     }
 
     // Try to build from classes and tag
@@ -354,18 +365,23 @@ class ContextBuilder {
     const classes = Array.from(element.classList)
       .filter(c => !c.match(/^(active|hover|focus|selected|js-)/) && c.length < 30)
       .slice(0, 3) // Use up to 3 classes for better specificity
+      .map(c => this.escapeCSSIdentifier(c))
       .join('.');
 
     if (classes) {
       const selector = `${tag}.${classes}`;
-      // Verify uniqueness - MUST be exactly 1 match
-      const matches = document.querySelectorAll(selector);
-      if (matches.length === 1) {
-        return selector;
-      }
+      try {
+        // Verify uniqueness - MUST be exactly 1 match
+        const matches = document.querySelectorAll(selector);
+        if (matches.length === 1) {
+          return selector;
+        }
 
-      // If not unique, try adding more context or use nth-child
-      console.log(`⚠️ Selector "${selector}" matches ${matches.length} elements - using nth-child for uniqueness`);
+        // If not unique, try adding more context or use nth-child
+        console.log(`⚠️ Selector "${selector}" matches ${matches.length} elements - using nth-child for uniqueness`);
+      } catch (e) {
+        // Invalid selector, fall through to nth-child
+      }
     }
 
     // Fall back to nth-child for guaranteed uniqueness
@@ -387,7 +403,7 @@ class ContextBuilder {
     const alternatives = [];
 
     // By ID
-    if (element.id) alternatives.push(`#${element.id}`);
+    if (element.id) alternatives.push(`#${this.escapeCSSIdentifier(element.id)}`);
 
     // By test ID
     const testId = element.getAttribute('data-testid') || element.getAttribute('data-test-id');
@@ -399,9 +415,13 @@ class ContextBuilder {
 
     // By unique class combination
     const uniqueClass = Array.from(element.classList).find(c => {
-      return document.querySelectorAll(`.${c}`).length === 1;
+      try {
+        return document.querySelectorAll(`.${this.escapeCSSIdentifier(c)}`).length === 1;
+      } catch (e) {
+        return false;
+      }
     });
-    if (uniqueClass) alternatives.push(`.${uniqueClass}`);
+    if (uniqueClass) alternatives.push(`.${this.escapeCSSIdentifier(uniqueClass)}`);
 
     return alternatives.slice(0, 3);
   }

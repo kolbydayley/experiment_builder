@@ -234,13 +234,21 @@
     _generateSelector(element) {
       if (!element) return 'null';
 
+      // Helper to escape CSS identifiers
+      const escape = (str) => {
+        if (typeof CSS !== 'undefined' && CSS.escape) {
+          return CSS.escape(str);
+        }
+        return str.replace(/([!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~])/g, '\\$1');
+      };
+
       let selector = element.tagName.toLowerCase();
       if (element.id) {
-        selector += `#${element.id}`;
+        selector += `#${escape(element.id)}`;
       } else if (element.className) {
         const classes = element.className.split(' ').filter(c => c).slice(0, 2);
         if (classes.length > 0) {
-          selector += `.${classes.join('.')}`;
+          selector += `.${classes.map(c => escape(c)).join('.')}`;
         }
       }
       return selector;

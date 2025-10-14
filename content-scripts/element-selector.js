@@ -418,29 +418,53 @@ class ElementSelector {
     }
   }
 
+  // Helper function to escape special characters in CSS selectors
+  escapeCSSIdentifier(str) {
+    if (!str) return '';
+
+    // CSS.escape is the standard way, but fallback for older browsers
+    if (typeof CSS !== 'undefined' && CSS.escape) {
+      return CSS.escape(str);
+    }
+
+    // Manual fallback - escape special CSS characters
+    return str.replace(/([!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~])/g, '\\$1');
+  }
+
   generateSelector(element) {
     // Try ID first
     if (element.id) {
-      return `#${element.id}`;
+      return `#${this.escapeCSSIdentifier(element.id)}`;
     }
 
     // Build path from classes
-    const classes = element.className ? 
+    const classes = element.className ?
       Array.from(element.classList)
         .filter(c => c && !c.startsWith('convert-'))
         .slice(0, 2)
+        .map(c => this.escapeCSSIdentifier(c))
         .join('.') : '';
-    
+
     const tag = element.tagName.toLowerCase();
     let selector = tag + (classes ? `.${classes}` : '');
 
     // Add nth-child if needed for uniqueness
-    if (document.querySelectorAll(selector).length > 1) {
+    try {
+      if (document.querySelectorAll(selector).length > 1) {
+        const parent = element.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children);
+          const index = siblings.indexOf(element) + 1;
+          selector += `:nth-child(${index})`;
+        }
+      }
+    } catch (e) {
+      // If selector is invalid, fall back to tag + nth-child
       const parent = element.parentElement;
       if (parent) {
         const siblings = Array.from(parent.children);
         const index = siblings.indexOf(element) + 1;
-        selector += `:nth-child(${index})`;
+        selector = `${tag}:nth-child(${index})`;
       }
     }
 

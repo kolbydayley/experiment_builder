@@ -3388,8 +3388,14 @@ Generate the complete, merged code as JSON NOW (no other text):`;
                 `;
                 
                 const result = (0, eval)(debugCode);
-                console.log('[JavaScript Execution] Execution completed, result:', result);
-                
+
+                // Only log if there's a meaningful result
+                if (result !== undefined) {
+                  console.log('[JavaScript Execution] ✓ Execution completed with result:', result);
+                } else {
+                  console.log('[JavaScript Execution] ✓ Execution completed successfully');
+                }
+
                 return { success: true, result };
               } catch (error) {
                 return {

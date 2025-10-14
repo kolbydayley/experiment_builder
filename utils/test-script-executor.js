@@ -180,14 +180,23 @@ const TestPatterns = {
 
   async simulateExitIntent() {
     try {
+      // Trigger both mouseout and mouseleave to cover both patterns
       document.dispatchEvent(new MouseEvent('mouseout', {
         bubbles: true,
         cancelable: true,
         clientY: -10,
         relatedTarget: null
       }));
+
+      document.dispatchEvent(new MouseEvent('mouseleave', {
+        bubbles: true,
+        cancelable: true,
+        clientY: -10,
+        relatedTarget: null
+      }));
+
       console.log('[Test] ✓ Exit intent triggered');
-      await this.wait(500);
+      await this.wait(800); // Wait longer for modal/popup to appear and animate
       return true;
     } catch (error) {
       console.error('[Test] ✗ Exit intent failed:', error);
