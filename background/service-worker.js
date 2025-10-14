@@ -215,7 +215,14 @@ class ServiceWorker {
           const tabId = message.data?.tabId || sender?.tab?.id;
           console.log('🎯 Generate code for tabId:', tabId);
           const generated = await this.generateCode(message.data, tabId);
-          sendResponse({ success: true, code: generated.code, usage: generated.usage, logs: generated.logs, testResults: generated.testResults });
+          sendResponse({
+            success: true,
+            code: generated.code,
+            usage: generated.usage,
+            logs: generated.logs,
+            testResults: generated.testResults,
+            testScript: generated.testScript // NEW: Include test script
+          });
           break;
         }
 
@@ -467,6 +474,16 @@ class ServiceWorker {
               tabId = tabs[0].id;
             }
 
+            // CRITICAL: Ensure content script is loaded (handles page reloads)
+            const wasJustInjected = await this.ensureContentScriptLoaded(tabId);
+
+            // If scripts were just injected, give them extra time to fully initialize
+            if (wasJustInjected) {
+              console.log('⏳ Scripts just injected, waiting for full initialization...');
+              await this.wait(300); // Extra delay for message listeners to register
+            }
+
+            console.log('📤 Sending previewCode message to tab', tabId);
             await chrome.tabs.sendMessage(tabId, {
               action: 'previewCode',
               css: message.css,
@@ -477,6 +494,80 @@ class ServiceWorker {
             sendResponse({ success: true });
           } catch (error) {
             console.error('Preview variation error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'EXECUTE_PREVIEW_JS':
+          try {
+            // Get active tab
+            const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+            if (!tabs[0]) {
+              throw new Error('No active tab found');
+            }
+            const tabId = tabs[0].id;
+
+            console.log('🚀 Executing preview JS via chrome.scripting.executeScript (CSP-safe)');
+
+            // Build the complete code with waitForElement utility
+            const waitForElementUtility = `
+              if (typeof window.waitForElement === 'undefined') {
+                window.waitForElement = function(selector, callback, maxWait = 10000) {
+                  console.log('[Convert AI] Waiting for element:', selector);
+                  const start = Date.now();
+                  const interval = setInterval(() => {
+                    try {
+                      const element = document.querySelector(selector);
+                      if (element) {
+                        clearInterval(interval);
+                        console.log('[Convert AI] ✓ Found element:', selector);
+                        callback(element);
+                      } else if (Date.now() - start > maxWait) {
+                        clearInterval(interval);
+                        console.warn('[Convert AI] Element not found after timeout:', selector);
+                      }
+                    } catch (e) {
+                      clearInterval(interval);
+                      console.error('[Convert AI] Invalid selector:', selector, e);
+                    }
+                  }, 100);
+
+                  // AUTO-TRACK: Register interval with Cleanup Manager
+                  if (window.ConvertCleanupManager) {
+                    window.ConvertCleanupManager.registerInterval(interval, 'waitForElement: ' + selector);
+                  } else {
+                    console.warn('[Convert AI] Cleanup Manager not available, interval not tracked');
+                  }
+                };
+              }
+            `;
+
+            const fullCode = `
+              ${waitForElementUtility}
+
+              console.log('[Convert AI Preview] Starting variation ${message.variationNumber} execution...');
+              try {
+                ${message.js}
+                console.log('[Convert AI Preview] ✓ Variation ${message.variationNumber} executed successfully');
+              } catch (error) {
+                console.error('[Convert AI Preview] ✗ Execution error:', error);
+              }
+            `;
+
+            // Execute using chrome.scripting.executeScript (bypasses CSP)
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              world: 'MAIN', // Execute in page context, not isolated world
+              func: (code) => {
+                eval(code);
+              },
+              args: [fullCode]
+            });
+
+            console.log('✅ Preview JS executed successfully via chrome.scripting');
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('❌ Execute preview JS error:', error);
             sendResponse({ success: false, error: error.message });
           }
           break;
@@ -492,6 +583,9 @@ class ServiceWorker {
               }
               tabId = tabs[0].id;
             }
+
+            // CRITICAL: Ensure content script is loaded (handles page reloads)
+            await this.ensureContentScriptLoaded(tabId);
 
             await chrome.tabs.sendMessage(tabId, {
               action: 'testCode',
@@ -521,6 +615,94 @@ class ServiceWorker {
             sendResponse({ success: true });
           } catch (error) {
             console.error('Clear preview error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CLEAR_INJECTED_ASSETS':
+          try {
+            const tabId = message.tabId;
+            if (!tabId) {
+              throw new Error('No tab ID provided');
+            }
+
+            console.log('🧹 Clearing all injected assets on tab', tabId);
+
+            // Send RESET_VARIATION message to content script
+            await chrome.tabs.sendMessage(tabId, {
+              type: 'RESET_VARIATION',
+              keyPrefix: '' // Empty prefix clears all
+            });
+
+            console.log('✅ Injected assets cleared');
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('Clear injected assets error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'ENSURE_CLEANUP_MANAGER':
+          try {
+            // Get active tab
+            const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+            if (!tabs[0]) {
+              throw new Error('No active tab found');
+            }
+            const tabId = tabs[0].id;
+
+            console.log('🔧 Ensuring Cleanup Manager is initialized on tab', tabId);
+
+            // Read the cleanup manager file
+            const cleanupManagerCode = await fetch(chrome.runtime.getURL('utils/cleanup-manager.js')).then(r => r.text());
+
+            // Execute in MAIN world (page context)
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              world: 'MAIN',
+              func: (code) => {
+                eval(code);
+              },
+              args: [cleanupManagerCode]
+            });
+
+            console.log('✅ Cleanup Manager initialized');
+            sendResponse({ success: true });
+          } catch (error) {
+            console.error('❌ Ensure Cleanup Manager error:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'RESET_VIA_CLEANUP_MANAGER':
+          try {
+            // Get active tab
+            const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+            if (!tabs[0]) {
+              throw new Error('No active tab found');
+            }
+            const tabId = tabs[0].id;
+
+            console.log('🧹 Resetting via Cleanup Manager on tab', tabId);
+
+            // Execute reset in MAIN world
+            const result = await chrome.scripting.executeScript({
+              target: { tabId },
+              world: 'MAIN',
+              func: () => {
+                if (window.ConvertCleanupManager) {
+                  return window.ConvertCleanupManager.resetAll();
+                } else {
+                  throw new Error('Cleanup Manager not initialized');
+                }
+              }
+            });
+
+            const summary = result[0]?.result;
+            console.log('✅ Cleanup Manager reset complete:', summary);
+            sendResponse({ success: true, summary });
+          } catch (error) {
+            console.error('❌ Reset via Cleanup Manager error:', error);
             sendResponse({ success: false, error: error.message });
           }
           break;
@@ -578,6 +760,131 @@ class ServiceWorker {
           } catch (error) {
             console.error('After-injection capture failed:', error);
             sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'EXECUTE_TEST_SCRIPT':
+          try {
+            const startTime = Date.now();
+            const maxRetries = 2;
+            let lastError = null;
+
+            // Get active tab
+            let tabId = message.tabId;
+            if (!tabId) {
+              const tabs = await chrome.tabs.query({active: true, currentWindow: true});
+              if (!tabs[0]) {
+                throw new Error('No active tab found');
+              }
+              tabId = tabs[0].id;
+            }
+
+            console.log('🧪 Executing test script on tab', tabId);
+
+            // Configure timeout (default 10s, max 20s for complex tests)
+            let timeout = message.timeout || 10000;
+
+            // Build executable code (test patterns + test script)
+            const executableCode = this.buildTestExecutionCode(message.testScript);
+
+            // Retry loop with recovery
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+              try {
+                if (attempt > 0) {
+                  console.log(`🔄 Retry attempt ${attempt}/${maxRetries}...`);
+
+                  // Recovery strategy: Increase timeout on retry
+                  timeout = Math.min(timeout * 1.5, 20000);
+                  console.log(`  Increased timeout to ${timeout}ms`);
+
+                  // Add brief delay before retry
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+
+                if (timeout > 20000) {
+                  console.warn(`⚠️ Test timeout capped at 20s (requested: ${timeout}ms)`);
+                }
+                const finalTimeout = Math.min(timeout, 20000);
+
+                // Create timeout promise
+                const timeoutPromise = new Promise((_, reject) => {
+                  setTimeout(() => {
+                    reject(new Error(`Test execution timed out after ${finalTimeout}ms`));
+                  }, finalTimeout);
+                });
+
+                // Create execution promise
+                const executionPromise = chrome.scripting.executeScript({
+                  target: { tabId },
+                  world: 'MAIN',
+                  func: (code) => {
+                    return eval(code);
+                  },
+                  args: [executableCode]
+                });
+
+                // Race between execution and timeout
+                const result = await Promise.race([executionPromise, timeoutPromise]);
+
+                const testResults = result[0]?.result;
+
+                if (!testResults) {
+                  throw new Error('No results returned from test execution');
+                }
+
+                const duration = Date.now() - startTime;
+                console.log(`✅ Test execution complete (${duration}ms, attempt ${attempt + 1}):`, testResults);
+
+                sendResponse({
+                  success: true,
+                  results: testResults,
+                  metadata: {
+                    duration,
+                    timeout: finalTimeout,
+                    tabId,
+                    attempts: attempt + 1
+                  }
+                });
+                return; // Success - exit case
+              } catch (error) {
+                lastError = error;
+                console.error(`❌ Test execution attempt ${attempt + 1} failed:`, error.message);
+
+                // If this was the last attempt, fall through to error response
+                if (attempt === maxRetries) {
+                  break;
+                }
+
+                // Otherwise, continue to next attempt
+              }
+            }
+
+            // All retries exhausted
+            const duration = Date.now() - startTime;
+            console.error('❌ Test execution failed after all retries:', lastError);
+
+            sendResponse({
+              success: false,
+              error: lastError.message,
+              errorType: this.classifyTestError(lastError),
+              metadata: {
+                duration,
+                tabId: message.tabId,
+                attempts: maxRetries + 1
+              }
+            });
+          } catch (error) {
+            // Catch-all for unexpected errors
+            console.error('❌ Test execution unexpected error:', error);
+
+            sendResponse({
+              success: false,
+              error: error.message,
+              errorType: 'unexpected',
+              metadata: {
+                tabId: message.tabId
+              }
+            });
           }
           break;
 
@@ -719,12 +1026,13 @@ class ServiceWorker {
   }
 
   // NEW: Ensure content script is loaded before trying to use it
+  // Returns true if scripts were just injected, false if already loaded
   async ensureContentScriptLoaded(tabId) {
     try {
       // Try to ping the content script
       await chrome.tabs.sendMessage(tabId, { type: 'PING' });
       console.log('✅ Content scripts already loaded');
-      return true;
+      return false; // Already loaded, no injection needed
     } catch (error) {
       // Content script not loaded, inject all required scripts
       console.log('📦 Content scripts not found, injecting all dependencies...');
@@ -747,7 +1055,7 @@ class ServiceWorker {
         try {
           await chrome.tabs.sendMessage(tabId, { type: 'PING' });
           console.log('✅ All content scripts injected and verified');
-          return true;
+          return true; // Just injected
         } catch (pingError) {
           throw new Error('Content scripts injected but failed to respond');
         }
@@ -1011,9 +1319,44 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
         logger.log('Testing skipped', 'No tabId available');
       }
 
+      // ✨ NEW: Generate test script for interactive validation
+      let testScriptData = null;
+
+      // Check settings (defaults to enabled if not set)
+      const testScriptSettings = mergedSettings?.testScriptGeneration || { enabled: true, timeout: 10000 };
+
+      if (testScriptSettings.enabled !== false) {
+        try {
+          logger.log('Generating test script', 'Analyzing for interactive features...');
+
+          // Inline simple test script generation (avoiding external dependencies)
+          const testScript = await this.generateTestScript(
+            {
+              css: parsedCode.variations[0]?.css || '',
+              js: parsedCode.variations[0]?.js || ''
+            },
+            description,
+            aiSettings
+          );
+
+          if (testScript) {
+            testScriptData = testScript;
+            logger.log('Test script generated', `interactions=${testScript.requirements?.types?.join(',') || 'none'}`);
+          } else {
+            logger.log('Test script skipped', 'No interactive features detected');
+          }
+        } catch (error) {
+          logger.error('Test script generation failed', error.message);
+          // Don't throw - test script is optional
+        }
+      } else {
+        logger.log('Test script generation disabled', 'Skipping per user settings');
+      }
+
       return {
         code: parsedCode,
         testResults: testResults,
+        testScript: testScriptData, // NEW: Include test script
         usage: this.normalizeUsage(aiResponse),
         logs: logger.entries()
       };
@@ -1349,10 +1692,23 @@ Elements are ranked by importance (position, size, interactivity).
 4. Match by: text content, tag type, position on page
 5. Vanilla JS only - no jQuery
 6. IMPLEMENT ALL requested changes (text AND color if both mentioned)
-7. Prevent duplicates: if(element.dataset.varApplied) return;
+7. Prevent duplicates: if(element.dataset.varApplied) return; element.dataset.varApplied='1';
 8. **FOR COLOR CHANGES: Use CSS section with !important flags (most reliable)**
 9. Text changes: element.textContent='new text' (use JS)
 10. CSS overrides inline styles - prefer CSS for visual changes
+11. **NOTE: waitForElement automatically registers intervals with Cleanup Manager**
+    - All intervals are auto-tracked for cleanup between previews
+    - You do NOT need to manually register intervals
+    - Simply use waitForElement() and cleanup happens automatically
+
+🔴 **REFINEMENT RULE (IF "CURRENT GENERATED CODE" IS IN REQUEST):**
+If the REQUEST includes "CURRENT GENERATED CODE" section:
+- This is a REFINEMENT of existing code
+- You MUST include ALL existing code in your output
+- You MUST add the new changes on top
+- DO NOT remove, replace, or simplify existing code
+- Think of it as: output = existing code + new changes
+- The user wants to ADD features, not REPLACE them
 
 **SELECTOR REQUIREMENT - READ CAREFULLY:**
 Every element in the database has a "selector" field - you MUST copy this exact selector.
@@ -1859,6 +2215,9 @@ Generate JSON now.`;
       requestBody.temperature = 0.5; // Reduced from 0.7 for more consistent output
     }
 
+    // CRITICAL: Force JSON output mode (prevents markdown code blocks)
+    requestBody.response_format = { type: "json_object" };
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -1953,12 +2312,55 @@ Generate JSON now.`;
     // ✨ NEW: Try parsing as JSON first (structured output)
     let cleanedResponse = response.trim();
 
-    // Remove markdown code blocks if present
-    if (cleanedResponse.startsWith('```json') || cleanedResponse.startsWith('```')) {
-      cleanedResponse = cleanedResponse
-        .replace(/^```(?:json)?\s*\n/i, '')
-        .replace(/\n```\s*$/i, '');
-      console.log('🧹 Removed markdown code block wrapper');
+    // Extract JSON from markdown code blocks (handles text before/after)
+    // CRITICAL: Find ALL code blocks and pick the one that's valid JSON with variations
+    const allCodeBlocks = [];
+
+    // Find all ```json blocks
+    const jsonBlocks = cleanedResponse.matchAll(/```json\s*\n([\s\S]*?)\n```/gi);
+    for (const match of jsonBlocks) {
+      allCodeBlocks.push({ content: match[1].trim(), type: 'json' });
+    }
+
+    // Find all ``` blocks without language specifier
+    const genericBlocks = cleanedResponse.matchAll(/```\s*\n([\s\S]*?)\n```/gi);
+    for (const match of genericBlocks) {
+      const content = match[1].trim();
+      if (content.startsWith('{')) {
+        allCodeBlocks.push({ content, type: 'generic' });
+      }
+    }
+
+    // Try each block and pick the first one that's valid JSON with variations
+    let foundValidJSON = false;
+    for (const block of allCodeBlocks) {
+      try {
+        const parsed = JSON.parse(block.content);
+        if (parsed.variations && Array.isArray(parsed.variations) && parsed.variations.length > 0) {
+          cleanedResponse = block.content;
+          console.log(`🧹 Extracted valid JSON from ${block.type} code block with ${parsed.variations.length} variations`);
+          foundValidJSON = true;
+          break;
+        }
+      } catch (e) {
+        // Not valid JSON, try next block
+      }
+    }
+
+    if (!foundValidJSON && allCodeBlocks.length > 0) {
+      // Fallback: use the last code block if no valid JSON found
+      cleanedResponse = allCodeBlocks[allCodeBlocks.length - 1].content;
+      console.log('⚠️ Using last code block as fallback (no valid JSON with variations found)');
+    }
+
+    // CRITICAL: Handle case where AI adds text BEFORE raw JSON (no code blocks)
+    // Example: "I'll update the code...\n\n{\"variations\": [...]}"
+    if (!foundValidJSON && !cleanedResponse.startsWith('{')) {
+      const firstBraceIndex = cleanedResponse.indexOf('{');
+      if (firstBraceIndex > 0) {
+        console.log('⚠️ Detected explanatory text before JSON, extracting JSON portion...');
+        cleanedResponse = cleanedResponse.substring(firstBraceIndex);
+      }
     }
 
     // Try JSON parsing
@@ -1989,7 +2391,50 @@ Generate JSON now.`;
           };
         }
       } catch (jsonError) {
-        console.warn('⚠️ JSON parsing failed, falling back to text parsing:', jsonError.message);
+        console.warn('⚠️ JSON parsing failed, trying CSS/JS block parser:', jsonError.message);
+      }
+    }
+
+    // NEW: Try parsing separate CSS/JS code blocks (handles when AI "forgets" JSON format)
+    if (!cleanedResponse.startsWith('{') && cleanedResponse.includes('```css')) {
+      console.log('🔄 Detected separate CSS/JS code blocks, attempting to parse...');
+
+      try {
+        const cssBlocks = [];
+        const jsBlocks = [];
+
+        // Extract all CSS blocks
+        const cssMatches = cleanedResponse.matchAll(/```css\s*\n([\s\S]*?)\n```/gi);
+        for (const match of cssMatches) {
+          cssBlocks.push(match[1].trim());
+        }
+
+        // Extract all JavaScript blocks
+        const jsMatches = cleanedResponse.matchAll(/```(?:javascript|js)\s*\n([\s\S]*?)\n```/gi);
+        for (const match of jsMatches) {
+          jsBlocks.push(match[1].trim());
+        }
+
+        if (cssBlocks.length > 0 || jsBlocks.length > 0) {
+          console.log(`📦 Found ${cssBlocks.length} CSS blocks and ${jsBlocks.length} JS blocks`);
+
+          // Combine into JSON structure
+          const combinedCSS = cssBlocks.join('\n\n');
+          const combinedJS = jsBlocks.join('\n\n');
+
+          return {
+            variations: [{
+              number: 1,
+              name: 'Variation 1',
+              css: combinedCSS,
+              js: combinedJS
+            }],
+            globalCSS: '',
+            globalJS: ''
+          };
+        }
+      } catch (blockParseError) {
+        console.warn('⚠️ CSS/JS block parsing failed:', blockParseError.message);
       }
     }
 
@@ -2005,8 +2450,36 @@ Generate JSON now.`;
     let currentSection = null;
     let currentContent = '';
     let variationHeadersFound = 0;
+    let currentVariationName = null;
 
     for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Detect variation title format: --- Title ---
+      if (trimmed.match(/^---\s+(.+?)\s+---$/)) {
+        const match = trimmed.match(/^---\s+(.+?)\s+---$/);
+        currentVariationName = match[1];
+        variationHeadersFound++;
+        console.log(`Found variation title: ${currentVariationName}`);
+        continue;
+      }
+
+      // Detect CSS: or JS: section markers
+      if (trimmed === 'CSS:' || trimmed === 'JS:' || trimmed === 'JavaScript:') {
+        if (currentSection && currentContent.trim()) {
+          this.addToSection(sections, currentSection, currentContent.trim());
+        }
+        const type = trimmed.startsWith('CSS') ? 'css' : 'js';
+        currentSection = {
+          type: 'variation',
+          number: variationHeadersFound || 1,
+          name: currentVariationName || 'Unnamed Variation',
+          section: type
+        };
+        currentContent = '';
+        continue;
+      }
+
       // More flexible matching: detect variation headers even without // prefix
       const isVariationHeader = (
         (line.includes('VARIATION') && line.includes('//')) ||
@@ -2359,22 +2832,59 @@ Output the COMPLETE code (previous changes + new changes combined).`
 Generate code based on the USER FEEDBACK.
 This is the first iteration, so no previous changes to preserve.`;
 
-      const finalPrompt = `${basePrompt}
+      const outputFormatRequirement = `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 OUTPUT FORMAT REQUIREMENT - READ THIS CAREFULLY 🚨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You MUST respond with ONLY valid JSON. No explanations, no text before or after.
+
+❌ WRONG:
+"I'll add the close button. Here's the code:
+
+{ "variations": [...] }"
+
+❌ WRONG:
+\`\`\`css
+.countdown-banner { ... }
+\`\`\`
+
+✅ CORRECT:
+{
+  "variations": [{
+    "number": 1,
+    "name": "Variation Name",
+    "css": "/* CSS here */",
+    "js": "/* JS here */"
+  }],
+  "globalCSS": "",
+  "globalJS": ""
+}
+
+DO NOT add any text before the opening { or after the closing }.
+Your ENTIRE response must be parseable as JSON.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+      const finalPrompt = `${outputFormatRequirement}
+
+${basePrompt}
 ${adjustmentContext}
 ${adjustmentInstructions}
 
-**OUTPUT REQUIREMENTS:**
-Return the COMPLETE code including:
-- All changes from PREVIOUS IMPLEMENTATION (if any)
-- New changes from USER FEEDBACK
-- Proper duplication prevention for all changes
-- Same output structure (VARIATION 1 - Name, VARIATION CSS, VARIATION JAVASCRIPT, etc.)
+**FINAL CHECKLIST BEFORE YOU RESPOND:**
+✅ Did I prepare the COMPLETE code (old + new changes)?
+✅ Is my response VALID JSON starting with { and ending with }?
+✅ Did I remove ALL explanatory text?
+✅ Did I include ALL previous code + new changes?
 
-Generate the complete, merged code now.`;
+${outputFormatRequirement}
+
+Generate the complete, merged code as JSON NOW (no other text):`;
 
       const systemMessage = previousCode
-        ? 'You are an expert A/B testing developer who iteratively refines code. When previous code exists, you PRESERVE all existing changes and ADD new ones. You NEVER remove or replace working code from previous iterations. CRITICAL: When Visual QA feedback is provided, you MUST implement every fix mentioned - this is automated quality control that identifies real visual problems.'
-        : 'You are an expert A/B testing developer who generates clean, production-ready code using only vanilla JavaScript. CRITICAL: When Visual QA feedback is provided, you MUST implement every fix mentioned - this is automated quality control that identifies real visual problems.';
+        ? 'You are an expert A/B testing developer who iteratively refines code. When previous code exists, you PRESERVE all existing changes and ADD new ones. You NEVER remove or replace working code from previous iterations. CRITICAL: (1) You MUST respond with ONLY valid JSON - no explanatory text before or after. (2) When Visual QA feedback is provided, you MUST implement every fix mentioned.'
+        : 'You are an expert A/B testing developer who generates clean, production-ready code using only vanilla JavaScript. CRITICAL: (1) You MUST respond with ONLY valid JSON - no explanatory text before or after. (2) When Visual QA feedback is provided, you MUST implement every fix mentioned.';
 
       const messages = [{
         role: 'system',
@@ -3504,7 +4014,8 @@ Generate the complete, merged code now.`;
       userRequest,
       chatHistory,
       variation,
-      elementDatabase
+      elementDatabase,
+      testResults  // NEW: Test results from interactive validation
     } = data;
 
     if (!beforeScreenshot || !afterScreenshot) {
@@ -3530,8 +4041,8 @@ Generate the complete, merged code now.`;
         };
       }
 
-      // Build Visual QA prompt
-      const visualQAPrompt = this.buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase);
+      // Build Visual QA prompt (now includes test results)
+      const visualQAPrompt = this.buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase, testResults);
 
       // Call AI with screenshots
       const provider = settings.provider || 'anthropic';
@@ -3556,7 +4067,7 @@ Generate the complete, merged code now.`;
     }
   }
 
-  buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase) {
+  buildVisualQAPrompt(userRequest, chatHistory, variation, elementDatabase, testResults) {
     const chatContext = chatHistory && chatHistory.length > 0
       ? `\n\n## Conversation History:\n${chatHistory.map(msg => `**${msg.role}**: ${msg.content}`).join('\n')}`
       : '';
@@ -3564,6 +4075,23 @@ Generate the complete, merged code now.`;
     const elementContext = elementDatabase && elementDatabase.elements
       ? `\n\n## Page Elements:\n${elementDatabase.elements.slice(0, 10).map(el => `- ${el.tag}${el.selector ? ` (${el.selector})` : ''}: "${el.text?.substring(0, 50) || ''}"`).join('\n')}`
       : '';
+
+    // NEW: Add test results context
+    const testContext = testResults ? `
+
+## Interactive Test Results:
+**Overall Status**: ${testResults.overallStatus || 'unknown'}
+
+${testResults.interactions?.length > 0 ? `**Interactions Tested** (${testResults.interactions.length}):
+${testResults.interactions.map(int => `- ${int.type} on ${int.target}: ${int.success ? '✅ SUCCESS' : '❌ FAILED'}`).join('\n')}
+` : ''}
+${testResults.validations?.length > 0 ? `**Validations** (${testResults.validations.length}):
+${testResults.validations.map(val => `- ${val.test}: ${val.passed ? '✅ PASS' : '❌ FAIL'}${val.expected && val.actual ? ` (expected: ${val.expected}, actual: ${val.actual})` : ''}`).join('\n')}
+` : ''}
+${testResults.error ? `**Test Error**: ${testResults.error}` : ''}
+
+**Confidence Modifier**: ${testResults.overallStatus === 'passed' ? '+20% (behavioral tests passed)' : testResults.overallStatus === 'failed' ? '-30% (behavioral tests failed)' : '0% (no test data)'}
+` : '';
 
     return `You are a visual QA expert validating A/B test code changes.
 
@@ -3584,6 +4112,7 @@ ${variation.css || '/* No CSS */'}
 ${variation.js || '// No JavaScript'}
 \`\`\`
 ${elementContext}
+${testContext}
 
 ## Your Task:
 Compare the BEFORE and AFTER screenshots. Validate:
@@ -3591,12 +4120,15 @@ Compare the BEFORE and AFTER screenshots. Validate:
 1. **Did the changes actually happen?** - Check if the visual changes match what the code should do
 2. **Are they correct?** - Do they match the user's request?
 3. **Any visual bugs?** - Layout breaks, overlapping elements, hidden content, wrong colors, etc.
+${testResults ? '4. **Behavioral validation** - Consider the test results above when scoring' : ''}
 
 **IMPORTANT**:
 - Be strict about correctness - if the user asked for "green button" but it's blue, that's FAILED
 - Check if text changes actually applied
 - Verify color changes are visible
 - Look for layout shifts or broken designs
+${testResults && testResults.overallStatus === 'passed' ? '- ✅ Interactive tests PASSED - increase confidence in correctness' : ''}
+${testResults && testResults.overallStatus === 'failed' ? '- ⚠️ Interactive tests FAILED - lower confidence, investigate failures' : ''}
 
 Respond in JSON format:
 \`\`\`json
@@ -3859,6 +4391,512 @@ Respond in JSON format:
     }
     
     return { critical, warnings };
+  }
+
+  /**
+   * Generate test script for interactive feature validation
+   * @param {Object} code - Implementation code { css, js }
+   * @param {string} userRequest - Original user request
+   * @param {Object} aiSettings - AI provider settings
+   * @returns {Promise<Object|null>} - Test script data or null
+   */
+  async generateTestScript(code, userRequest, aiSettings) {
+    // Step 1: Analyze if interactions are present
+    const requirements = this.analyzeInteractionRequirements(code, userRequest);
+
+    // Step 2: Skip if no interactions
+    if (!requirements.hasInteractions) {
+      console.log('[Test Script] No interactions detected, skipping');
+      return null;
+    }
+
+    console.log('[Test Script] Detected interactions:', requirements.types.join(', '));
+
+    // Step 3: Build prompt for AI
+    const prompt = this.buildTestScriptPrompt(code, userRequest, requirements);
+
+    // Step 4: Call AI (using same provider as code generation)
+    try {
+      const response = await this.callAI([{
+        role: 'system',
+        content: 'You are an expert at generating test scripts for web A/B tests. Generate JavaScript test functions using the TestPatterns API.'
+      }, {
+        role: 'user',
+        content: [{ type: 'text', text: prompt }]
+      }], {
+        ...aiSettings,
+        model: aiSettings.provider === 'anthropic' ? 'claude-3-5-haiku-20241022' : 'gpt-4o-mini' // Use cheaper models for test generation
+      });
+
+      const testScript = this.parseTestScriptResponse(response.content);
+
+      if (!testScript) {
+        console.warn('[Test Script] Failed to parse AI response');
+        return null;
+      }
+
+      return {
+        testScript,
+        requirements,
+        suggestedDuration: requirements.suggestedDuration
+      };
+    } catch (error) {
+      console.error('[Test Script] Generation failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Analyze implementation code for interaction requirements
+   * @param {Object} code - { css, js }
+   * @param {string} userRequest - User request
+   * @returns {Object} - { hasInteractions, types[], complexity, suggestedDuration }
+   */
+  analyzeInteractionRequirements(code, userRequest) {
+    const interactionPatterns = {
+      click: /addEventListener\(['"]click['"]|\.click\(|onclick=/gi,
+      hover: /addEventListener\(['"]mouse(enter|over)['"]|:hover/gi,
+      scroll: /addEventListener\(['"]scroll['"]|window\.scrollTo|scrollIntoView/gi,
+      exitIntent: /mouseout|mouse.*leave|clientY.*-/gi,
+      session: /sessionStorage\.(get|set)Item/gi,
+      local: /localStorage\.(get|set)Item/gi,
+      modal: /modal|popup|overlay|\.show\(|\.open\(/gi,
+      form: /input|textarea|select|form|\.value\s*=/gi,
+      timer: /setTimeout|setInterval/gi,
+      animation: /animate|transition|transform|@keyframes/gi
+    };
+
+    const requirements = {
+      hasInteractions: false,
+      types: [],
+      complexity: 'simple',
+      suggestedDuration: 3000
+    };
+
+    const fullCode = `${code.css || ''}\n${code.js || ''}`;
+    const requestLower = userRequest.toLowerCase();
+
+    // Detect interaction types
+    for (const [type, pattern] of Object.entries(interactionPatterns)) {
+      if (pattern.test(fullCode) || requestLower.includes(type)) {
+        requirements.types.push(type);
+        requirements.hasInteractions = true;
+      }
+    }
+
+    // Determine complexity
+    if (requirements.types.length === 0) {
+      requirements.complexity = 'simple';
+      requirements.suggestedDuration = 1000;
+    } else if (requirements.types.length <= 2) {
+      requirements.complexity = 'medium';
+      requirements.suggestedDuration = 3000;
+    } else {
+      requirements.complexity = 'complex';
+      requirements.suggestedDuration = 5000;
+    }
+
+    // Adjust for specific types
+    if (requirements.types.includes('timer')) {
+      requirements.suggestedDuration = Math.max(requirements.suggestedDuration, 3000);
+    }
+    if (requirements.types.includes('animation')) {
+      requirements.suggestedDuration = Math.max(requirements.suggestedDuration, 2000);
+    }
+
+    return requirements;
+  }
+
+  /**
+   * Build AI prompt for test script generation
+   * @param {Object} code - Implementation code
+   * @param {string} userRequest - User request
+   * @param {Object} requirements - Interaction requirements
+   * @returns {string} - Prompt
+   */
+  buildTestScriptPrompt(code, userRequest, requirements) {
+    const interactionTypes = requirements.types.join(', ') || 'static';
+
+    return `Generate a test script to validate this A/B test implementation.
+
+**USER REQUEST:** ${userRequest}
+
+**IMPLEMENTATION CODE:**
+CSS:
+\`\`\`css
+${code.css || '/* No CSS */'}
+\`\`\`
+
+JavaScript:
+\`\`\`javascript
+${code.js || '/* No JavaScript */'}
+\`\`\`
+
+**DETECTED INTERACTIONS:** ${interactionTypes}
+
+**YOUR TASK:**
+Generate a JavaScript test function named \`testVariation()\` that:
+1. Uses TestPatterns API methods (waitForElement, simulateClick, validate, etc.)
+2. Tests the interactive features detected above
+3. Returns results in this format:
+\`\`\`javascript
+{
+  interactions: [{ type: 'click', target: 'selector', success: true }],
+  validations: [{ test: 'description', passed: true, expected: 'value', actual: 'value' }],
+  overallStatus: 'passed' // or 'failed' or 'error'
+}
+\`\`\`
+
+**TESTPATTERNS API AVAILABLE:**
+- TestPatterns.waitForElement(selector, timeout)
+- TestPatterns.simulateClick(target)
+- TestPatterns.simulateHover(target)
+- TestPatterns.isVisible(target)
+- TestPatterns.exists(selector)
+- TestPatterns.getSessionStorage(key)
+- TestPatterns.getLocalStorage(key)
+- TestPatterns.validate(testName, condition, expected, actual)
+- TestPatterns.wait(ms)
+
+**CRITICAL REQUIREMENTS:**
+✅ Return ONLY the test function code
+✅ Function must be named \`testVariation\`
+✅ Use try/catch for all operations
+✅ Return results object even if errors occur
+✅ Mark failed tests with passed: false (don't throw)
+
+Generate the test function now:`;
+  }
+
+  /**
+   * Parse AI test script response
+   * @param {string} response - AI response
+   * @returns {string|null} - Test script code or null
+   */
+  parseTestScriptResponse(response) {
+    try {
+      let cleaned = response.trim();
+
+      // Extract from code block if present
+      if (cleaned.includes('```')) {
+        const match = cleaned.match(/```(?:javascript|js)?\s*\n([\s\S]*?)\n```/i);
+        if (match) {
+          cleaned = match[1].trim();
+        }
+      }
+
+      // Verify function exists
+      if (!cleaned.includes('async function testVariation') && !cleaned.includes('function testVariation')) {
+        console.warn('[Test Script] No testVariation function found in response');
+        return null;
+      }
+
+      return cleaned;
+    } catch (error) {
+      console.error('[Test Script] Parse error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Classify test execution error for better recovery
+   * @param {Error} error - Error object
+   * @returns {string} - Error type
+   */
+  classifyTestError(error) {
+    const message = error.message.toLowerCase();
+
+    if (message.includes('timeout') || message.includes('timed out')) {
+      return 'timeout';
+    }
+
+    if (message.includes('element not found') || message.includes('selector')) {
+      return 'selector-not-found';
+    }
+
+    if (message.includes('no results') || message.includes('null')) {
+      return 'no-results';
+    }
+
+    if (message.includes('syntax') || message.includes('unexpected token')) {
+      return 'javascript-error';
+    }
+
+    if (message.includes('tab') || message.includes('not found')) {
+      return 'tab-error';
+    }
+
+    return 'unknown';
+  }
+
+  /**
+   * Build executable code for test script (TestPatterns + test function + wrapper)
+   * @param {string} testScript - AI-generated test function
+   * @returns {string} - Complete executable code
+   */
+  buildTestExecutionCode(testScript) {
+    // Get TestPatterns library code
+    const testPatternsCode = this.getTestPatternsCode();
+
+    return `
+(async function() {
+  const executionResults = {
+    startTime: Date.now(),
+    endTime: null,
+    status: 'running',
+    error: null,
+    testResults: null
+  };
+
+  try {
+    // Inject TestPatterns library
+    ${testPatternsCode}
+
+    // Inject and execute test function
+    ${testScript}
+
+    // Execute test
+    const results = await testVariation();
+    executionResults.testResults = results;
+    executionResults.status = results.overallStatus || 'completed';
+    executionResults.endTime = Date.now();
+    executionResults.duration = executionResults.endTime - executionResults.startTime;
+
+    console.log('[Test Execution] Completed:', executionResults);
+    return executionResults;
+  } catch (error) {
+    executionResults.status = 'error';
+    executionResults.error = error.message;
+    executionResults.endTime = Date.now();
+    executionResults.duration = executionResults.endTime - executionResults.startTime;
+    console.error('[Test Execution] Failed:', error);
+    return executionResults;
+  }
+})();
+`;
+  }
+
+  /**
+   * Get TestPatterns library code as string
+   * @returns {string} - TestPatterns code
+   */
+  getTestPatternsCode() {
+    // Return TestPatterns library inline (from test-patterns.js)
+    return `
+const TestPatterns = {
+  async waitForElement(selector, timeout = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const element = document.querySelector(selector);
+      if (element) {
+        console.log(\`[Test] ✓ Found element: \${selector}\`);
+        return element;
+      }
+      await this.wait(100);
+    }
+    throw new Error(\`Element not found after \${timeout}ms: \${selector}\`);
+  },
+
+  wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  },
+
+  async simulateClick(target) {
+    try {
+      const element = typeof target === 'string'
+        ? await this.waitForElement(target, 3000)
+        : target;
+      element.click();
+      console.log(\`[Test] ✓ Clicked: \${typeof target === 'string' ? target : element.tagName}\`);
+      await this.wait(300);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Click failed:', error);
+      return false;
+    }
+  },
+
+  async simulateHover(target) {
+    try {
+      const element = typeof target === 'string'
+        ? await this.waitForElement(target, 3000)
+        : target;
+      element.dispatchEvent(new MouseEvent('mouseenter', {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      }));
+      console.log(\`[Test] ✓ Hovered: \${typeof target === 'string' ? target : element.tagName}\`);
+      await this.wait(200);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Hover failed:', error);
+      return false;
+    }
+  },
+
+  async simulateExitIntent() {
+    try {
+      document.dispatchEvent(new MouseEvent('mouseout', {
+        bubbles: true,
+        cancelable: true,
+        clientY: -10,
+        relatedTarget: null
+      }));
+      console.log('[Test] ✓ Exit intent triggered');
+      await this.wait(500);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Exit intent failed:', error);
+      return false;
+    }
+  },
+
+  async scrollTo(yPosition) {
+    try {
+      window.scrollTo({ top: yPosition, behavior: 'smooth' });
+      console.log(\`[Test] ✓ Scrolled to: \${yPosition}px\`);
+      await this.wait(500);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Scroll failed:', error);
+      return false;
+    }
+  },
+
+  async scrollToElement(target) {
+    try {
+      const element = typeof target === 'string'
+        ? await this.waitForElement(target, 3000)
+        : target;
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      console.log(\`[Test] ✓ Scrolled to element: \${typeof target === 'string' ? target : element.tagName}\`);
+      await this.wait(500);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Scroll to element failed:', error);
+      return false;
+    }
+  },
+
+  async fillInput(target, value) {
+    try {
+      const element = typeof target === 'string'
+        ? await this.waitForElement(target, 3000)
+        : target;
+      element.value = value;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      console.log(\`[Test] ✓ Filled input: \${typeof target === 'string' ? target : element.tagName}\`);
+      return true;
+    } catch (error) {
+      console.error('[Test] ✗ Fill input failed:', error);
+      return false;
+    }
+  },
+
+  isVisible(target) {
+    try {
+      const element = typeof target === 'string'
+        ? document.querySelector(target)
+        : target;
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      const isHidden = style.display === 'none' ||
+                      style.visibility === 'hidden' ||
+                      style.opacity === '0';
+      return !isHidden && element.offsetParent !== null;
+    } catch (error) {
+      return false;
+    }
+  },
+
+  exists(selector) {
+    return !!document.querySelector(selector);
+  },
+
+  getStyle(target, property) {
+    try {
+      const element = typeof target === 'string'
+        ? document.querySelector(target)
+        : target;
+      if (!element) return null;
+      return window.getComputedStyle(element)[property];
+    } catch (error) {
+      return null;
+    }
+  },
+
+  getSessionStorage(key) {
+    try {
+      return sessionStorage.getItem(key);
+    } catch (error) {
+      console.error('[Test] ✗ SessionStorage access failed:', error);
+      return null;
+    }
+  },
+
+  getLocalStorage(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      console.error('[Test] ✗ LocalStorage access failed:', error);
+      return null;
+    }
+  },
+
+  countElements(selector) {
+    return document.querySelectorAll(selector).length;
+  },
+
+  getText(target) {
+    try {
+      const element = typeof target === 'string'
+        ? document.querySelector(target)
+        : target;
+      return element ? element.textContent.trim() : null;
+    } catch (error) {
+      return null;
+    }
+  },
+
+  captureState(label = 'unnamed') {
+    return {
+      label,
+      timestamp: Date.now(),
+      url: window.location.href,
+      scrollPosition: {
+        x: window.scrollX,
+        y: window.scrollY
+      },
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight
+      }
+    };
+  },
+
+  async validate(testName, condition, expectedValue = '', actualValue = '') {
+    const passed = typeof condition === 'function' ? await condition() : condition;
+    const result = {
+      test: testName,
+      passed,
+      expected: expectedValue,
+      actual: actualValue,
+      timestamp: Date.now()
+    };
+    console.log(\`[Test] \${passed ? '✓' : '✗'} \${testName}\`);
+    if (!passed && expectedValue && actualValue) {
+      console.log(\`  Expected: \${expectedValue}, Actual: \${actualValue}\`);
+    }
+    return result;
+  }
+};
+
+if (typeof window !== 'undefined') {
+  window.TestPatterns = TestPatterns;
+}
+`;
   }
 }
 

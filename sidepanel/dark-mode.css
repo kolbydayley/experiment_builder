@@ -170,6 +170,22 @@ html,
   animation: messageSlideIn 0.3s ease;
 }
 
+/* User messages on the right */
+.chat-user-message {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  margin-left: auto;
+  max-width: 85%;
+}
+
+/* Assistant messages on the left */
+.chat-assistant-message {
+  flex-direction: row;
+  justify-content: flex-start;
+  margin-right: auto;
+  max-width: 85%;
+}
+
 @keyframes messageSlideIn {
   from {
     opacity: 0;
@@ -183,27 +199,11 @@ html,
 
 .user-avatar,
 .assistant-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
-}
-
-.user-avatar {
-  background: var(--primary, #4a9eff);
-  color: white;
-}
-
-.assistant-avatar {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: none !important; /* Hide avatars - just show text bubbles */
 }
 
 .typing-avatar {
-  font-size: 16px;
+  display: none !important; /* Hide typing avatar */
 }
 
 .message-content {
@@ -212,6 +212,17 @@ html,
   padding: 12px 16px;
   border-radius: 12px;
   border: 1px solid var(--border, #3a3a3a);
+}
+
+/* User message styling */
+.chat-user-message .message-content {
+  background: linear-gradient(135deg, #4a9eff 0%, #3b7fd9 100%);
+  border: none;
+  text-align: left; /* Keep text left-aligned but bubble is on right */
+}
+
+.chat-user-message .message-content p {
+  color: white;
 }
 
 .message-content p {
@@ -324,27 +335,63 @@ html,
 
 /* Element Badge in User/Assistant Messages */
 .message-element-badge {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
-  background: linear-gradient(135deg, #4a9eff 0%, #3b82f6 100%);
-  border: 1px solid #5aa8ff;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 3px solid #4a9eff;
   border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
-  box-shadow: 0 2px 6px rgba(74, 158, 255, 0.25);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .message-element-badge .element-icon {
   font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.message-element-badge .element-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .message-element-badge .element-tag {
   font-size: 11px;
+  font-weight: 600;
+  color: #4a9eff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .message-element-badge .element-text {
   font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Special styling for user messages */
+.chat-user-message .message-element-badge {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-left: 3px solid rgba(255, 255, 255, 0.8);
+}
+
+.chat-user-message .message-element-badge .element-tag {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.chat-user-message .message-element-badge .element-text {
+  color: rgba(255, 255, 255, 0.75);
 }
 
 @keyframes typingBounce {
@@ -1251,6 +1298,45 @@ input[type="text"]:focus {
   background: #4ade80 !important;
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.6) !important;
   flex-shrink: 0 !important;
+  transition: all 0.3s ease !important;
+}
+
+/* Status variations */
+.model-status-dot.status-success {
+  background: #4ade80 !important;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6) !important;
+}
+
+.model-status-dot.status-error {
+  background: #ef4444 !important;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.7) !important;
+  animation: pulse-error 2s ease-in-out infinite !important;
+}
+
+.model-status-dot.status-loading {
+  background: #f59e0b !important;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6) !important;
+  animation: pulse-loading 1.5s ease-in-out infinite !important;
+}
+
+@keyframes pulse-error {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes pulse-loading {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* ========================================

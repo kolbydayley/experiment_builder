@@ -33,9 +33,22 @@ class PageCapture {
 
       // Handle code preview (temporary injection)
       if (message.action === 'previewCode') {
+        console.log('🎯 [Content Script] Received previewCode message:', {
+          hasCSS: !!message.css,
+          hasJS: !!message.js,
+          variationNumber: message.variationNumber,
+          cssLength: message.css?.length || 0,
+          jsLength: message.js?.length || 0
+        });
         this.previewCode(message.css, message.js, message.variationNumber)
-          .then(() => sendResponse({ success: true }))
-          .catch(error => sendResponse({ success: false, error: error.message }));
+          .then(() => {
+            console.log('✅ [Content Script] previewCode completed successfully');
+            sendResponse({ success: true });
+          })
+          .catch(error => {
+            console.error('❌ [Content Script] previewCode failed:', error);
+            sendResponse({ success: false, error: error.message });
+          });
         return true;
       }
 
@@ -124,7 +137,10 @@ class PageCapture {
   }
 
   clearInjectedAssets(prefix) {
-    // Remove injected CSS and JS tags
+    console.log('🧹 [LEGACY] clearInjectedAssets called with prefix:', prefix);
+    console.log('⚠️ This is legacy code - Cleanup Manager should handle most cleanup');
+
+    // Remove injected CSS and JS tags (for old applyVariation method)
     document.querySelectorAll('[data-convert-ai-style]').forEach(node => {
       if (!prefix || node.dataset.convertAiStyle?.startsWith(prefix)) {
         node.remove();
@@ -135,8 +151,9 @@ class PageCapture {
         node.remove();
       }
     });
-    
-    console.log(`🧹 Cleared injected CSS and JS assets for prefix: ${prefix}`);
+
+    console.log(`🧹 [LEGACY] Cleared injected CSS/JS tags for prefix: ${prefix}`);
+    console.log('⚠️ NOTE: Intervals and DOM modifications handled by Cleanup Manager');
   }
 
   applyVariation({ css, js, key }) {
@@ -922,11 +939,31 @@ class PageCapture {
   // Code injection methods for testing variations
   async previewCode(css, js, variationNumber) {
     console.log(`🧪 Previewing variation ${variationNumber}`);
-    
-    // Clear any existing preview
-    this.clearPreviewElements();
-    
-    // Inject CSS
+
+    // STEP 1: Ensure Cleanup Manager is initialized (runs in MAIN world)
+    console.log('🔧 Ensuring Cleanup Manager is initialized...');
+    await chrome.runtime.sendMessage({
+      type: 'ENSURE_CLEANUP_MANAGER'
+    });
+
+    // STEP 2: Use Cleanup Manager for atomic reset (runs in MAIN world)
+    console.log('🧹 Performing atomic reset via Cleanup Manager...');
+    const resetResponse = await chrome.runtime.sendMessage({
+      type: 'RESET_VIA_CLEANUP_MANAGER'
+    });
+
+    if (!resetResponse || !resetResponse.success) {
+      console.warn('⚠️ Cleanup Manager reset failed, falling back to legacy cleanup');
+      this.clearPreviewElements();
+      this.clearInjectedAssets('');
+    } else {
+      console.log(`✅ Cleanup Manager reset complete:`, resetResponse.summary);
+    }
+
+    // Wait for cleanup to fully complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // STEP 3: Inject CSS (CSS doesn't have CSP restrictions)
     if (css && css.trim()) {
       const styleEl = document.createElement('style');
       styleEl.id = `convert-preview-css-${variationNumber}`;
@@ -935,11 +972,23 @@ class PageCapture {
       document.head.appendChild(styleEl);
       console.log(`✅ Preview CSS injected for variation ${variationNumber}`);
     }
-    
-    // JS is now handled by background service worker using chrome.scripting.executeScript()
-    // to avoid CSP violations with inline scripts
+
+    // STEP 4: Execute JavaScript via service worker (bypasses CSP)
     if (js && js.trim()) {
-      console.log(`✅ JS will be executed by service worker for variation ${variationNumber}`);
+      console.log(`📤 Sending JS to service worker for CSP-safe execution...`);
+
+      const response = await chrome.runtime.sendMessage({
+        type: 'EXECUTE_PREVIEW_JS',
+        js: js,
+        variationNumber: variationNumber
+      });
+
+      if (response && response.success) {
+        console.log(`✅ Preview JS executed via service worker for variation ${variationNumber}`);
+      } else {
+        console.error(`❌ Preview JS execution failed:`, response?.error);
+        throw new Error(response?.error || 'JS execution failed');
+      }
     }
   }
 
@@ -972,8 +1021,23 @@ class PageCapture {
   }
 
   clearPreviewElements() {
-    // Remove all preview elements
-    document.querySelectorAll('[data-convert-preview]').forEach(el => el.remove());
+    console.log('🧹 [LEGACY] Starting fallback preview element cleanup...');
+    console.log('⚠️ This should only run if Cleanup Manager failed');
+
+    // Remove all preview elements (styles, scripts)
+    const previewElements = document.querySelectorAll('[data-convert-preview]');
+    console.log(`🧹 Removing ${previewElements.length} preview elements with [data-convert-preview]`);
+    previewElements.forEach(el => el.remove());
+
+    // Reset all data-var-applied flags (idempotency checks)
+    const flaggedElements = document.querySelectorAll('[data-var-applied]');
+    console.log(`🧹 Resetting ${flaggedElements.length} elements with data-var-applied flags`);
+    flaggedElements.forEach(el => {
+      delete el.dataset.varApplied;
+    });
+
+    console.log('✅ [LEGACY] Preview elements cleared (limited cleanup)');
+    console.log('⚠️ NOTE: Intervals are NOT cleared in legacy mode - reload page if issues persist');
   }
 
   clearTestElements(variationNumber) {

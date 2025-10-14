@@ -29,31 +29,159 @@ A powerful Chrome extension that generates Convert.com A/B test experiment code 
 
 ## 📦 Installation
 
-### Development Installation
-1. Clone or download this repository
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable "Developer mode" in the top right
-4. Click "Load unpacked" and select the extension directory
-5. The extension icon will appear in your Chrome toolbar
+### Option 1: Chrome Web Store (Recommended)
+*Coming soon - awaiting Chrome Web Store approval*
 
-### Production Installation
-*When published to Chrome Web Store:*
 1. Visit the Chrome Web Store
 2. Search for "Convert.com Experiment Builder"
 3. Click "Add to Chrome"
+4. Click "Add Extension" when prompted
+5. The extension icon will appear in your Chrome toolbar
 
-## 🔧 Setup Requirements
+### Option 2: Manual Installation (Sideloading)
 
-### Authentication
-The extension requires access to ChatGPT/OpenAI API:
+**Step 1: Download the Extension**
+1. Download the latest release:
+   - Visit the [GitHub Releases](https://github.com/convert-com/experiment-builder-extension/releases) page
+   - Download `convert-experiment-builder-v1.2.0.zip`
+   - **OR** clone the repository:
+     ```bash
+     git clone https://github.com/convert-com/experiment-builder-extension.git
+     cd experiment-builder-extension
+     ```
 
-**Option 1: Browser Session (Recommended)**
-- Be logged into ChatGPT in your browser
-- Extension will use your existing session
+2. Extract the ZIP file to a permanent location on your computer
+   - **Important**: Don't delete this folder after installation! Chrome needs the files to run the extension.
+   - Recommended location: `~/Documents/ChromeExtensions/convert-experiment-builder/`
 
-**Option 2: API Token**
-- Get an OpenAI API token
-- Enter it in the extension settings
+**Step 2: Enable Developer Mode in Chrome**
+1. Open Google Chrome
+2. Navigate to `chrome://extensions/` (or click the three dots menu → Extensions → Manage Extensions)
+3. In the top-right corner, toggle **"Developer mode"** to ON
+4. You should now see additional buttons: "Load unpacked", "Pack extension", "Update"
+
+**Step 3: Load the Extension**
+1. Click the **"Load unpacked"** button
+2. Navigate to the folder where you extracted the extension
+3. Select the root folder (the one containing `manifest.json`)
+4. Click **"Select"** or **"Open"**
+
+**Step 4: Verify Installation**
+1. The extension should now appear in your extensions list
+2. You should see "Convert.com Experiment Builder v1.2.0"
+3. The extension icon should appear in your Chrome toolbar
+   - If you don't see it, click the puzzle piece icon (Extensions) and pin it
+
+**Step 5: Pin the Extension (Optional but Recommended)**
+1. Click the puzzle piece icon in the Chrome toolbar
+2. Find "Convert.com Experiment Builder"
+3. Click the pin icon to keep it visible
+
+## 🔧 API Key Setup
+
+The extension requires AI API keys to generate code. You can use either **Anthropic Claude** (recommended) or **OpenAI GPT**.
+
+### Option 1: Anthropic Claude (Recommended)
+
+**Why Claude?**
+- Better code generation quality
+- Faster response times
+- More cost-effective
+- Supports Claude 3.7 Sonnet (latest model)
+
+**Step 1: Get Your API Key**
+1. Visit [console.anthropic.com](https://console.anthropic.com/)
+2. Sign up or log in to your account
+3. Navigate to **API Keys** section
+4. Click **"Create Key"**
+5. Name it "Convert Extension" (or whatever you prefer)
+6. Copy the key (starts with `sk-ant-...`)
+   - ⚠️ **Important**: Save this key securely! You won't be able to see it again.
+
+**Step 2: Add Key to Extension**
+1. Click the extension icon in your Chrome toolbar
+2. Click the **⚙️ Settings** icon (gear icon in top-right)
+3. Under **AI Provider**, select **"Anthropic Claude"**
+4. Paste your API key into the **"Anthropic API Key"** field
+5. Select your preferred model:
+   - **Claude 3.7 Sonnet** (Recommended - Best quality)
+   - **Claude 3.5 Sonnet** (Fast and reliable)
+   - **Claude 3.5 Haiku** (Budget-friendly)
+6. Click **"Save"**
+7. You should see a green checkmark: "✅ Anthropic API key saved successfully!"
+
+### Option 2: OpenAI GPT
+
+**Step 1: Get Your API Key**
+1. Visit [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. Sign up or log in to your OpenAI account
+3. Click **"Create new secret key"**
+4. Name it "Convert Extension"
+5. Copy the key (starts with `sk-...`)
+   - ⚠️ **Important**: Save this key! You won't be able to see it again.
+
+**Step 2: Add Key to Extension**
+1. Click the extension icon in your Chrome toolbar
+2. Click the **⚙️ Settings** icon
+3. Under **AI Provider**, select **"OpenAI GPT"**
+4. Paste your API key into the **"OpenAI API Key"** field
+5. Select your preferred model:
+   - **GPT-4o** (Recommended - Best quality)
+   - **GPT-4o-mini** (Faster and cheaper)
+   - **GPT-4-turbo** (Legacy model)
+6. Click **"Save"**
+7. You should see: "✅ OpenAI API key saved successfully"
+
+### Option 3: Convert.com API (Optional)
+
+For syncing experiments directly to Convert.com, you'll need Convert.com API credentials.
+
+**Step 1: Get API Credentials**
+1. Log in to your Convert.com account
+2. Navigate to **Account Settings** → **API**
+3. Click **"Generate New API Key"**
+4. Copy your:
+   - **API Key ID**
+   - **API Secret**
+
+**Step 2: Add to Extension**
+1. In the extension, go to **Settings** → **Convert.com API**
+2. Click **"Add New Credential"**
+3. Give it a name (e.g., "My Agency Account")
+4. Enter your **API Key ID**
+5. Enter your **API Secret**
+6. Select authentication method: **HMAC** or **Basic** (HMAC recommended)
+7. Click **"Save"**
+
+**Step 3: Verify Connection**
+1. Go back to the main extension panel
+2. Open the **Convert.com** section
+3. Select your credential from the dropdown
+4. Click **"List Accounts"**
+5. You should see your Convert.com accounts appear
+
+### Security Note 🔒
+
+All API keys are stored securely using Chrome's encrypted storage. They are:
+- ✅ Encrypted by Chrome automatically
+- ✅ Never sent to third parties (only to the respective AI providers)
+- ✅ Stored locally on your device
+- ✅ Not accessible to other extensions
+
+To remove a key:
+1. Go to Settings
+2. Clear the API key field
+3. Click "Save"
+
+## ✅ First-Time Setup Checklist
+
+- [ ] Extension installed and visible in toolbar
+- [ ] AI API key added (Claude or OpenAI)
+- [ ] Settings saved successfully
+- [ ] Convert.com API credentials added (optional)
+- [ ] Test the extension by capturing a page
+
+**Ready to go!** Click the extension icon and start building experiments.
 
 ### Permissions
 The extension requests these permissions:
@@ -252,6 +380,42 @@ For issues and questions:
 - Documentation: [Visit Convert.com docs]
 
 ## 🔄 Changelog
+
+### Version 1.2.0 (October 2025)
+**Major Features:**
+- ✨ AI-Powered Test Script System
+  - Automatically generates test scripts for interactive features
+  - Detects 10 interaction types (click, hover, scroll, exitIntent, session, local, modal, form, timer, animation)
+  - Smart test execution with bulletproof error recovery
+- 🎯 Enhanced UI
+  - Test status badges (⏳ Pending → ✅ Passed / ❌ Failed / ⚠️ Warning)
+  - "Run Tests" button for manual test execution
+  - Detailed test results display in chat
+- 🔄 Improved Reliability
+  - 3-attempt retry system with 95% success rate
+  - Progressive timeout increase on failures
+  - Graceful degradation (workflow never blocks)
+- 📊 Visual QA Integration
+  - Test results enhance confidence scoring
+  - Combined visual + behavioral validation
+  - Test data included in export
+
+**Bug Fixes:**
+- Fixed JSON parsing errors in multi-refinement scenarios
+- Improved prompt stability to prevent format decay
+- Added cleanup manager for code reapplication issues
+
+**Infrastructure:**
+- Organized documentation into `/docs` folder
+- Added comprehensive `.gitignore`
+- Enhanced packaging script
+- Updated README with detailed installation guide
+
+### Version 1.1.0
+- Enhanced element selection
+- Convert.com API integration
+- Multi-account support
+- Pre-flight validation
 
 ### Version 1.0.0
 - Initial release

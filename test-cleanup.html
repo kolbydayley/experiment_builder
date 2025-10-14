@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cleanup Manager Test Page</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    button {
+      padding: 10px 20px;
+      margin: 5px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #test-target {
+      padding: 20px;
+      background: #f0f0f0;
+      border: 2px solid #ccc;
+      margin: 20px 0;
+    }
+    .log {
+      background: #000;
+      color: #0f0;
+      padding: 15px;
+      margin: 20px 0;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧹 Cleanup Manager Test Page</h1>
+
+  <div id="test-target">
+    <h2>Test Target Area</h2>
+    <p>This is a test button that will be modified by the experiment code.</p>
+    <button id="cta-button">Click Me!</button>
+  </div>
+
+  <div>
+    <h3>Actions:</h3>
+    <button onclick="testVariation()">▶️ Run Test Variation</button>
+    <button onclick="checkCleanupManager()">🔍 Check Cleanup Manager State</button>
+    <button onclick="manualReset()">🧹 Manual Reset</button>
+    <button onclick="clearLog()">🗑️ Clear Log</button>
+  </div>
+
+  <div class="log" id="console-log"></div>
+
+  <script>
+    // Intercept console.log to show in page
+    const originalLog = console.log;
+    const logDiv = document.getElementById('console-log');
+
+    function addLog(message, type = 'log') {
+      const timestamp = new Date().toLocaleTimeString();
+      const color = type === 'error' ? '#f00' : type === 'warn' ? '#ff0' : '#0f0';
+      logDiv.innerHTML += `<div style="color: ${color}">[${timestamp}] ${message}</div>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+      originalLog(message);
+    }
+
+    console.log = (...args) => addLog(args.join(' '));
+    console.warn = (...args) => addLog(args.join(' '), 'warn');
+    console.error = (...args) => addLog(args.join(' '), 'error');
+
+    function clearLog() {
+      logDiv.innerHTML = '';
+    }
+
+    function testVariation() {
+      console.log('🧪 Running test variation...');
+
+      // Simulate generated code that uses waitForElement
+      if (typeof window.waitForElement === 'function') {
+        window.waitForElement('#cta-button', (button) => {
+          console.log('✅ Found button, applying changes...');
+          button.style.backgroundColor = '#2563eb';
+          button.style.color = 'white';
+          button.style.padding = '15px 30px';
+          button.textContent = 'Modified Button!';
+        });
+      } else {
+        console.error('❌ waitForElement not defined! Extension may not be loaded.');
+      }
+    }
+
+    function checkCleanupManager() {
+      if (window.ConvertCleanupManager) {
+        const state = window.ConvertCleanupManager.getState();
+        console.log('📊 Cleanup Manager State:', JSON.stringify(state, null, 2));
+      } else {
+        console.error('❌ Cleanup Manager not initialized!');
+      }
+    }
+
+    function manualReset() {
+      if (window.ConvertCleanupManager) {
+        console.log('🧹 Manually triggering reset...');
+        const summary = window.ConvertCleanupManager.resetAll();
+        console.log('✅ Reset complete:', JSON.stringify(summary, null, 2));
+      } else {
+        console.error('❌ Cleanup Manager not initialized!');
+      }
+    }
+
+    // Initial log
+    console.log('✅ Test page loaded');
+    console.log('📝 Instructions:');
+    console.log('1. Open the Convert.com Experiment Builder extension');
+    console.log('2. Capture this page');
+    console.log('3. Generate a variation that modifies the button');
+    console.log('4. Click "Preview Test" multiple times');
+    console.log('5. Check console logs to verify cleanup works');
+  </script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+# OS Files
+.DS_Store
+Thumbs.db
+*~
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build artifacts
+dist/
+build/
+*.zip
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# API Keys and secrets (safety)
+*apikey*
+*secret*
+*token*
+.key
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Chrome extension specific
+*.pem
+*.crx
+
+# Testing
+coverage/
+.nyc_output/
+
+# IDE - VSCode
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
+
+# OS specific
+**/Thumbs.db
+**/.DS_Store

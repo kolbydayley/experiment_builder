@@ -53,7 +53,8 @@ class VisualQAService {
         shouldContinue: true,
         iteration,
         timestamp: new Date().toISOString(),
-        preScreened: true
+        preScreened: true,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } // No cost for pre-screened checks
       };
     }
 
@@ -70,7 +71,8 @@ class VisualQAService {
           shouldContinue: true,
           iteration,
           timestamp: new Date().toISOString(),
-          preScreened: true
+          preScreened: true,
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } // No cost for pre-screened checks
         };
       }
     }
@@ -194,33 +196,37 @@ ${hasScreenshots ?
 **FULL-PAGE DESIGN EVALUATION:**
 You are viewing FULL PAGE screenshots (before and after). Your analysis must include:
 
-1. **OVERALL DESIGN COHERENCE**: Do the changes fit harmoniously with the rest of the page design?
-2. **BRAND CONSISTENCY**: Do the colors, fonts, and styling match the existing brand identity visible in the full page?
+🔴 **CRITICAL: USER'S EXPLICIT INSTRUCTIONS ALWAYS TAKE PRIORITY** 🔴
+- If the user explicitly requested a specific color, style, or change (e.g., "make banner red"), that request OVERRIDES brand considerations
+- Only flag brand/style issues if they create SEVERE usability problems (e.g., white text on white background)
+- User-requested changes should be considered intentional design decisions, not defects
+- Focus on technical correctness and functionality, not subjective design preferences
+
+1. **OVERALL DESIGN COHERENCE**: Do the changes fit harmoniously with the rest of the page design? (Only flag if severely broken)
+2. **BRAND CONSISTENCY**: Only flag if colors create readability issues or severe clashes - user's explicit color requests are intentional
 3. **VISUAL HIERARCHY**: Do the changes maintain or improve the page's visual hierarchy and flow?
-4. **COLOR HARMONY**: Do new colors complement the existing color palette visible throughout the page?
-5. **CONTEXTUAL IMPACT**: Do the changes look good in the context of surrounding elements (header, footer, other sections)?
-6. **PROFESSIONAL APPEARANCE**: Does the page as a whole maintain a polished, professional look?
+4. **COLOR HARMONY**: Only flag if new colors cause usability problems (poor contrast, invisible text) - not subjective preferences
+5. **CONTEXTUAL IMPACT**: Do the changes look good in the context of surrounding elements?
+6. **PROFESSIONAL APPEARANCE**: Only flag obvious technical issues, not style preferences
 
 **DEFECT DETECTION (with examples):**
 
 **CRITICAL DEFECTS (Block deployment):**
-✗ Text unreadable: Cut off, overlapping, invisible color-on-color
+✗ Text unreadable: Cut off, overlapping, invisible color-on-color (ONLY if creates readability issue)
 ✗ Layout broken: Elements overlapping, overflow visible, misaligned
 ✗ Missing elements: Requested changes not visible in AFTER
 ✗ Duplicate content: Same icon/text appears 2+ times (e.g., two lock icons on same button)
 ✗ Broken functionality: Button looks disabled, unclickable
 ✗ Element positioning: Buttons cut off, text overlapping images, misaligned content
 ✗ Visual hierarchy broken: Important elements not visible or properly positioned
-✗ Brand disconnect: Colors/styles clash severely with page brand (e.g., neon green CTA on luxury brand)
+✗ DO NOT FLAG: User-requested colors/styles even if they don't match the page brand - these are intentional
 
 **MAJOR DEFECTS (Strongly recommend fix):**
-⚠ Poor contrast: Text < 4.5:1 ratio, hard to read
+⚠ Poor contrast: Text < 4.5:1 ratio, hard to read (ONLY if truly unreadable)
 ⚠ Bad spacing: Cramped (< 4px), excessive (> 40px), uneven
 ⚠ Inconsistent styling: Mixed fonts, mismatched button styles
 ⚠ Awkward positioning: Misaligned, poor visual flow
-⚠ Unprofessional appearance: Garish colors, amateur design
-⚠ Color disharmony: New colors don't complement existing page palette
-⚠ Visual weight imbalance: Changes disrupt page hierarchy or draw attention away from key elements
+⚠ DO NOT FLAG: Subjective style preferences, user-requested colors, or brand harmony issues unless they cause functional problems
 
 **FEW-SHOT EXAMPLES:**
 
@@ -410,7 +416,8 @@ Analyze the screenshots now. Be precise and actionable.`;
         }
       ],
       max_tokens: 1000, // Reduced - we want concise, focused responses
-      temperature: 0.0 // Zero temperature for maximum consistency and structured output
+      temperature: 0.0, // Zero temperature for maximum consistency and structured output
+      response_format: { type: "json_object" } // Force JSON output
     };
 
     console.log('[Visual QA] Calling GPT-4 Vision API...');

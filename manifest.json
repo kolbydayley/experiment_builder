@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Convert.com Experiment Builder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Generate Convert.com A/B test experiment code using AI with smart element selection and design file support",
   "permissions": [
     "activeTab",

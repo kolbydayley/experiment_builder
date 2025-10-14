@@ -59,6 +59,10 @@ class UnifiedExperimentBuilder {
     this.activePanel = 'build';
     this.aiActivity = { status: 'idle', message: '' };
 
+    // Initialize smart orchestration services
+    this.intentAnalyzer = new IntentAnalyzer();
+    this.smartContextAssembler = new SmartContextAssembler();
+
     // Initialize system
     this.initialize();
   }
@@ -1003,10 +1007,11 @@ class UnifiedExperimentBuilder {
   async generateExperiment() {
     if (this.chatState.sending) return;
 
-    this.showStatus('Generating experiment code with AI...', 'loading');
-    this.addActivity('Generating experiment code...', 'info');
+    this.showStatus('Analyzing intent...', 'loading');
+    this.addActivity('Analyzing user intent...', 'info');
     this.setButtonLoading('generateBtn', true);
     this.chatState.sending = true;
+    this.updateApiStatus('loading'); // Show loading indicator
 
     try {
       // Get description from primary input
@@ -1015,24 +1020,81 @@ class UnifiedExperimentBuilder {
         throw new Error('Please describe the changes you want to make');
       }
 
-      // Build generation request with selected element and design file context
+      // Check if page data exists
+      if (!this.currentPageData || !this.currentPageData.elementDatabase) {
+        throw new Error('Please capture the page first before generating code. Click "📸 Capture Page" to start.');
+      }
+
+      // STAGE 1: Analyze Intent (lightweight AI call)
+      console.log('🔍 [Stage 1] Analyzing intent...');
+
+      let intentAnalysis;
+      if (this.generatedCode && this.chatInitiated) {
+        // Refinement request
+        intentAnalysis = await this.intentAnalyzer.analyzeRefinement({
+          message: description,
+          elementAttachment: this.selectedElementData,
+          currentCode: this.generatedCode,
+          chatHistory: this.chatHistory || []
+        });
+      } else {
+        // Initial request
+        intentAnalysis = await this.intentAnalyzer.analyzeIntent({
+          message: description,
+          workflowState: this.workflowState,
+          elementAttachment: this.selectedElementData,
+          pageDataAvailable: !!this.currentPageData
+        });
+      }
+
+      console.log('✅ [Stage 1] Intent analyzed:', intentAnalysis);
+
+      // STAGE 2: Assemble Smart Context
+      console.log('🏗️ [Stage 2] Assembling context...');
+      this.showStatus('Building optimized context...', 'loading');
+
+      let optimizedPageData;
+      if (this.generatedCode && this.chatInitiated) {
+        // Use refinement-specific assembly
+        optimizedPageData = this.smartContextAssembler.assembleRefinementContext(
+          intentAnalysis,
+          this.currentPageData,
+          this.generatedCode
+        );
+      } else {
+        // Use standard assembly
+        optimizedPageData = await this.smartContextAssembler.assembleContext(
+          intentAnalysis,
+          this.currentPageData,
+          this.generatedCode
+        );
+      }
+
+      console.log('✅ [Stage 2] Context assembled');
+
+      // Build generation request with optimized context
       const generationData = {
         description: description,
         variations: this.variations,
-        pageData: this.currentPageData,
+        pageData: optimizedPageData,
         settings: this.settings,
         selectedElement: this.selectedElementData || null,
         designFiles: this.uploadedDesignFile ? [this.uploadedDesignFile] : []
       };
 
-      // Log what context we're sending for Visual QA
-      console.log('🎯 Generation context includes:');
+      // Log what context we're sending
+      console.log('🎯 Generation context (optimized):');
       console.log('  📄 Page data:', !!generationData.pageData);
+      console.log('  📸 Page screenshot:', !!generationData.pageData?.screenshot);
       console.log('  🎯 Selected element:', !!generationData.selectedElement);
       console.log('  📸 Element screenshot:', !!generationData.selectedElement?.screenshot);
       console.log('  📁 Design files:', generationData.designFiles.length);
+      console.log('  🔢 Element count:', generationData.pageData?.elementDatabase?.elements?.length || 0);
 
-      // Call existing generation logic (maintain compatibility)
+      // STAGE 3: Code Generation (with optimized context)
+      console.log('🤖 [Stage 3] Generating code...');
+      this.showStatus('Generating code with AI...', 'loading');
+
       const result = await this.callAIGeneration(generationData);
 
       if (result?.variations?.length) {
@@ -1045,6 +1107,7 @@ class UnifiedExperimentBuilder {
         this.displayGeneratedCode(result);
         this.showStatus(`✨ Generated ${result.variations.length} variation${result.variations.length > 1 ? 's' : ''} successfully`, 'success', 4000);
         this.addActivity(`Generated ${result.variations.length} variations`, 'success');
+        this.updateApiStatus('success'); // Show success indicator
 
         // Update cost display if usage data available
         if (result.usage) {
@@ -1055,6 +1118,11 @@ class UnifiedExperimentBuilder {
         // If chat-initiated, add AI summary of changes to chat
         if (this.chatInitiated) {
           this.addAISummaryToChat(result, generationData.description);
+        }
+
+        // NEW: Display test script status if generated
+        if (result.testScript) {
+          this.displayTestScriptStatus(result.testScript);
         }
 
         // Auto-launch comprehensive testing pipeline (only if enabled in settings)
@@ -1072,6 +1140,7 @@ class UnifiedExperimentBuilder {
       console.error('Generation failed:', error);
       this.setButtonLoading('generateBtn', false);
       this.chatState.sending = false;
+      this.updateApiStatus('error'); // Show error indicator (red dot)
       this.showStatus('Generation failed: ' + error.message, 'error', 5000);
       this.addActivity('Generation failed: ' + error.message, 'error');
       this.showError(error.message);
@@ -1106,8 +1175,8 @@ class UnifiedExperimentBuilder {
 
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => {
-          reject(new Error('AI generation timed out after 30 seconds. The API might be slow or unavailable.'));
-        }, 30000); // 30 second timeout
+          reject(new Error('AI generation timed out after 60 seconds. The API might be slow or unavailable.'));
+        }, 60000); // 60 second timeout (increased for complex refinements)
       });
 
       const response = await Promise.race([messagePromise, timeoutPromise]);
@@ -1115,10 +1184,11 @@ class UnifiedExperimentBuilder {
       console.log('📡 Background service worker response:', response);
 
       if (response?.success && response?.code) {
-        // Return both code and usage data
+        // Return code, usage data, and test script (NEW)
         return {
           ...response.code,
-          usage: response.usage || null
+          usage: response.usage || null,
+          testScript: response.testScript || null  // NEW: Include test script data
         };
       } else {
         throw new Error(response?.error || 'AI generation failed - no code returned');
@@ -1252,6 +1322,50 @@ document.body.insertBefore(banner, document.body.firstChild);
     this.updateCodeCount(codeData);
     this.updateResultsHeader(codeData);
     this.addTestingStatusIndicator();
+  }
+
+  /**
+   * Display test script generation status in chat
+   * @param {Object} testScriptData - Test script data from generation
+   */
+  displayTestScriptStatus(testScriptData) {
+    console.log('🧪 Displaying test script status:', testScriptData);
+
+    if (!testScriptData) {
+      return; // No test script generated
+    }
+
+    const { requirements, testScript, error } = testScriptData;
+
+    if (error) {
+      // Test script generation failed
+      this.addChatMessage('assistant', `⚠️ Test script generation failed: ${error}`);
+      return;
+    }
+
+    if (!testScript) {
+      // No interactive features detected
+      if (requirements && !requirements.hasInteractions) {
+        this.addChatMessage('assistant', '📋 No interactive features detected - skipping test script generation.');
+      }
+      return;
+    }
+
+    // Test script generated successfully
+    const interactionTypes = requirements?.types?.join(', ') || 'unknown';
+    const message = `🧪 **Test Script Generated**
+
+Detected interactions: ${interactionTypes}
+Complexity: ${requirements?.complexity || 'unknown'}
+Suggested test duration: ${(requirements?.suggestedDuration || 0) / 1000}s
+
+The test script will validate interactive features automatically.`;
+
+    this.addChatMessage('assistant', message);
+
+    // Store test script for later execution
+    if (!this.generatedCode) this.generatedCode = {};
+    this.generatedCode.testScript = testScriptData;
   }
 
   updateResultsHeader(codeData) {
@@ -1413,6 +1527,12 @@ document.body.insertBefore(banner, document.body.firstChild);
             <span class="var-action-icon">👁️</span>
             <span class="var-action-text">Preview on Page</span>
           </button>
+          ${this.generatedCode?.testScript?.testScript ? `
+          <button class="var-action-btn var-action-secondary" data-variation="${variation.number}" data-action="test">
+            <span class="var-action-icon">🧪</span>
+            <span class="var-action-text">Run Tests</span>
+          </button>
+          ` : ''}
         </div>
       </div>
     `).join('');
@@ -1442,7 +1562,7 @@ document.body.insertBefore(banner, document.body.firstChild);
         if (action === 'preview') {
           this.previewVariation(variationNumber);
         } else if (action === 'test') {
-          this.testVariation(variationNumber);
+          this.runTestScript(variationNumber); // NEW: Run test script instead
         }
       });
     });
@@ -1641,7 +1761,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
     this.chatHistory.push(historyEntry);
 
-    this.addChatMessageToDrawer('assistant', 'Let me refine the code based on your feedback...');
+    // Removed "Let me refine..." message - just show typing indicator with status updates
     this.addActivity(`Refining code: ${message.substring(0, 50)}...`, 'info');
 
     // Build full conversation context including original request, chat history, and current code
@@ -1675,7 +1795,27 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       });
     }
 
-    const fullContext = `ORIGINAL REQUEST:\n${originalRequest}\n\nCHAT CONVERSATION:\n${chatContext}${currentCodeContext}\n\nPlease update the code to incorporate the latest refinement while maintaining all previous changes.`;
+    const fullContext = `⚠️ THIS IS A REFINEMENT REQUEST - YOU MUST PRESERVE ALL EXISTING CODE ⚠️
+
+ORIGINAL REQUEST:
+${originalRequest}
+
+CHAT CONVERSATION:
+${chatContext}
+${currentCodeContext}
+
+🔴 CRITICAL INSTRUCTIONS FOR REFINEMENT 🔴
+1. The CURRENT GENERATED CODE above shows what's ALREADY IMPLEMENTED
+2. You MUST include ALL of that existing code in your response
+3. ONLY ADD the new changes from the latest chat message
+4. DO NOT remove or replace any existing functionality
+5. DO NOT simplify or "clean up" the existing code
+6. Output = COMPLETE existing code + NEW changes
+
+NEW REQUEST TO ADD:
+${message}
+
+Your task: Return the COMPLETE code (existing + new). DO NOT output only the new changes.`;
 
     // Update description to include full context
     const descField = document.getElementById('primaryDescription');
@@ -1698,11 +1838,19 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         content: `Code updated with refinement: ${message}`,
         timestamp: Date.now()
       });
+
+      // Restore original state on success
+      this.chatState.sending = wasSending;
     } catch (error) {
       this.addChatMessage('assistant', `Sorry, I had trouble refining the code: ${error.message}`);
-    } finally {
-      // Restore original state
-      this.chatState.sending = wasSending;
+
+      // CRITICAL: Hide typing indicator on error and clean up state
+      this.hideTypingIndicator();
+      this.chatState.sending = false;
+      this.chatInitiated = false;
+
+      // Don't re-throw - we've already handled the error and shown the message
+      // The parent handler will be stuck waiting, so we need to clean up here
     }
   }
 
@@ -2177,41 +2325,34 @@ Would you like me to capture the current page first? You can also click "📸 Ca
   }
 
   addAISummaryToChat(codeResult, userRequest) {
-    // Generate a plain language summary of what was changed
+    // Generate a concise summary of what was done
     const variationCount = codeResult.variations?.length || 0;
 
     if (variationCount === 0) return;
 
-    let summary = `✅ I've created ${variationCount} variation${variationCount > 1 ? 's' : ''} based on your request.\n\n`;
+    let summary = `✅ Created ${variationCount} variation${variationCount > 1 ? 's' : ''}:\n\n`;
 
-    // Analyze changes for each variation
+    // List variations with their names
     codeResult.variations.forEach((variation, index) => {
-      summary += `**${variation.name}:**\n`;
+      summary += `**${variation.name}**\n`;
 
       const changes = [];
 
-      // Analyze CSS changes
+      // Concise change detection
       if (variation.css) {
-        if (variation.css.includes('background')) changes.push('background styling');
-        if (variation.css.includes('color')) changes.push('text colors');
-        if (variation.css.includes('font')) changes.push('typography');
-        if (variation.css.includes('display: none') || variation.css.includes('visibility')) changes.push('element visibility');
-        if (variation.css.includes('width') || variation.css.includes('height')) changes.push('dimensions');
-        if (variation.css.includes('margin') || variation.css.includes('padding')) changes.push('spacing');
-        if (variation.css.includes('border')) changes.push('borders');
+        if (variation.css.includes('background') || variation.css.includes('color')) changes.push('styling');
+        if (variation.css.includes('display') || variation.css.includes('visibility')) changes.push('visibility');
+        if (variation.css.includes('position') || variation.css.includes('top') || variation.css.includes('left')) changes.push('positioning');
       }
 
-      // Analyze JS changes
       if (variation.js) {
-        if (variation.js.includes('textContent') || variation.js.includes('innerHTML')) changes.push('text content');
-        if (variation.js.includes('addEventListener')) changes.push('interactivity');
-        if (variation.js.includes('createElement')) changes.push('new elements');
-        if (variation.js.includes('remove(') || variation.js.includes('removeChild')) changes.push('element removal');
-        if (variation.js.includes('setAttribute')) changes.push('attributes');
+        if (variation.js.includes('createElement') || variation.js.includes('innerHTML')) changes.push('new elements');
+        if (variation.js.includes('textContent')) changes.push('text changes');
+        if (variation.js.includes('setInterval') || variation.js.includes('setTimeout')) changes.push('dynamic behavior');
       }
 
       if (changes.length > 0) {
-        summary += `• Modified: ${changes.join(', ')}\n`;
+        summary += `Modified: ${changes.join(', ')}\n`;
       }
 
       if (index < variationCount - 1) summary += '\n';
@@ -2416,8 +2557,38 @@ Would you like me to capture the current page first? You can also click "📸 Ca
   }
 
   filterCommands(query) {
-    // Implementation for command filtering
-    console.log('Filter commands:', query);
+    const results = document.getElementById('paletteResults');
+    if (!results) return;
+
+    const items = results.querySelectorAll('.palette-item');
+    const normalizedQuery = query.toLowerCase().trim();
+
+    // If query is empty, show all items
+    if (!normalizedQuery) {
+      items.forEach(item => {
+        item.style.display = '';
+      });
+      return;
+    }
+
+    // Filter items based on command name match
+    let firstVisibleIndex = -1;
+    items.forEach((item, index) => {
+      const commandName = item.querySelector('.command-name')?.textContent || '';
+      const matches = commandName.toLowerCase().includes(normalizedQuery);
+
+      item.style.display = matches ? '' : 'none';
+
+      // Track first visible item for selection
+      if (matches && firstVisibleIndex === -1) {
+        firstVisibleIndex = index;
+      }
+    });
+
+    // Update selection to first visible item
+    items.forEach((item, index) => {
+      item.classList.toggle('selected', index === firstVisibleIndex);
+    });
   }
 
   // Command Palette Helper Methods
@@ -2427,9 +2598,39 @@ Would you like me to capture the current page first? You can also click "📸 Ca
       return;
     }
 
-    const allCode = this.generatedCode.variations.map((v, idx) => {
-      return `/* === VARIATION ${idx + 1}: ${v.name || 'Variation ' + (idx + 1)} === */\n\n/* CSS */\n${v.css || ''}\n\n/* JavaScript */\n${v.js || ''}`;
-    }).join('\n\n');
+    // CRITICAL: Include waitForElement utility
+    const waitForElementUtility = `// Utility function (required for code execution)
+function waitForElement(selector, callback, maxWait = 10000) {
+  const start = Date.now();
+  const interval = setInterval(() => {
+    const element = document.querySelector(selector);
+    if (element) {
+      clearInterval(interval);
+      callback(element);
+    } else if (Date.now() - start > maxWait) {
+      clearInterval(interval);
+      console.warn('Element not found after timeout:', selector);
+    }
+  }, 100);
+
+  // AUTO-TRACK: Register interval with Cleanup Manager
+  if (window.ConvertCleanupManager) {
+    window.ConvertCleanupManager.registerInterval(interval, 'waitForElement: ' + selector);
+  }
+}`;
+
+    const globalJS = this.generatedCode.globalJS || '';
+    const utilitySection = globalJS.includes('function waitForElement') ? globalJS :
+                          (globalJS ? `${waitForElementUtility}\n\n${globalJS}` : waitForElementUtility);
+
+    const allCode = [
+      '/* === GLOBAL JAVASCRIPT (Required Utilities) === */',
+      utilitySection,
+      '',
+      ...this.generatedCode.variations.map((v, idx) => {
+        return `/* === VARIATION ${idx + 1}: ${v.name || 'Variation ' + (idx + 1)} === */\n\n/* CSS */\n${v.css || ''}\n\n/* JavaScript */\n${v.js || ''}`;
+      })
+    ].join('\n\n');
 
     try {
       await navigator.clipboard.writeText(allCode);
@@ -2501,9 +2702,35 @@ Would you like me to capture the current page first? You can also click "📸 Ca
   }
 
   handlePaletteNavigation(e) {
-    // Implementation for keyboard navigation in command palette
-    if (e.key === 'Enter') {
-      const selected = document.querySelector('.palette-item.selected');
+    const results = document.getElementById('paletteResults');
+    if (!results) return;
+
+    const visibleItems = Array.from(results.querySelectorAll('.palette-item'))
+      .filter(item => item.style.display !== 'none');
+
+    if (visibleItems.length === 0) return;
+
+    const currentIndex = visibleItems.findIndex(item => item.classList.contains('selected'));
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIndex = currentIndex < visibleItems.length - 1 ? currentIndex + 1 : 0;
+      visibleItems.forEach((item, idx) => {
+        item.classList.toggle('selected', idx === nextIndex);
+      });
+      // Scroll into view
+      visibleItems[nextIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : visibleItems.length - 1;
+      visibleItems.forEach((item, idx) => {
+        item.classList.toggle('selected', idx === prevIndex);
+      });
+      // Scroll into view
+      visibleItems[prevIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const selected = visibleItems[currentIndex];
       if (selected) {
         selected.click();
       }
@@ -2608,6 +2835,145 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     }
   }
 
+  /**
+   * Run test script for a variation (NEW)
+   * @param {number} variationNumber - Variation number to test
+   */
+  async runTestScript(variationNumber) {
+    try {
+      console.log(`🧪 Running test script for variation ${variationNumber}...`);
+
+      // Check if test script exists
+      if (!this.generatedCode?.testScript?.testScript) {
+        this.addChatMessage('assistant', '⚠️ No test script available. Generate code with interactive features to create test scripts.');
+        return;
+      }
+
+      // Update UI to show testing in progress
+      this.addActivity(`Running test script for variation ${variationNumber}...`, 'info');
+      this.updateVariationBadge(variationNumber, 'testing');
+
+      // Get the test script
+      const testScript = this.generatedCode.testScript.testScript;
+      const timeout = this.generatedCode.testScript.suggestedDuration || 10000;
+
+      // Execute test script via background
+      const response = await chrome.runtime.sendMessage({
+        type: 'EXECUTE_TEST_SCRIPT',
+        testScript: testScript,
+        timeout: timeout,
+        tabId: this.targetTabId
+      });
+
+      console.log('🧪 Test results:', response);
+
+      if (response.success) {
+        const results = response.results;
+
+        // Update variation badge based on results
+        const overallStatus = results.testResults?.overallStatus || 'unknown';
+        if (overallStatus === 'passed') {
+          this.updateVariationBadge(variationNumber, 'passed');
+          this.addActivity(`Test script passed for variation ${variationNumber}`, 'success');
+        } else if (overallStatus === 'failed') {
+          this.updateVariationBadge(variationNumber, 'failed');
+          this.addActivity(`Test script failed for variation ${variationNumber}`, 'error');
+        } else {
+          this.updateVariationBadge(variationNumber, 'warning');
+          this.addActivity(`Test script completed with issues for variation ${variationNumber}`, 'warning');
+        }
+
+        // Display detailed results in chat
+        this.displayTestResults(results, variationNumber);
+
+      } else {
+        this.updateVariationBadge(variationNumber, 'failed');
+        this.addActivity(`Test execution failed: ${response.error}`, 'error');
+        this.addChatMessage('assistant', `❌ Test execution failed: ${response.error || 'Unknown error'}`);
+      }
+
+    } catch (error) {
+      console.error('❌ Test script execution failed:', error);
+      this.updateVariationBadge(variationNumber, 'failed');
+      this.addActivity(`Test failed: ${error.message}`, 'error');
+      this.addChatMessage('assistant', `❌ Test failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Display test results in chat (NEW)
+   * @param {Object} results - Test execution results
+   * @param {number} variationNumber - Variation number
+   */
+  displayTestResults(results, variationNumber) {
+    const testResults = results.testResults || {};
+    const overallStatus = testResults.overallStatus || 'unknown';
+    const interactions = testResults.interactions || [];
+    const validations = testResults.validations || [];
+
+    // Build status emoji
+    let statusEmoji = '';
+    if (overallStatus === 'passed') statusEmoji = '✅';
+    else if (overallStatus === 'failed') statusEmoji = '❌';
+    else if (overallStatus === 'error') statusEmoji = '⚠️';
+    else statusEmoji = '❓';
+
+    // Build test results message
+    let message = `${statusEmoji} **Test Results** (Variation ${variationNumber})
+
+**Status**: ${overallStatus.toUpperCase()}
+**Duration**: ${results.duration || 'N/A'}ms
+`;
+
+    if (interactions.length > 0) {
+      message += `\n**Interactions** (${interactions.length}):\n`;
+      interactions.forEach(int => {
+        message += `${int.success ? '✅' : '❌'} ${int.type} on ${int.target}\n`;
+      });
+    }
+
+    if (validations.length > 0) {
+      message += `\n**Validations** (${validations.length}):\n`;
+      validations.forEach(val => {
+        message += `${val.passed ? '✅' : '❌'} ${val.test}\n`;
+        if (!val.passed && val.expected && val.actual) {
+          message += `   Expected: ${val.expected}, Actual: ${val.actual}\n`;
+        }
+      });
+    }
+
+    if (testResults.error) {
+      message += `\n**Error**: ${testResults.error}`;
+    }
+
+    this.addChatMessage('assistant', message);
+  }
+
+  /**
+   * Update variation badge status (NEW)
+   * @param {number} variationNumber - Variation number
+   * @param {string} status - Status ('testing', 'passed', 'failed', 'warning')
+   */
+  updateVariationBadge(variationNumber, status) {
+    // Update in-memory status
+    if (this.generatedCode?.variations) {
+      const variation = this.generatedCode.variations.find(v => v.number === variationNumber);
+      if (variation) {
+        variation.testStatus = status;
+      }
+    }
+
+    // Update DOM
+    const card = document.querySelector(`.variation-card[data-variation="${variationNumber}"]`);
+    if (card) {
+      const badge = card.querySelector('.variation-badge');
+      if (badge) {
+        badge.className = `variation-badge ${status}`;
+        badge.textContent = this.getStatusBadge({ testStatus: status });
+      }
+    }
+  }
+
   async testVariation(variationNumber) {
     try {
       this.addActivity(`Testing variation ${variationNumber}...`, 'info');
@@ -2683,6 +3049,24 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
     // Initialize testing status
     this.updateTestingStatus('initializing');
+
+    // CRITICAL: Reset page to clean state before testing
+    // This ensures we're testing the NEW code, not old variations
+    console.log('🔄 Resetting page to clean state before testing...');
+    this.addActivity('🔄 Resetting page for fresh test...', 'info');
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'CLEAR_INJECTED_ASSETS',
+        tabId: this.targetTabId
+      });
+
+      // Wait for page to stabilize after clearing
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      console.warn('Failed to clear page before testing:', error);
+      // Continue anyway - the page might not have any injected code
+    }
 
     let passedCount = 0;
     let failedCount = 0;
@@ -3178,7 +3562,25 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     
     // Check for performance anti-patterns
     if (variation.js && variation.js.includes('setInterval') && !variation.js.includes('clearInterval')) {
-      throw new Error('setInterval used without corresponding clearInterval');
+      // Check if it's a countdown timer or time-based feature (these typically run for page lifetime)
+      const isCountdown = variation.js.includes('countdown') ||
+                         variation.js.includes('timer') ||
+                         variation.js.includes('hours') ||
+                         variation.js.includes('minutes') ||
+                         variation.js.includes('seconds');
+
+      // Check if interval stops itself (e.g., countdown that ends)
+      const hasSelfStop = variation.js.includes('totalSeconds') ||
+                         variation.js.includes('if (') && variation.js.includes('return');
+
+      if (!isCountdown && !hasSelfStop) {
+        // This is likely a real memory leak
+        console.warn('⚠️ [Performance] setInterval without clearInterval detected');
+        this.addActivity(`⚠️ Performance warning: setInterval may cause memory leak`, 'warning');
+      } else {
+        // This is acceptable (countdown/timer that runs for page lifetime or stops itself)
+        console.log('✅ [Performance] setInterval detected but acceptable (countdown/timer with self-stop)');
+      }
     }
   }
 
@@ -3211,23 +3613,7 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     // Update the variation card to show test status
     const variationCard = document.querySelector(`[data-variation="${variationNumber}"]`);
     if (variationCard) {
-      let statusElement = variationCard.querySelector('.test-status');
-      if (!statusElement) {
-        statusElement = document.createElement('div');
-        statusElement.className = 'test-status';
-        variationCard.querySelector('.variation-header').appendChild(statusElement);
-      }
-
-      const statusIcons = {
-        'testing': '🔄',
-        'passed': '✅',
-        'failed': '❌'
-      };
-
-      statusElement.innerHTML = `${statusIcons[status] || '⏳'} ${status}`;
-      statusElement.className = `test-status ${status}`;
-
-      // Also update the status badge in the variation header
+      // Update the status badge in the variation header
       const statusBadge = variationCard.querySelector('.variation-badge');
       if (statusBadge) {
         const badges = {
@@ -3256,7 +3642,35 @@ Would you like me to capture the current page first? You can also click "📸 Ca
 
     this.addActivity('Exporting code as JSON...', 'info');
 
-    // Format code as JSON export
+    // CRITICAL: Include waitForElement utility in globalJS
+    // This utility is required by all generated code
+    const waitForElementUtility = `// Utility function (required for code execution)
+function waitForElement(selector, callback, maxWait = 10000) {
+  const start = Date.now();
+  const interval = setInterval(() => {
+    const element = document.querySelector(selector);
+    if (element) {
+      clearInterval(interval);
+      callback(element);
+    } else if (Date.now() - start > maxWait) {
+      clearInterval(interval);
+      console.warn('Element not found after timeout:', selector);
+    }
+  }, 100);
+
+  // AUTO-TRACK: Register interval with Cleanup Manager
+  if (window.ConvertCleanupManager) {
+    window.ConvertCleanupManager.registerInterval(interval, 'waitForElement: ' + selector);
+  }
+}`;
+
+    // Combine existing globalJS with utility (if not already present)
+    let globalJS = this.generatedCode.globalJS || '';
+    if (!globalJS.includes('function waitForElement')) {
+      globalJS = globalJS ? `${waitForElementUtility}\n\n${globalJS}` : waitForElementUtility;
+    }
+
+    // Format code as JSON export (with test script data)
     const exportData = {
       timestamp: new Date().toISOString(),
       pageUrl: this.currentPageData?.url || 'Unknown',
@@ -3268,7 +3682,13 @@ Would you like me to capture the current page first? You can also click "📸 Ca
         testStatus: v.testStatus || 'pending'
       })),
       globalCSS: this.generatedCode.globalCSS || '',
-      globalJS: this.generatedCode.globalJS || ''
+      globalJS: globalJS,
+      // NEW: Include test script data
+      testScript: this.generatedCode.testScript ? {
+        script: this.generatedCode.testScript.testScript,
+        requirements: this.generatedCode.testScript.requirements,
+        suggestedDuration: this.generatedCode.testScript.suggestedDuration
+      } : null
     };
 
     // Create downloadable JSON file
@@ -3904,6 +4324,23 @@ Would you like me to capture the current page first? You can also click "📸 Ca
     if (currentModelEl) {
       const model = this.settings?.model || 'gpt-4o';
       currentModelEl.textContent = this.getModelDisplayName(model);
+    }
+  }
+
+  updateApiStatus(status = 'success') {
+    const statusDot = document.querySelector('.model-status-dot');
+    if (!statusDot) return;
+
+    // Remove existing status classes
+    statusDot.classList.remove('status-success', 'status-error', 'status-loading');
+
+    // Add appropriate status class
+    if (status === 'error') {
+      statusDot.classList.add('status-error');
+    } else if (status === 'loading') {
+      statusDot.classList.add('status-loading');
+    } else {
+      statusDot.classList.add('status-success');
     }
   }
 

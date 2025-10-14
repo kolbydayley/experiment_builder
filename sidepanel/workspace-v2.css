@@ -2066,11 +2066,7 @@
   font-size: 11px;
 }
 
-.ai-model-indicator::before {
-  content: '●';
-  font-size: 8px;
-  color: #10b981;
-}
+/* Removed duplicate ::before dot - using HTML <span class="model-status-dot"> instead */
 
 /* Adjust layout for bottom bar */
 .app-v2 {
