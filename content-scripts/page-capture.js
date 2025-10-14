@@ -435,30 +435,57 @@ class PageCapture {
     return allCSS;
   }
 
+  // Helper function to escape special characters in CSS selectors
+  escapeCSSIdentifier(str) {
+    // Escape special CSS characters: !"#$%&'()*+,./:;<=>?@[\]^`{|}~
+    // Also handle leading digits
+    if (!str) return '';
+
+    // CSS.escape is the standard way, but fallback for older browsers
+    if (typeof CSS !== 'undefined' && CSS.escape) {
+      return CSS.escape(str);
+    }
+
+    // Manual fallback
+    return str.replace(/([!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~])/g, '\\$1');
+  }
+
   generateUniqueSelector(element) {
     // Try ID first
     if (element.id) {
-      return `#${element.id}`;
+      return `#${this.escapeCSSIdentifier(element.id)}`;
     }
 
     // Try unique class combination (prefer simpler selectors)
     if (element.className && typeof element.className === 'string') {
       const classes = element.className.trim().split(/\s+/).filter(cls => cls.length > 0);
       if (classes.length > 0) {
+        // Escape each class name
+        const escapedClasses = classes.map(cls => this.escapeCSSIdentifier(cls));
+
         // Try single class first, then progressively more specific
-        for (let i = 1; i <= Math.min(classes.length, 3); i++) {
-          const classSelector = element.tagName.toLowerCase() + '.' + classes.slice(0, i).join('.');
-          const matchingElements = document.querySelectorAll(classSelector);
-          if (matchingElements.length <= 3 && matchingElements.length > 0) {
-            return classSelector;
+        for (let i = 1; i <= Math.min(escapedClasses.length, 3); i++) {
+          const classSelector = element.tagName.toLowerCase() + '.' + escapedClasses.slice(0, i).join('.');
+          try {
+            const matchingElements = document.querySelectorAll(classSelector);
+            if (matchingElements.length <= 3 && matchingElements.length > 0) {
+              return classSelector;
+            }
+          } catch (e) {
+            // If selector is still invalid, skip to next
+            continue;
           }
         }
-        
+
         // Fallback to all classes if needed
-        const fullClassSelector = `.${classes.join('.')}`;
-        const matchingElements = document.querySelectorAll(fullClassSelector);
-        if (matchingElements.length <= 5) {
-          return fullClassSelector;
+        const fullClassSelector = `.${escapedClasses.join('.')}`;
+        try {
+          const matchingElements = document.querySelectorAll(fullClassSelector);
+          if (matchingElements.length <= 5) {
+            return fullClassSelector;
+          }
+        } catch (e) {
+          // Invalid selector, fall through to path-based
         }
       }
     }
@@ -466,27 +493,27 @@ class PageCapture {
     // Generate path-based selector
     const path = [];
     let currentElement = element;
-    
+
     while (currentElement && currentElement !== document.body) {
       let selector = currentElement.tagName.toLowerCase();
-      
+
       if (currentElement.id) {
-        selector += `#${currentElement.id}`;
+        selector += `#${this.escapeCSSIdentifier(currentElement.id)}`;
         path.unshift(selector);
         break;
       }
-      
+
       if (currentElement.className && typeof currentElement.className === 'string') {
         const classes = currentElement.className.trim().split(/\s+/);
-        if (classes.length > 0) {
-          selector += `.${classes[0]}`;
+        if (classes.length > 0 && classes[0]) {
+          selector += `.${this.escapeCSSIdentifier(classes[0])}`;
         }
       }
 
       // Add nth-child if there are siblings
       const siblings = Array.from(currentElement.parentNode?.children || []);
       const sameTagSiblings = siblings.filter(sibling => sibling.tagName === currentElement.tagName);
-      
+
       if (sameTagSiblings.length > 1) {
         const index = sameTagSiblings.indexOf(currentElement) + 1;
         selector += `:nth-child(${index})`;

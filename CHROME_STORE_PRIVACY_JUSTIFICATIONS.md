@@ -168,9 +168,8 @@ Users have full control over:
 
 ## Contact Information
 
-**Developer Email:** [Your Email Here]
+**Developer Email:** Kolbydayley@gmail.com
 **Support:** [GitHub Issues Link or Support Email]
-**Privacy Policy:** [Link to Privacy Policy if available]
 **Source Code:** https://github.com/kolbydayley/experiment_builder
 
 ---
