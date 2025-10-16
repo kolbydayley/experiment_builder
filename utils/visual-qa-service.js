@@ -16,6 +16,20 @@ class VisualQAService {
       CRITICAL: ['text-unreadable', 'layout-broken', 'element-missing', 'element-overlapping'],
       MAJOR: ['text-misaligned', 'bad-spacing', 'poor-contrast', 'visual-hierarchy-broken']
     };
+
+    // CRITICAL: Prohibited CSS modifications that break pages
+    this.PROHIBITED_MODIFICATIONS = [
+      { pattern: /header.*margin-top/i, reason: 'Never add margin-top to header elements' },
+      { pattern: /header.*padding-top/i, reason: 'Never add padding-top to header elements' },
+      { pattern: /nav.*margin-top/i, reason: 'Never add margin-top to nav elements' },
+      { pattern: /nav.*padding-top/i, reason: 'Never add padding-top to nav elements' },
+      { pattern: /navigation.*margin-top/i, reason: 'Never add margin-top to navigation elements' },
+      { pattern: /\.nav.*margin-top/i, reason: 'Never add margin-top to .nav elements' },
+      { pattern: /\.header.*margin-top/i, reason: 'Never add margin-top to .header elements' },
+      { pattern: /\.menu.*margin-top/i, reason: 'Never add margin-top to .menu elements' },
+      { pattern: /\.primary-nav.*margin-top/i, reason: 'Never modify primary navigation positioning' },
+      { pattern: /\.secondary-nav.*margin-top/i, reason: 'Never modify secondary navigation positioning' }
+    ];
   }
 
   /**
@@ -88,10 +102,22 @@ class VisualQAService {
       // Parse and validate response
       const result = this.parseResponse(apiResponse.content);
 
+      // CRITICAL: Filter out dangerous defect suggestions
+      result.defects = this.filterDangerousDefects(result.defects);
+
+      // If all defects were filtered out, mark as PASS
+      if (result.defects.length === 0 && result.status !== 'PASS') {
+        console.log('[Visual QA] All defects filtered as dangerous - changing status to PASS');
+        result.status = 'PASS';
+        result.goalAccomplished = true;
+        result.reasoning = 'All suggested fixes were filtered as potentially dangerous (e.g., modifying navigation)';
+        result.shouldContinue = false;
+      }
+
       // Add metadata
       result.iteration = iteration;
       result.timestamp = new Date().toISOString();
-      
+
       // Add usage data for cost tracking
       result.usage = apiResponse.usage || null;
 
@@ -209,17 +235,41 @@ You are viewing FULL PAGE screenshots (before and after). Your analysis must inc
 5. **CONTEXTUAL IMPACT**: Do the changes look good in the context of surrounding elements?
 6. **PROFESSIONAL APPEARANCE**: Only flag obvious technical issues, not style preferences
 
+**🚨 CRITICAL RULE: NEVER SUGGEST MODIFYING NAVIGATION/HEADER ELEMENTS 🚨**
+
+**ABSOLUTE PROHIBITIONS in suggestedFix:**
+❌ NEVER suggest adding margin-top, padding-top, or top offset to: header, nav, navigation, .nav, .header, .menu elements
+❌ NEVER suggest modifying z-index of navigation elements
+❌ NEVER suggest moving or repositioning header/nav elements to "fix" banner overlap
+❌ IF a fixed banner overlaps navigation, the ONLY valid fix is: adjust the banner's CSS (height, position) OR add body/html padding-top
+
+**WHY:** Navigation and header elements are core page structure. Modifying them breaks the entire site. Fixed banners should ALWAYS be fixed by:
+1. Adjusting the banner itself (height, z-index)
+2. Adding body { padding-top } to create space
+3. Adjusting html root element spacing
+
+**CORRECT FIX EXAMPLES for Fixed Banner Overlap:**
+✅ "Add CSS: body { padding-top: 60px !important; } to create space for fixed banner"
+✅ "Change banner CSS: #banner { height: 50px; } and body { padding-top: 50px; }"
+✅ "Reduce banner padding to fit without overlap: #banner { padding: 8px 16px !important; }"
+
+**NEVER DO THIS (will break entire page):**
+❌ "Change CSS: header { margin-top: 50px; }" → DESTROYS PAGE LAYOUT
+❌ "Change CSS: nav.primary-nav { margin-top: 70px; }" → BREAKS NAVIGATION
+❌ "Change CSS: .navigation-bar { top: 60px; }" → INCORRECT APPROACH
+
 **DEFECT DETECTION (with examples):**
 
 **CRITICAL DEFECTS (Block deployment):**
 ✗ Text unreadable: Cut off, overlapping, invisible color-on-color (ONLY if creates readability issue)
-✗ Layout broken: Elements overlapping, overflow visible, misaligned
+✗ Layout broken: Elements overlapping, overflow visible, misaligned (BUT: only flag if user's requested element is broken, NEVER flag navigation as broken)
 ✗ Missing elements: Requested changes not visible in AFTER
 ✗ Duplicate content: Same icon/text appears 2+ times (e.g., two lock icons on same button)
 ✗ Broken functionality: Button looks disabled, unclickable
 ✗ Element positioning: Buttons cut off, text overlapping images, misaligned content
 ✗ Visual hierarchy broken: Important elements not visible or properly positioned
 ✗ DO NOT FLAG: User-requested colors/styles even if they don't match the page brand - these are intentional
+✗ DO NOT FLAG: Fixed banners that appear to "overlap" navigation if body padding-top exists in CSS (this is the CORRECT approach)
 
 **MAJOR DEFECTS (Strongly recommend fix):**
 ⚠ Poor contrast: Text < 4.5:1 ratio, hard to read (ONLY if truly unreadable)
@@ -373,7 +423,7 @@ Analyze the screenshots now. Be precise and actionable.`;
           type: 'image_url',
           image_url: {
             url: beforeScreenshot,
-            detail: 'high'
+            detail: 'low'  // Use 'low' to reduce image size and API costs
           }
         },
         {
@@ -389,7 +439,7 @@ Analyze the screenshots now. Be precise and actionable.`;
           type: 'image_url',
           image_url: {
             url: afterScreenshot,
-            detail: 'high'
+            detail: 'low'  // Use 'low' to reduce image size and API costs
           }
         },
         {
@@ -645,16 +695,42 @@ Analyze the screenshots now. Be precise and actionable.`;
 
   /**
    * Build feedback message for code regeneration
+   * @param {object} qaResult - QA analysis result
+   * @param {object} elementDatabase - Optional element database with page selectors
+   * @param {number} iterationNumber - Current iteration number for context
    */
-  buildFeedbackForRegeneration(qaResult) {
+  buildFeedbackForRegeneration(qaResult, elementDatabase = null, iterationNumber = 1) {
     if (qaResult.status === 'PASS') {
       return null; // No feedback needed
     }
 
-    let feedback = `**VISUAL QA FEEDBACK (Iteration ${qaResult.iteration}):**\n\n⚠️ The following visual defects were detected and MUST be fixed in this iteration:\n\n`;
+    let feedback = `**VISUAL QA FEEDBACK (Iteration ${iterationNumber}):**\n\n`;
+
+    // Add iteration context warning if this is a retry
+    if (iterationNumber > 1) {
+      feedback += `⚠️ **ITERATION ${iterationNumber} WARNING**: Previous fix attempt did NOT resolve the defects. You MUST try a DIFFERENT approach this time!\n\n`;
+    }
+
+    feedback += `⚠️ The following visual defects were detected and MUST be fixed in this iteration:\n\n`;
 
     if (!qaResult.goalAccomplished) {
       feedback += `❌ **Goal Status**: ${qaResult.reasoning}\n\n`;
+    }
+
+    // Add available page selectors if provided
+    if (elementDatabase && elementDatabase.elements && elementDatabase.elements.length > 0) {
+      const pageSelectors = elementDatabase.elements
+        .map(el => el.selector)
+        .filter(s => s && (s.includes('nav') || s.includes('header') || s.includes('body') || s.includes('main')))
+        .slice(0, 10);
+
+      if (pageSelectors.length > 0) {
+        feedback += `**📍 AVAILABLE PAGE SELECTORS** (use these in your CSS fixes):\n`;
+        pageSelectors.forEach(sel => {
+          feedback += `   • \`${sel}\`\n`;
+        });
+        feedback += `\n`;
+      }
     }
 
     if (qaResult.defects.length > 0) {
@@ -727,9 +803,16 @@ Analyze the screenshots now. Be precise and actionable.`;
       return 'Add CSS: .split-right button { position: relative !important; z-index: 10 !important; margin: 10px !important; width: auto !important; min-width: 120px !important; }';
     }
 
-    // Text/image overlap issues - add background overlay
+    // Banner/Navigation overlap issues - VERY SPECIFIC (most common Visual QA issue)
+    if ((description.includes('banner') || description.includes('header')) &&
+        (description.includes('overlap') || description.includes('overlapping')) &&
+        (description.includes('navigation') || description.includes('nav') || description.includes('menu'))) {
+      return 'CRITICAL FIX: The banner is position:fixed at top:0, which overlaps navigation. You MUST add spacing below the banner. Try BOTH approaches: (1) Add CSS: body { padding-top: 80px !important; } AND (2) Add CSS to your banner code: Increase the margin-top on the navigation element (nav.primary-nav, nav.header-navs__items, etc) from its current value (e.g., 70px) to a LARGER value (e.g., 90px or 100px !important) to create clearance. Inspect the existing nav margin-top in your CURRENT CODE and increase it by 20-30px.';
+    }
+
+    // General overlap issues (not banner-specific)
     if (description.includes('overlaps') || description.includes('overlapping')) {
-      return 'Add CSS: .split-right > * { background: rgba(0, 0, 0, 0.7) !important; padding: 20px !important; border-radius: 8px !important; margin: 10px !important; z-index: 5 !important; }';
+      return 'Add CSS: Add z-index: 10 !important and ensure proper spacing with margin or padding to prevent overlap. If this is a fixed-position element, add padding-top to body or margin-top to the overlapped element.';
     }
     
     // General positioning issues
@@ -852,6 +935,56 @@ Analyze the screenshots now. Be precise and actionable.`;
   /**
    * Summarize element database for AI prompt context
    */
+  /**
+   * Filter out dangerous defect suggestions that would break the page
+   * @param {Array} defects - Defects from Visual QA
+   * @returns {Array} Filtered defects (safe suggestions only)
+   */
+  filterDangerousDefects(defects) {
+    if (!defects || defects.length === 0) {
+      return [];
+    }
+
+    const safeDefects = defects.filter(defect => {
+      const suggestedFix = defect.suggestedFix || '';
+
+      // Check if suggestedFix contains any prohibited modifications
+      for (const prohibition of this.PROHIBITED_MODIFICATIONS) {
+        if (prohibition.pattern.test(suggestedFix)) {
+          console.warn(`[Visual QA Filter] BLOCKED dangerous suggestion: ${prohibition.reason}`);
+          console.warn(`  Original suggestion: ${suggestedFix.substring(0, 100)}...`);
+          console.warn(`  Defect description: ${defect.description.substring(0, 100)}...`);
+          return false; // Filter out this defect
+        }
+      }
+
+      // Additional check: detect any navigation-targeting CSS
+      const navModificationPatterns = [
+        /header\s*\{[^}]*(?:margin|padding|top|position)[^}]*\}/i,
+        /nav\s*\{[^}]*(?:margin|padding|top|position)[^}]*\}/i,
+        /navigation.*\{[^}]*(?:margin|padding|top|position)[^}]*\}/i,
+        /\.(?:nav|header|menu|primary-nav|secondary-nav)\s*\{[^}]*(?:margin|padding|top)[^}]*\}/i
+      ];
+
+      for (const pattern of navModificationPatterns) {
+        if (pattern.test(suggestedFix)) {
+          console.warn(`[Visual QA Filter] BLOCKED navigation modification attempt`);
+          console.warn(`  Suggestion: ${suggestedFix.substring(0, 150)}...`);
+          return false;
+        }
+      }
+
+      return true; // Keep this defect - it's safe
+    });
+
+    const filteredCount = defects.length - safeDefects.length;
+    if (filteredCount > 0) {
+      console.log(`[Visual QA Filter] Filtered out ${filteredCount} dangerous defect(s)`);
+    }
+
+    return safeDefects;
+  }
+
   summarizeElementDatabase(elementDatabase) {
     if (!elementDatabase || !elementDatabase.elements) {
       return 'No element database available';

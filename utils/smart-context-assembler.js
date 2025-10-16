@@ -293,7 +293,22 @@ class SmartContextAssembler {
     };
 
     if (!pageData?.elementDatabase?.elements) {
-      console.warn('⚠️ [Smart Context] No element database in pageData!');
+      console.warn('⚠️ [Smart Context] No element database in pageData (likely loaded experiment)');
+
+      // For loaded experiments, reconstruct minimal element data from code selectors
+      if (usedSelectors.length > 0) {
+        console.log(`📝 [Smart Context] Reconstructing ${usedSelectors.length} elements from code selectors`);
+        context.elementDatabase.elements = usedSelectors.map(selector => ({
+          selector: selector,
+          tag: selector.split(/[#.\s]/)[0] || 'div',
+          id: selector.includes('#') ? selector.split('#')[1]?.split(/[.\s]/)[0] : null,
+          classes: selector.match(/\.[a-zA-Z0-9_-]+/g)?.map(c => c.slice(1)) || [],
+          text: '',
+          metadata: { source: 'reconstructed_from_code' }
+        }));
+        context.elementDatabase.metadata.reconstructedFromCode = true;
+      }
+
       return context;
     }
 
@@ -308,25 +323,68 @@ class SmartContextAssembler {
         (el.classes && el.classes.some(c => allNeededSelectors.has(`.${c}`)))
       );
     } else {
-      // Strategy 2: Include used selectors + top 10 elements for new additions
+      // Strategy 2: Include used selectors + top 10 + PROXIMITY ELEMENTS (Phase 3.1)
       const usedElements = pageData.elementDatabase.elements.filter(el =>
         usedSelectors.includes(el.selector) ||
         usedSelectors.includes(`#${el.id}`) ||
         (el.classes && el.classes.some(c => usedSelectors.includes(`.${c}`)))
       );
 
+      // Phase 3.1: Intelligent proximity expansion
+      // For each used element, find nearby elements in the DOM
+      const proximityElements = [];
+      usedElements.forEach(usedEl => {
+        // Extract container from selector (e.g., ".header" from ".header .btn")
+        const selectorParts = usedEl.selector.split(/\s+/);
+        const containerClass = selectorParts[0]; // First part is usually the container
+
+        // Find all elements that share the same container or are structurally related
+        pageData.elementDatabase.elements.forEach(candidate => {
+          // Skip if already in usedElements
+          if (usedElements.some(e => e.selector === candidate.selector)) return;
+
+          // Include if:
+          // 1. Shares same parent container
+          // 2. Has high importance (>= 7)
+          // 3. Not too far down in element list (within top 50)
+          const candidateIndex = pageData.elementDatabase.elements.indexOf(candidate);
+          const sharesContainer = candidate.selector.includes(containerClass) ||
+                                 containerClass.includes(candidate.selector);
+          const isImportant = candidate.importance >= 7;
+          const isNearby = candidateIndex < 50;
+
+          if ((sharesContainer || isImportant) && isNearby) {
+            if (!proximityElements.some(e => e.selector === candidate.selector)) {
+              proximityElements.push(candidate);
+            }
+          }
+        });
+      });
+
       // Add top 10 elements to allow for new additions
       const topElements = pageData.elementDatabase.elements.slice(0, 10);
 
-      // Combine and deduplicate
+      // Combine: used elements + proximity elements + top elements
       const combinedElements = [...usedElements];
+
+      // Add proximity elements (Phase 3.1)
+      proximityElements.forEach(el => {
+        if (!combinedElements.some(existing => existing.selector === el.selector)) {
+          combinedElements.push(el);
+        }
+      });
+
+      // Add top elements
       topElements.forEach(el => {
         if (!combinedElements.some(existing => existing.selector === el.selector)) {
           combinedElements.push(el);
         }
       });
 
-      context.elementDatabase.elements = combinedElements;
+      // Limit to 50 elements max (still 70% smaller than full database)
+      context.elementDatabase.elements = combinedElements.slice(0, 50);
+
+      console.log(`📍 [Phase 3.1] Proximity expansion: ${usedElements.length} used + ${proximityElements.length} proximity + ${topElements.length} top = ${combinedElements.length} total (capped at 50)`);
     }
 
     // If we end up with NO elements, fallback to top 20
@@ -345,6 +403,7 @@ class SmartContextAssembler {
     console.log(`  Elements: ${context.elementDatabase.elements.length}`);
     console.log(`  From code: ${usedSelectors.length} selectors`);
     console.log(`  Targets: ${targetSelectors.length} elements`);
+    console.log(`  Proximity (Phase 3.1): Expanded from ~${usedSelectors.length + 10} to ${context.elementDatabase.elements.length} elements`);
     console.log(`  Size: ${(JSON.stringify(context.elementDatabase.elements).length / 1024).toFixed(1)}KB`);
 
     return context;
@@ -361,15 +420,33 @@ class SmartContextAssembler {
     }
 
     codeResult.variations.forEach(variation => {
-      const code = (variation.css || '') + (variation.js || '');
+      const cssCode = variation.css || '';
+      const jsCode = variation.js || '';
 
-      // Match selector patterns
-      const matches = code.match(/['"`]([.#][\w-]+[^'"`]*?)['"`]/g);
+      // Extract from CSS selectors (before { )
+      const cssSelectors = cssCode.match(/([.#a-zA-Z][\w\-.:[\]='"\s>+~*()]+)\s*\{/g);
+      if (cssSelectors) {
+        cssSelectors.forEach(match => {
+          const selector = match.replace(/\s*\{$/, '').trim();
+          if (selector) selectors.add(selector);
+        });
+      }
 
-      if (matches) {
-        matches.forEach(match => {
-          const selector = match.replace(/['"`]/g, '');
-          selectors.add(selector);
+      // Extract from JS querySelector/querySelectorAll calls
+      const jsSelectors = jsCode.match(/querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/g);
+      if (jsSelectors) {
+        jsSelectors.forEach(match => {
+          const selectorMatch = match.match(/['"`]([^'"`]+)['"`]/);
+          if (selectorMatch) selectors.add(selectorMatch[1]);
+        });
+      }
+
+      // Extract from waitForElement calls
+      const waitForMatches = jsCode.match(/waitForElement\s*\(\s*['"`]([^'"`]+)['"`]/g);
+      if (waitForMatches) {
+        waitForMatches.forEach(match => {
+          const selectorMatch = match.match(/['"`]([^'"`]+)['"`]/);
+          if (selectorMatch) selectors.add(selectorMatch[1]);
         });
       }
     });

@@ -13,6 +13,10 @@ class ServiceWorker {
     // Simple cache for element databases (reduces repetitive processing)
     this.elementDatabaseCache = new Map();
     this.CACHE_TTL = 60000; // 1 minute cache
+
+    // Abort controller for cancelling AI requests
+    this.currentAbortController = null;
+    this.currentRequestContext = null; // Store context for reverting
   }
 
   createOperationLogger(context = 'Operation') {
@@ -96,7 +100,10 @@ class ServiceWorker {
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Handle message asynchronously and return true to keep channel open
-      this.handleMessage(message, sender, sendResponse);
+      this.handleMessage(message, sender, sendResponse).catch(error => {
+        console.error('❌ Message handler error:', error);
+        sendResponse({ success: false, error: error.message });
+      });
       return true; // ALWAYS return true for async handlers
     });
 
@@ -226,9 +233,32 @@ class ServiceWorker {
           break;
         }
 
-        case 'ADJUST_CODE':
-          const adjustedCode = await this.adjustCode(message.data, sender?.tab?.id);
-          sendResponse({ success: true, code: adjustedCode.code, usage: adjustedCode.usage, logs: adjustedCode.logs });
+        case 'ADJUST_CODE': {
+          // TEMPORARY: RefinementContext disabled due to service worker CSP limitations
+          // Using proven adjustCode method instead
+          // TODO: Refactor RefinementContext to work in service worker environment
+          try {
+            console.log('📨 [ADJUST_CODE] Received refinement request');
+            const adjusted = await this.adjustCode(message.data, sender?.tab?.id);
+            console.log('✅ [ADJUST_CODE] Refinement completed successfully');
+            sendResponse({ success: true, code: adjusted.code, usage: adjusted.usage, logs: adjusted.logs });
+          } catch (error) {
+            console.error('❌ [ADJUST_CODE] Error:', error.message);
+            sendResponse({ success: false, error: error.message, logs: this.takeRecentLogs() });
+          }
+          break;
+        }
+
+        case 'STOP_AI_REQUEST':
+          console.log('🛑 Stop AI request received');
+          if (this.currentAbortController) {
+            this.currentAbortController.abort();
+            this.currentAbortController = null;
+            sendResponse({ success: true, context: this.currentRequestContext });
+            this.currentRequestContext = null;
+          } else {
+            sendResponse({ success: false, error: 'No active request to stop' });
+          }
           break;
 
         case 'GET_AUTH_TOKEN':
@@ -244,11 +274,6 @@ class ServiceWorker {
         case 'TEST_API_KEY':
           const testResult = await this.testApiKey(message.token);
           sendResponse(testResult);
-          break;
-
-        case 'ADJUST_CODE':
-          const adjusted = await this.adjustCode(message.data);
-          sendResponse({ success: true, code: adjusted.code, usage: adjusted.usage, logs: adjusted.logs });
           break;
 
         case 'GET_HISTORY':
@@ -508,6 +533,59 @@ class ServiceWorker {
             const tabId = tabs[0].id;
 
             console.log('🚀 Executing preview JS via chrome.scripting.executeScript (CSP-safe)');
+            console.log(`📝 Received JS (${message.js.length} chars):`, message.js.substring(0, 300) + '...');
+
+            // 🆕 Extract globalJS from the combined code if present
+            // The message.js may contain both globalJS (helper functions) and variation JS
+            // Strategy: Split at the first non-function line (waitForElement call)
+            let globalHelpers = '';
+            let variationCode = message.js;
+
+            // Find all function declarations at the start
+            // Match: function name(...) { ... } including nested braces
+            const lines = message.js.split('\n');
+            let functionEndIndex = 0;
+            let braceDepth = 0;
+            let inFunction = false;
+
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
+
+              // Check if line starts a function
+              if (line.startsWith('function ')) {
+                inFunction = true;
+              }
+
+              // Count braces
+              for (const char of line) {
+                if (char === '{') braceDepth++;
+                if (char === '}') braceDepth--;
+              }
+
+              // If we were in a function and braces are balanced, function ended
+              if (inFunction && braceDepth === 0 && line.includes('}')) {
+                functionEndIndex = i + 1;
+                inFunction = false;
+              }
+
+              // If we hit a non-function line and no function is open, stop
+              if (!inFunction && braceDepth === 0 && line.length > 0 &&
+                  !line.startsWith('function ') && !line.startsWith('//')) {
+                break;
+              }
+            }
+
+            if (functionEndIndex > 0) {
+              globalHelpers = lines.slice(0, functionEndIndex).join('\n');
+              variationCode = lines.slice(functionEndIndex).join('\n').trim();
+              const funcCount = (globalHelpers.match(/^function\s+\w+/gm) || []).length;
+              console.log(`📦 Detected ${funcCount} helper functions (${globalHelpers.length} chars)`);
+              console.log(`📝 Global helpers preview:`, globalHelpers.substring(0, 200) + '...');
+              console.log(`📝 Variation code preview:`, variationCode.substring(0, 200) + '...');
+            } else {
+              console.log('⚠️ No helper functions detected in code');
+              console.log(`📝 Full code preview (first 500 chars):`, message.js.substring(0, 500));
+            }
 
             // Build the complete code with waitForElement utility
             const waitForElementUtility = `
@@ -545,9 +623,11 @@ class ServiceWorker {
             const fullCode = `
               ${waitForElementUtility}
 
+              ${globalHelpers}
+
               console.log('[Convert AI Preview] Starting variation ${message.variationNumber} execution...');
               try {
-                ${message.js}
+                ${variationCode}
                 console.log('[Convert AI Preview] ✓ Variation ${message.variationNumber} executed successfully');
               } catch (error) {
                 console.error('[Convert AI Preview] ✗ Execution error:', error);
@@ -755,7 +835,10 @@ class ServiceWorker {
 
             // Get the window ID for the tab to capture the correct window
             const tab = await chrome.tabs.get(tabId);
-            const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+            const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, {
+              format: 'jpeg',  // Use JPEG for smaller file size
+              quality: 85      // Balance quality vs size
+            });
             sendResponse({ success: true, screenshot });
           } catch (error) {
             console.error('After-injection capture failed:', error);
@@ -1139,7 +1222,7 @@ class ServiceWorker {
   }
 
   async generateCode(data, tabId = null) {
-    const { pageData, description, designFiles, variations, settings, selectedElement } = data;
+    const { pageData, description, designFiles, variations, settings, selectedElement, intentAnalysis } = data;
     const logger = this.createOperationLogger('GenerateCode');
     
     // Log Visual QA context
@@ -1203,13 +1286,23 @@ class ServiceWorker {
         console.log('🎯 First 10 selectors sent to AI:', selectors?.slice(0, 10));
       }
 
-      const messages = [{
-        role: 'system',
-        content: `You are an expert at generating clean, production-ready JavaScript and CSS code for A/B tests using only vanilla JavaScript.
+      // ✨ NEW: Use specialized system prompt for refinements
+      const isRefinement = description.includes('CURRENT GENERATED CODE');
+      const isVisualQARefinement = description.includes('VISUAL QA REFINEMENT') || description.includes('VISUAL QA FEEDBACK');
+
+      const systemPrompt = isVisualQARefinement
+        ? this.buildVisualQARefinementPrompt()
+        : isRefinement
+        ? this.buildRefinementSystemPrompt()
+        : `You are an expert at generating clean, production-ready JavaScript and CSS code for A/B tests using only vanilla JavaScript.
 
 CRITICAL CONSTRAINT: You will be given a list of valid CSS selectors. You MUST use ONLY these exact selectors in your code. Do NOT create, modify, or invent any selectors. If you use a selector not in the provided list, the code will fail completely.
 
-When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that list is the ONLY source of valid selectors. Copy them character-by-character.`
+When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that list is the ONLY source of valid selectors. Copy them character-by-character.`;
+
+      const messages = [{
+        role: 'system',
+        content: systemPrompt
       }];
 
       // Build user message with screenshot for brand/style context
@@ -1280,16 +1373,124 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
       let parsedCode = this.parseGeneratedCode(aiResponse.content);
       logger.log('Code parsed', `variations=${parsedCode.variations.length}`);
 
-      // ✨ VALIDATION: Check if selectors exist in database
-      const validationWarnings = this.validateSelectorsAgainstDatabase(parsedCode, pageData.elementDatabase);
-      if (validationWarnings.length > 0) {
-        logger.log('Selector validation warnings', `${validationWarnings.length} selectors not found in database`);
-        validationWarnings.forEach(warning => logger.log('Invalid selector', warning));
+      // 🆕 AUTO-FIX: Detect and generate missing helper functions
+      parsedCode = await this.ensureHelperFunctionsExist(parsedCode, aiSettings);
 
-        // ✨ AUTO-FIX: Replace generic selectors with specific ones from database
-        logger.log('Auto-fixing generic selectors', 'Replacing with database selectors...');
-        parsedCode = this.fixGenericSelectors(parsedCode, pageData.elementDatabase, tabId);
-        logger.log('Auto-fix complete', 'Generic selectors replaced');
+      // ✨ Phase 2.2: Validate refinement and retry if broken
+      // Skip validation for Visual QA refinements (they need to modify code to fix defects)
+      if (isRefinement && !isVisualQARefinement) {
+        const oldCodeMatch = description.match(/CURRENT GENERATED CODE:([\s\S]*?)(?:NEW REQUEST TO ADD:|$)/);
+        if (oldCodeMatch && oldCodeMatch[1]) {
+          const oldCode = oldCodeMatch[1].trim();
+          const newCode = parsedCode.variations[0]?.js || '';
+
+          // Phase 2.2: Get refinementType from intentAnalysis (default to incremental)
+          const refinementType = intentAnalysis?.refinementType || 'incremental';
+
+          // Skip validation for visual_qa mode (aggressive fixes are allowed)
+          const shouldValidate = refinementType !== 'visual_qa';
+
+          // 🤖 AI-powered validation (no heuristics - they never work)
+          const validation = shouldValidate ? await this.validateRefinementWithAI(oldCode, newCode, description, aiSettings) : null;
+
+          // Only validate if AI validation is available and validation is needed
+          if (shouldValidate && validation && !validation.isValid && validation.severity === 'critical') {
+            logger.log('Refinement validation FAILED - Retrying', `issues=${validation.issues.length}`);
+            console.warn('🔄 AI broke the code - automatically retrying with corrective feedback...');
+
+            // Build corrective feedback prompt
+            const correctiveFeedback = `
+❌ VALIDATION FAILED - YOUR PREVIOUS RESPONSE BROKE THE CODE ❌
+
+CRITICAL ERRORS DETECTED:
+${validation.issues.map((issue, i) => `
+${i + 1}. ${issue.message}
+   Impact: ${issue.impact}
+   Details: ${typeof issue.details === 'string' ? issue.details : JSON.stringify(issue.details)}
+`).join('\n')}
+
+CORRECTIVE INSTRUCTIONS:
+${validation.suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+🔴 TRY AGAIN - THIS TIME:
+1. Start with the EXACT original code (copy it character-by-character)
+2. Add ONLY the new change requested by user
+3. Do NOT remove any existing selectors
+4. Do NOT remove any existing style properties
+5. Do NOT rewrite or "optimize" existing code
+
+Original code you MUST preserve:
+\`\`\`javascript
+${oldCode}
+\`\`\`
+
+User's NEW addition request:
+${description.split('NEW REQUEST TO ADD:')[1] || description}
+
+Now generate the corrected code with ALL original functionality preserved.`;
+
+            // Retry with corrective feedback
+            const retryMessages = [
+              {
+                role: 'system',
+                content: this.buildRefinementSystemPrompt()
+              },
+              {
+                role: 'user',
+                content: userContent
+              },
+              {
+                role: 'assistant',
+                content: aiResponse.content
+              },
+              {
+                role: 'user',
+                content: correctiveFeedback
+              }
+            ];
+
+            const retryResponse = await this.callAI(retryMessages, aiSettings);
+            parsedCode = this.parseGeneratedCode(retryResponse.content);
+
+            // Validate again with AI (no heuristics)
+            const retryValidation = await this.validateRefinementWithAI(oldCode, parsedCode.variations[0]?.js || '', description, aiSettings);
+
+            if (retryValidation && retryValidation.isValid) {
+              logger.log('Refinement retry SUCCEEDED', 'Code now preserves existing functionality');
+              console.log('✅ Retry successful - code is now valid');
+            } else if (retryValidation) {
+              logger.log('Refinement retry still has issues', `severity=${retryValidation.severity}`);
+              console.warn('⚠️ Retry improved code but still has issues:', retryValidation.issues);
+              // Continue anyway - user can fix manually if needed
+            } else {
+              console.log('⚠️ Retry validation unavailable - accepting code as-is');
+            }
+          } else if (validation && validation.isValid) {
+            logger.log('Refinement validation PASSED', 'Code preserved existing functionality');
+          } else if (validation) {
+            logger.log('Refinement validation warnings', `severity=${validation.severity}, issues=${validation.issues.length}`);
+          }
+        }
+      } else if (isVisualQARefinement) {
+        logger.log('Visual QA refinement detected', 'Skipping validation - allowing code modifications to fix defects');
+        console.log('🩹 [Visual QA] Applying defect fixes without validation');
+      }
+
+      // ✨ VALIDATION: Check if selectors exist in database (skip for Visual QA - it creates new elements)
+      if (!isVisualQARefinement) {
+        const validationWarnings = this.validateSelectorsAgainstDatabase(parsedCode, pageData.elementDatabase);
+        if (validationWarnings.length > 0) {
+          logger.log('Selector validation warnings', `${validationWarnings.length} selectors not found in database`);
+          validationWarnings.forEach(warning => logger.log('Invalid selector', warning));
+
+          // ✨ AUTO-FIX: Replace generic selectors with specific ones from database
+          logger.log('Auto-fixing generic selectors', 'Replacing with database selectors...');
+          parsedCode = this.fixGenericSelectors(parsedCode, pageData.elementDatabase, tabId);
+          logger.log('Auto-fix complete', 'Generic selectors replaced');
+        }
+      } else {
+        logger.log('Visual QA refinement', 'Skipping selector validation - code creates new elements');
+        console.log('🩹 [Visual QA] Allowing new selectors for defect fixes (e.g., close button)');
       }
 
       // ✨ NEW: Automatic code testing and application pipeline (only if tabId available)
@@ -1304,10 +1505,18 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
           logger.log('Applying code to page', 'Injecting variation 1 for preview...');
           try {
             const variation = parsedCode.variations[0];
+
+            // 🆕 CRITICAL: Prepend globalJS and globalCSS to variation code
+            // Helper functions in globalJS must be available before variation JS runs
+            const combinedCSS = (parsedCode.globalCSS || '') + '\n' + (variation.css || '');
+            const combinedJS = (parsedCode.globalJS || '') + '\n' + (variation.js || '');
+
+            logger.log('Code combination', `globalCSS=${(parsedCode.globalCSS || '').length}chars, varCSS=${(variation.css || '').length}chars, globalJS=${(parsedCode.globalJS || '').length}chars, varJS=${(variation.js || '').length}chars`);
+
             await this.applyVariationCode({
               tabId: tabId,
-              css: variation.css || '',
-              js: variation.js || '',
+              css: combinedCSS.trim(),
+              js: combinedJS.trim(),
               key: `variation-${variation.number || 1}`
             });
             logger.log('Code applied successfully', 'Variation 1 is now live on page');
@@ -1325,7 +1534,11 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
       // Check settings (defaults to enabled if not set)
       const testScriptSettings = mergedSettings?.testScriptGeneration || { enabled: true, timeout: 10000 };
 
-      if (testScriptSettings.enabled !== false) {
+      // Skip test script generation for refinements unless new interactions were added
+      const shouldGenerateTestScript = testScriptSettings.enabled !== false &&
+        (!isRefinement || this.refinementAddedNewInteractions(description));
+
+      if (shouldGenerateTestScript) {
         try {
           logger.log('Generating test script', 'Analyzing for interactive features...');
 
@@ -1349,6 +1562,8 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
           logger.error('Test script generation failed', error.message);
           // Don't throw - test script is optional
         }
+      } else if (isRefinement) {
+        logger.log('Test script generation skipped', 'Refinement with no new interactions');
       } else {
         logger.log('Test script generation disabled', 'Skipping per user settings');
       }
@@ -1567,6 +1782,471 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
     };
   }
 
+  /**
+   * Build specialized system prompt for Visual QA defect fixes
+   * Used when fixing visual defects detected by automated QA
+   */
+  buildVisualQARefinementPrompt() {
+    return `You are a Visual QA defect remediation specialist. Your task is to FIX VISUAL DEFECTS.
+
+🔴 CRITICAL INSTRUCTION - VISUAL QA MODE:
+- You will receive EXISTING CODE with VISUAL DEFECTS
+- You will receive SPECIFIC DEFECTS that MUST be fixed
+- Your output MUST: FIX ALL DEFECTS while preserving overall functionality
+- This is NOT normal refinement - you MUST MODIFY/ADD/REMOVE code to fix defects
+
+⚠️ VISUAL QA MODE - DIFFERENT FROM NORMAL REFINEMENTS:
+Unlike normal refinements where you preserve all existing code, Visual QA mode allows you to:
+✅ MODIFY existing CSS/JS to fix defects
+✅ REMOVE problematic elements (e.g., remove separator colons)
+✅ ADD missing elements (e.g., add close button)
+✅ CHANGE selectors if needed to target correct elements
+✅ RESTRUCTURE code if necessary to fix layout issues
+
+🎯 YOUR PRIORITY HIERARCHY:
+1. **FIX ALL CRITICAL DEFECTS** (highest priority)
+2. **FIX ALL MAJOR DEFECTS** (high priority)
+3. **Preserve working functionality** (medium priority - but can be changed to fix defects)
+4. **Maintain code quality** (lowest priority)
+
+📋 VISUAL QA EXAMPLES:
+
+Example 1 - Removing Unwanted Elements:
+DEFECT: "Colons between timer boxes must be removed"
+EXISTING CODE:
+<span class="timer-separator">:</span>
+
+✅ CORRECT FIX:
+// Find and remove separators
+document.querySelectorAll('.timer-separator').forEach(el => el.remove());
+
+Example 2 - Adding Missing Elements:
+DEFECT: "Exit button missing - add close button"
+EXISTING CODE:
+<div class="banner">Content here</div>
+
+✅ CORRECT FIX:
+// Add close button
+const closeBtn = document.createElement('button');
+closeBtn.textContent = '×';
+closeBtn.className = 'banner-close-btn';
+closeBtn.onclick = () => banner.remove();
+banner.appendChild(closeBtn);
+
+// Add CSS for close button
+const style = document.createElement('style');
+style.textContent = \`.banner-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+}\`;
+document.head.appendChild(style);
+
+Example 3 - Banner/Navigation Overlap (MOST COMMON ISSUE):
+DEFECT: "BANNER OVERLAP: The new countdown banner overlaps with the top navigation bar"
+EXISTING CODE:
+// Banner with position: fixed at top
+.promo-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 60px;
+  z-index: 1000;
+}
+
+✅ CORRECT FIX (Use BOTH approaches):
+// Approach 1: Add body padding to push content down
+body {
+  padding-top: 80px !important;  /* Banner height + extra space */
+}
+
+// Approach 2: Increase navigation margin-top
+nav.primary-nav {
+  margin-top: 90px !important;  /* Increased from 70px to 90px */
+}
+
+// OR if nav has different selector:
+nav.header-navs__items {
+  margin-top: 100px !important;  /* Create clearance below fixed banner */
+}
+
+Example 4 - Spacing Issues:
+DEFECT: "Timer boxes overlap - need spacing between elements"
+EXISTING CODE:
+.timer-box {
+  display: inline-block;
+  margin: 0;
+}
+
+✅ CORRECT FIX:
+.timer-box {
+  display: inline-block;
+  margin: 0 10px !important;  /* Add horizontal spacing */
+}
+
+🔴 CRITICAL RULES FOR VISUAL QA:
+1. **READ THE DEFECT DESCRIPTIONS**: Each defect tells you EXACTLY what's wrong
+2. **IMPLEMENT THE SUGGESTED FIX**: Use the "MANDATORY CSS/JS CHANGE" provided
+3. **BE AGGRESSIVE WITH FIXES**: Don't preserve code that causes defects
+4. **USE !important**: For CSS fixes, use !important to override existing styles
+5. **TEST YOUR FIX**: Mentally verify your fix actually addresses the defect
+
+Remember: Your goal is DEFECT ELIMINATION, not code preservation. Fix the issues!`;
+  }
+
+  /**
+   * Build specialized system prompt for code refinement
+   * Used when modifying existing working code
+   */
+  buildRefinementSystemPrompt() {
+    return `You are a code refinement specialist. Your task is SURGICAL MODIFICATION ONLY.
+
+🔴 CRITICAL INSTRUCTION - READ 3 TIMES BEFORE RESPONDING:
+- You will receive EXISTING CODE that is ALREADY WORKING
+- You will receive ONE NEW CHANGE REQUEST
+- Your output MUST be: EXACT EXISTING CODE + ONLY THE NEW CHANGE
+- Think of it as diff/patch, not rewrite
+
+🔒 BASE PAGE STATE CONCEPT (Phase 1.3):
+**CRITICAL:** The element database represents the page BEFORE ANY CODE RUNS.
+- This is the ORIGINAL, UNMODIFIED page state
+- Your code executes on this base page, not on a previously-modified page
+- When you see a button with text "Buy Now", that's the STARTING state
+- Your code transforms it FROM that original state
+- Previous variations DO NOT affect the base page
+- Each variation starts from the same clean slate
+
+Example:
+- Base page: Button says "Buy Now" with blue background
+- Variation 1: Changes text to "Get Started" and makes it red
+- Variation 2 (refinement): Sees ORIGINAL "Buy Now" + blue, NOT the modified version
+- Your refinement code operates on "Buy Now" + blue, transforming it further
+
+This means: selectors target ORIGINAL elements, not modified ones.
+
+⛔ WHAT YOU MUST NOT DO:
+❌ Do NOT rewrite existing code
+❌ Do NOT "optimize" or "clean up" existing code
+❌ Do NOT remove any existing functionality
+❌ Do NOT change existing selectors
+❌ Do NOT consolidate similar logic
+❌ Do NOT simplify code structure
+❌ Do NOT replace element.style.X with cssText
+❌ Do NOT merge waitForElement calls
+
+✅ WHAT YOU MUST DO:
+✅ Copy all existing code character-by-character
+✅ Add ONLY the new requested change
+✅ Keep all existing waitForElement calls
+✅ Keep all existing element.dataset.varApplied checks
+✅ If modifying same element, add new properties alongside existing ones
+✅ Preserve exact formatting and structure
+
+📋 REFINEMENT EXAMPLES - STUDY THESE:
+
+Example 1 - Adding Style Property:
+EXISTING CODE:
+waitForElement('button.cta', (btn) => {
+  btn.style.backgroundColor = 'red';
+  btn.style.fontSize = '18px';
+});
+
+USER REQUEST: "make button even more prominent"
+
+✅ CORRECT OUTPUT (preserve + add):
+waitForElement('button.cta', (btn) => {
+  btn.style.backgroundColor = 'red';      // ← KEEP
+  btn.style.fontSize = '18px';           // ← KEEP
+  btn.style.fontWeight = 'bold';         // ← ADD
+  btn.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)'; // ← ADD
+});
+
+❌ WRONG OUTPUT (rewrite):
+waitForElement('button.cta', (btn) => {
+  btn.style.cssText = 'background: red; font-size: 20px; font-weight: bold; box-shadow: 0 4px 8px rgba(0,0,0,0.2);';
+  // ❌ This changed fontSize from 18px to 20px
+  // ❌ This used cssText instead of individual properties
+  // ❌ This is a rewrite, not an addition
+});
+
+Example 2 - Multiple Elements:
+EXISTING CODE:
+waitForElement('h1.title', (el) => {
+  el.style.color = 'blue';
+});
+
+waitForElement('button.cta', (el) => {
+  el.style.backgroundColor = 'red';
+});
+
+USER REQUEST: "make headline bigger"
+
+✅ CORRECT OUTPUT (preserve both blocks):
+waitForElement('h1.title', (el) => {
+  el.style.color = 'blue';        // ← KEEP
+  el.style.fontSize = '2.5em';    // ← ADD
+});
+
+waitForElement('button.cta', (el) => {  // ← KEEP ENTIRE BLOCK
+  el.style.backgroundColor = 'red';
+});
+
+❌ WRONG OUTPUT (removed unrelated code):
+waitForElement('h1.title', (el) => {
+  el.style.color = 'blue';
+  el.style.fontSize = '2.5em';
+});
+// ❌ Where did the button code go?
+
+🏥 TREAT THIS AS A MEDICAL OPERATION:
+- Existing code is the patient's working organs
+- New request is the surgical procedure
+- Your job: add/modify ONLY what's needed
+- Leave everything else UNTOUCHED
+
+Before responding, mentally checklist:
+□ Did I copy ALL existing waitForElement calls?
+□ Did I preserve ALL existing style properties?
+□ Did I ONLY add the new requested change?
+□ Did I avoid any "optimizations" or "cleanups"?
+□ Would the user recognize their existing code?`;
+  }
+
+  /**
+   * Analyze existing code to extract what's already implemented
+   * Returns structured data about selectors, properties, and functions
+   */
+  analyzeExistingCode(code) {
+    if (!code || typeof code !== 'string') {
+      return {
+        selectors: new Set(),
+        properties: {},
+        functions: [],
+        waitForElementCalls: [],
+        textContentChanges: [],
+        hasCode: false
+      };
+    }
+
+    const analysis = {
+      selectors: new Set(),
+      properties: {},
+      functions: [],
+      waitForElementCalls: [],
+      textContentChanges: [],
+      hasCode: true
+    };
+
+    try {
+      // Extract all waitForElement selectors
+      const selectorMatches = code.matchAll(/waitForElement\s*\(\s*['"`]([^'"`]+)['"`]/g);
+      for (const match of selectorMatches) {
+        const selector = match[1];
+        analysis.selectors.add(selector);
+        analysis.waitForElementCalls.push({
+          selector,
+          fullMatch: match[0]
+        });
+      }
+
+      // Extract all document.querySelector selectors
+      const querySelectorMatches = code.matchAll(/document\.querySelector(?:All)?\s*\(\s*['"`]([^'"`]+)['"`]/g);
+      for (const match of querySelectorMatches) {
+        analysis.selectors.add(match[1]);
+      }
+
+      // Extract style property assignments
+      const styleMatches = code.matchAll(/\.style\.(\w+)\s*=\s*(['"`])([^'"`]+)\2/g);
+      for (const match of styleMatches) {
+        const [_, property, quote, value] = match;
+        if (!analysis.properties[property]) {
+          analysis.properties[property] = [];
+        }
+        analysis.properties[property].push(value);
+      }
+
+      // Extract textContent changes
+      const textMatches = code.matchAll(/\.textContent\s*=\s*(['"`])([^'"`]+)\1/g);
+      for (const match of textMatches) {
+        const [_, quote, text] = match;
+        analysis.textContentChanges.push(text);
+        if (!analysis.properties['textContent']) {
+          analysis.properties['textContent'] = [];
+        }
+        analysis.properties['textContent'].push(text);
+      }
+
+      // Extract innerHTML changes
+      const htmlMatches = code.matchAll(/\.innerHTML\s*=\s*(['"`])([^'"`]+)\1/g);
+      for (const match of htmlMatches) {
+        if (!analysis.properties['innerHTML']) {
+          analysis.properties['innerHTML'] = [];
+        }
+        analysis.properties['innerHTML'].push(match[2]);
+      }
+
+      // Extract function definitions
+      const functionMatches = code.matchAll(/function\s+(\w+)\s*\(/g);
+      for (const match of functionMatches) {
+        analysis.functions.push(match[1]);
+      }
+
+      // Extract arrow function assignments
+      const arrowFunctionMatches = code.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*\([^)]*\)\s*=>/g);
+      for (const match of arrowFunctionMatches) {
+        analysis.functions.push(match[1]);
+      }
+
+    } catch (error) {
+      console.error('Error analyzing existing code:', error);
+    }
+
+    return analysis;
+  }
+
+  /**
+   * Phase 2.1: Validate refinement to ensure code wasn't broken
+   * Checks that old selectors/properties are preserved in new code
+   * Phase 2.2: Skip validation for user-requested full rewrites
+   * Visual QA: Skip strict validation for Visual QA fixes
+   */
+  /**
+   * AI-powered validation: Use AI to check if refinement is valid
+   * Much smarter than brittle heuristics
+   * @param {object} aiSettings - AI settings with API keys (passed from parent)
+   */
+  async validateRefinementWithAI(oldCode, newCode, userRequest, aiSettings) {
+    try {
+      // Strip base64 images/screenshots from user request (they're HUGE and not needed for validation)
+      // This is what causes 2.39MB requests - images are embedded as base64
+      const cleanRequest = userRequest
+        .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/g, '[IMAGE REMOVED FOR VALIDATION]')
+        .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, '[IMAGE]')
+        .replace(/src="data:image\/[^"]+"/g, 'src="[IMAGE]"');
+
+      // Extract just the user's actual request text (after "NEW REQUEST TO ADD:")
+      const requestMatch = cleanRequest.match(/NEW REQUEST TO ADD:\s*(.+?)(?:\n\n|$)/s);
+      const actualRequest = requestMatch ? requestMatch[1].trim() : cleanRequest;
+
+      // Log size reduction
+      const originalSize = userRequest.length;
+      const cleanedSize = actualRequest.length;
+      if (originalSize > 100000) {
+        console.log(`📉 Request size reduced: ${Math.round(originalSize / 1024)}KB → ${Math.round(cleanedSize / 1024)}KB (removed images)`);
+      }
+
+      const validationPrompt = `You are a code review AI. Your job is to verify that a code refinement was done correctly.
+
+USER'S REFINEMENT REQUEST:
+${actualRequest}
+
+ORIGINAL CODE:
+\`\`\`javascript
+${oldCode}
+\`\`\`
+
+NEW CODE AFTER REFINEMENT:
+\`\`\`javascript
+${newCode}
+\`\`\`
+
+QUESTION: Did the AI follow the user's request appropriately?
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "isValid": true/false,
+  "reason": "Brief explanation of why valid or invalid",
+  "severity": "none"/"warning"/"critical"
+}
+
+RULES:
+- isValid: true = AI did what user asked (even if it rewrote code to do it)
+- isValid: false = AI ignored request, broke working code, or did something completely different
+- severity: "critical" only if code is completely broken or wrong
+- severity: "warning" if minor issues but generally correct
+- severity: "none" if everything is good
+
+Be LENIENT - allow code rewrites if they accomplish the user's goal.`;
+
+      const messages = [
+        {
+          role: 'user',
+          content: validationPrompt
+        }
+      ];
+
+      // Use same provider/API keys as main generation, but switch to Haiku for speed
+      const validationSettings = {
+        ...aiSettings, // Inherit API keys from parent
+        model: aiSettings.provider === 'anthropic' ? 'claude-3-5-haiku-20241022' : 'gpt-4o-mini' // Fast models
+      };
+
+      console.log('🤖 Using AI to validate refinement...');
+      const response = await this.callAI(messages, validationSettings);
+
+      // Parse JSON response using robust extraction
+      let jsonText = response.content;
+
+      // Remove markdown code blocks if present
+      if (jsonText.includes('```json')) {
+        const start = jsonText.indexOf('```json') + 7;
+        const end = jsonText.indexOf('```', start);
+        jsonText = jsonText.substring(start, end).trim();
+      } else if (jsonText.includes('```')) {
+        const start = jsonText.indexOf('```') + 3;
+        const end = jsonText.indexOf('```', start);
+        jsonText = jsonText.substring(start, end).trim();
+      }
+
+      // Find JSON object boundaries
+      const firstBrace = jsonText.indexOf('{');
+      if (firstBrace === -1) {
+        throw new Error('AI validation response not in JSON format');
+      }
+
+      // Find matching closing brace
+      let braceCount = 0;
+      let lastBrace = firstBrace;
+      for (let i = firstBrace; i < jsonText.length; i++) {
+        if (jsonText[i] === '{') braceCount++;
+        if (jsonText[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            lastBrace = i;
+            break;
+          }
+        }
+      }
+
+      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+      const result = JSON.parse(jsonText);
+      console.log('✅ AI Validation Result:', result);
+
+      return {
+        isValid: result.isValid,
+        severity: result.severity || 'none',
+        issues: result.isValid ? [] : [{
+          type: 'ai_validation',
+          severity: result.severity || 'critical',
+          message: result.reason,
+          impact: 'AI did not follow user request correctly'
+        }],
+        suggestions: result.isValid ? [] : ['Review the AI response and try again'],
+        aiValidated: true
+      };
+
+    } catch (error) {
+      console.error('❌ AI validation failed, falling back to heuristics:', error);
+      // Fall back to heuristic validation
+      return null;
+    }
+  }
+
   buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings, selectedElement = null) {
     // Check if we have hierarchical context (new system) or legacy element database
     const hasHierarchicalContext = pageData.context && pageData.context.mode;
@@ -1696,10 +2376,18 @@ Elements are ranked by importance (position, size, interactivity).
 8. **FOR COLOR CHANGES: Use CSS section with !important flags (most reliable)**
 9. Text changes: element.textContent='new text' (use JS)
 10. CSS overrides inline styles - prefer CSS for visual changes
-11. **NOTE: waitForElement automatically registers intervals with Cleanup Manager**
-    - All intervals are auto-tracked for cleanup between previews
-    - You do NOT need to manually register intervals
-    - Simply use waitForElement() and cleanup happens automatically
+11. **CRITICAL: ALL setInterval/setTimeout MUST be registered with Cleanup Manager**
+    - Register intervals: window.ConvertCleanupManager.registerInterval(intervalId, 'description')
+    - Register timeouts: window.ConvertCleanupManager.registerTimeout(timeoutId, 'description')
+    - Register elements: window.ConvertCleanupManager.registerElement(element, 'description')
+    - **NOTE: waitForElement() auto-registers its intervals - you don't need to register those**
+    - **IMPORTANT: User-created setInterval/setTimeout MUST be manually registered**
+
+🚨 **CRITICAL: NEVER MODIFY NAVIGATION OR HEADER POSITIONING** 🚨
+❌ NEVER add margin-top, padding-top, or top offset to: header, nav, .nav, .header, .menu, .primary-nav, .secondary-nav
+❌ FOR FIXED BANNERS: Use "body { padding-top: XXpx !important; }" ONLY - do NOT touch navigation elements
+✅ CORRECT approach for fixed banner: #banner { position: fixed; top: 0; } + body { padding-top: 50px !important; }
+❌ WRONG approach: #banner { position: fixed; top: 0; } + nav { margin-top: 50px !important; } ← THIS BREAKS THE PAGE
 
 🔴 **REFINEMENT RULE (IF "CURRENT GENERATED CODE" IS IN REQUEST):**
 If the REQUEST includes "CURRENT GENERATED CODE" section:
@@ -1798,7 +2486,82 @@ waitForElement('button.btn.btn--primary', ...)
 // ✅ ALWAYS copy selector from database:
 waitForElement('${exampleSelector}', ...)`;
 
-    return `⚠️⚠️⚠️ CRITICAL - READ THIS FIRST ⚠️⚠️⚠️
+    // ✨ NEW: Detect if this is a refinement request and add analysis
+    let refinementPrefix = '';
+    if (description.includes('CURRENT GENERATED CODE')) {
+      console.log('🔧 Refinement detected - analyzing existing code...');
+
+      // Extract existing code
+      const existingCodeMatch = description.match(/CURRENT GENERATED CODE:([\s\S]*?)(?:NEW REQUEST TO ADD:|$)/);
+      if (existingCodeMatch) {
+        const existingCode = existingCodeMatch[1];
+        const analysis = this.analyzeExistingCode(existingCode);
+
+        if (analysis.hasCode && analysis.selectors.size > 0) {
+          console.log(`  📊 Found ${analysis.selectors.size} selectors to preserve`);
+          console.log(`  📊 Found ${Object.keys(analysis.properties).length} properties to preserve`);
+
+          // Build DO NOT CHANGE list
+          refinementPrefix = `
+⚠️⚠️⚠️ REFINEMENT MODE - CRITICAL INSTRUCTIONS ⚠️⚠️⚠️
+
+🔴 THIS IS A CODE REFINEMENT, NOT A REWRITE
+You are modifying EXISTING WORKING CODE. Your output must be:
+EXACT EXISTING CODE + ONLY THE NEW CHANGE
+
+⛔ EXISTING IMPLEMENTATION (DO NOT REMOVE OR CHANGE):
+
+**SELECTORS ALREADY IN USE (MUST APPEAR IN OUTPUT):**
+${Array.from(analysis.selectors).map(s => `  ✓ "${s}" ← MUST BE PRESERVED`).join('\n')}
+
+**STYLE PROPERTIES ALREADY SET (MUST BE PRESERVED):**
+${Object.entries(analysis.properties)
+  .filter(([prop]) => prop !== 'innerHTML')
+  .map(([prop, values]) => `  ✓ ${prop}: ${values.join(', ')} ← KEEP THESE VALUES`).join('\n')}
+
+${analysis.textContentChanges.length > 0 ? `**TEXT CONTENT ALREADY SET:**
+${analysis.textContentChanges.map(text => `  ✓ "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}" ← KEEP THIS TEXT`).join('\n')}` : ''}
+
+🎯 YOUR TASK:
+1. Copy ALL ${analysis.waitForElementCalls.length} waitForElement call(s) from existing code
+2. Inside each callback, keep ALL existing properties
+3. Add ONLY the new requested change
+4. DO NOT consolidate, optimize, or rewrite
+
+📍 PHASE 3.2: AVAILABLE ELEMENTS FOR NEW ADDITIONS
+
+The element database below contains THREE categories:
+
+1. **CURRENT ELEMENTS** (${analysis.selectors.size} selectors listed above)
+   - Elements already in your code
+   - YOU MUST PRESERVE ALL OF THESE
+
+2. **PROXIMITY ELEMENTS** (nearby elements in database)
+   - Elements NEAR your existing changes (share same container/section)
+   - Use these for requests like "add badge next to button" or "put banner above heading"
+
+3. **TOP ELEMENTS** (high-importance page elements)
+   - Globally important elements (nav, hero, CTA buttons)
+   - Use these for new, unrelated additions
+
+**HOW TO USE THIS:**
+- For refinements: KEEP all current elements, ADD from proximity/top as needed
+- Example: "add badge next to button" → KEEP button code, ADD badge using proximity element
+- Example: "also change the header" → KEEP button code, ADD header change using top element
+
+✅ VERIFICATION CHECKLIST (check before responding):
+□ Did I preserve all ${analysis.selectors.size} selector(s)?
+□ Did I keep all ${Object.keys(analysis.properties).length} existing properties?
+□ Did I only ADD the new change, not REPLACE?
+□ Would the original developer recognize their code?
+
+`;
+          console.log('  ✅ Refinement analysis added to prompt (with Phase 3.2 proximity context)');
+        }
+      }
+    }
+
+    return `${refinementPrefix}⚠️⚠️⚠️ CRITICAL - READ THIS FIRST ⚠️⚠️⚠️
 ${selectedElementHeader}
 **YOU MUST ONLY USE THESE SELECTORS - NO OTHERS:**
 ${orderedElements.map((el, i) => `${i + 1}. "${el.selector}"${i === 0 && selectedElement ? ' ⭐ USER-SELECTED ELEMENT' : ''}`).join('\n')}
@@ -1846,20 +2609,27 @@ ${exampleCode}
 **OUTPUT FORMAT - STRICT JSON:**
 You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSON.
 
+⚠️ **CODE LENGTH LIMITS (CRITICAL):**
+- Each variation's JS code must be ≤ 2000 characters
+- Each variation's CSS code must be ≤ 1500 characters
+- For complex features (timers, animations), use external helper functions in globalJS
+- Keep code concise - focus on the specific requested change
+- If implementing complex logic, break it into smaller helper functions
+
 {
   "variations": [
     {
       "number": 1,
       "name": "Descriptive Name (2-5 words)",
-      "css": "CSS code or empty string",
-      "js": "JavaScript code using waitForElement (DO NOT define it)"
+      "css": "CSS code or empty string (max 1500 chars)",
+      "js": "JavaScript code using waitForElement (max 2000 chars, DO NOT define it)"
     }
   ],
   "globalCSS": "Shared CSS or empty string",
-  "globalJS": "Shared JavaScript or empty string"
+  "globalJS": "Shared JavaScript helper functions or empty string"
 }
 
-**EXAMPLE JSON OUTPUT:**
+**EXAMPLE JSON OUTPUT (Simple change):**
 {
   "variations": [
     {
@@ -1873,6 +2643,22 @@ You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSO
   "globalJS": ""
 }
 
+**EXAMPLE JSON OUTPUT (Complex feature with helper functions and Cleanup Manager):**
+{
+  "variations": [
+    {
+      "number": 1,
+      "name": "Countdown Timer",
+      "css": "#timer {\\n  position: fixed !important;\\n  top: 0 !important;\\n  background: #000 !important;\\n}",
+      "js": "waitForElement('body', (body) => {\\n  if(document.getElementById('timer')) return;\\n  const timer = document.createElement('div');\\n  timer.id = 'timer';\\n  body.prepend(timer);\\n  if(window.ConvertCleanupManager) window.ConvertCleanupManager.registerElement(timer, 'countdown timer');\\n  updateTimer(timer);\\n  const intervalId = setInterval(() => updateTimer(timer), 1000);\\n  if(window.ConvertCleanupManager) window.ConvertCleanupManager.registerInterval(intervalId, 'timer update');\\n});"
+    }
+  ],
+  "globalCSS": "",
+  "globalJS": "function updateTimer(el) {\\n  const now = new Date();\\n  el.textContent = now.toLocaleTimeString();\\n}"
+}
+
+⚠️ **CRITICAL: If your variation JS calls ANY custom functions (like updateTimer, formatDate, etc.), you MUST define them in globalJS!**
+
 NOTE: Do NOT include "function waitForElement(...)" definition - just call it directly.
 BEST PRACTICE: Use CSS section for colors/sizes (with !important), JS section for text/behavior.
 
@@ -1882,6 +2668,9 @@ BEST PRACTICE: Use CSS section for colors/sizes (with !important), JS section fo
 □ ✅ ONLY used exact selectors from database (copy-paste)
 □ ❌ Did NOT include waitForElement function definition
 □ ✅ Just CALLED waitForElement with selector and callback
+□ 🧹 ALL setInterval calls are registered with ConvertCleanupManager
+□ 🧹 ALL setTimeout calls are registered with ConvertCleanupManager
+□ 🧹 ALL created elements are registered with ConvertCleanupManager
 □ Implemented ALL requested changes
 □ Added duplication prevention (dataset.varApplied)
 □ Descriptive variation names
@@ -1892,6 +2681,119 @@ Look at the ELEMENTS list above and find the selector that matches what the user
 Copy that EXACT selector - do not modify it or create a new one.
 
 Generate JSON now.`;
+  }
+
+  /**
+   * Auto-fix: Ensure all called functions are defined in globalJS
+   */
+  async ensureHelperFunctionsExist(parsedCode, aiSettings) {
+    console.log('🔍 Checking for undefined function calls...');
+
+    // Extract all function calls from variation JS
+    const allVariationJS = parsedCode.variations.map(v => v.js || '').join('\n');
+    const functionCalls = new Set();
+
+    // JavaScript keywords to exclude
+    const jsKeywords = ['if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'return', 'throw', 'try', 'catch', 'finally', 'function', 'var', 'let', 'const', 'class', 'new', 'this', 'super', 'extends', 'import', 'export', 'await', 'async', 'yield', 'typeof', 'instanceof', 'delete', 'void'];
+
+    // Built-in functions and DOM methods to exclude
+    const builtIns = ['waitForElement', 'document', 'window', 'console', 'setInterval', 'setTimeout', 'clearInterval', 'clearTimeout', 'Date', 'Math', 'Array', 'Object', 'String', 'Number', 'Boolean', 'JSON', 'parseInt', 'parseFloat', 'isNaN', 'isFinite', 'Promise', 'Set', 'Map', 'WeakMap', 'WeakSet',
+      // Common DOM methods
+      'getElementById', 'querySelector', 'querySelectorAll', 'getElementsByClassName', 'getElementsByTagName', 'createElement', 'createTextNode', 'appendChild', 'removeChild', 'insertBefore', 'replaceChild', 'setAttribute', 'getAttribute', 'removeAttribute', 'addEventListener', 'removeEventListener', 'dispatchEvent',
+      // Common String/Array/Number methods
+      'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'concat', 'join', 'split', 'indexOf', 'lastIndexOf', 'includes', 'find', 'filter', 'map', 'reduce', 'forEach', 'some', 'every', 'sort', 'reverse', 'substring', 'substr', 'charAt', 'charCodeAt', 'toLowerCase', 'toUpperCase', 'trim', 'replace', 'match', 'search', 'test', 'exec', 'toString', 'valueOf', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleString', 'padStart', 'padEnd',
+      // Date methods
+      'getTime', 'getFullYear', 'getMonth', 'getDate', 'getDay', 'getHours', 'getMinutes', 'getSeconds', 'getMilliseconds', 'setFullYear', 'setMonth', 'setDate', 'setHours', 'setMinutes', 'setSeconds', 'setMilliseconds',
+      // Math methods
+      'floor', 'ceil', 'round', 'abs', 'min', 'max', 'random', 'sqrt', 'pow', 'sin', 'cos', 'tan',
+      // ConvertCleanupManager methods
+      'registerInterval', 'registerTimeout', 'registerElement', 'registerStyleSheet', 'trackModification', 'resetAll'];
+
+    // Match function calls, excluding method calls (preceded by .)
+    // Use negative lookbehind to exclude method calls: (?<!\.)functionName(
+    const callMatches = allVariationJS.matchAll(/(?<![.\w])([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g);
+    for (const match of callMatches) {
+      const funcName = match[1];
+      // Skip keywords and built-ins
+      if (!jsKeywords.includes(funcName) && !builtIns.includes(funcName)) {
+        functionCalls.add(funcName);
+      }
+    }
+
+    if (functionCalls.size === 0) {
+      console.log('✅ No custom function calls found');
+      return parsedCode;
+    }
+
+    console.log(`📋 Found ${functionCalls.size} custom function calls:`, Array.from(functionCalls));
+
+    // Check which functions are NOT defined in globalJS or variation JS
+    const globalJS = parsedCode.globalJS || '';
+    const missingFunctions = Array.from(functionCalls).filter(funcName => {
+      // Check for function declarations: function funcName(
+      const declarationPattern = new RegExp(`function\\s+${funcName}\\s*\\(`);
+      // Check for function expressions: const funcName = function( or const funcName = (
+      const expressionPattern = new RegExp(`(?:const|let|var)\\s+${funcName}\\s*=\\s*(?:function\\s*\\(|\\()`);
+      // Check for arrow functions: const funcName = (...) =>
+      const arrowPattern = new RegExp(`(?:const|let|var)\\s+${funcName}\\s*=\\s*\\([^)]*\\)\\s*=>`);
+
+      // Check globalJS
+      if (declarationPattern.test(globalJS) || expressionPattern.test(globalJS) || arrowPattern.test(globalJS)) {
+        return false; // Function is defined in globalJS
+      }
+
+      // Check variation JS (function might be defined inline)
+      if (declarationPattern.test(allVariationJS) || expressionPattern.test(allVariationJS) || arrowPattern.test(allVariationJS)) {
+        return false; // Function is defined in variation JS
+      }
+
+      return true; // Function is not defined anywhere
+    });
+
+    if (missingFunctions.length === 0) {
+      console.log('✅ All functions are defined in globalJS or variation code');
+      return parsedCode;
+    }
+
+    console.warn(`⚠️ Found ${missingFunctions.length} UNDEFINED functions:`, missingFunctions);
+    console.log('🤖 Auto-generating missing helper functions...');
+
+    // Generate the missing functions using AI
+    const prompt = `The following JavaScript code calls these functions but they are not defined: ${missingFunctions.join(', ')}
+
+Code that calls them:
+\`\`\`javascript
+${allVariationJS}
+\`\`\`
+
+Generate ONLY the missing function definitions. Return valid JavaScript code with just the function declarations, no explanations.
+
+For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), and updateCountdown(), generate all three functions.`;
+
+    try {
+      const response = await this.callAI([{role: 'user', content: prompt}], {
+        ...aiSettings,
+        model: aiSettings.provider === 'anthropic' ? 'claude-3-5-haiku-20241022' : 'gpt-4o-mini' // Use fast model
+      });
+
+      // Extract just the function code (remove markdown if present)
+      let generatedFunctions = response.content;
+      if (generatedFunctions.includes('```')) {
+        const match = generatedFunctions.match(/```(?:javascript|js)?\s*\n?([\s\S]*?)\n?```/);
+        if (match) generatedFunctions = match[1];
+      }
+
+      // Append to existing globalJS
+      parsedCode.globalJS = (parsedCode.globalJS || '') + '\n\n' + generatedFunctions.trim();
+      console.log(`✅ Auto-generated ${missingFunctions.length} helper functions (${generatedFunctions.length} chars)`);
+      console.log(`📝 Preview: ${generatedFunctions.substring(0, 200)}...`);
+
+    } catch (error) {
+      console.error('❌ Failed to auto-generate helper functions:', error);
+      // Continue anyway - the code will fail at runtime but that's better than crashing here
+    }
+
+    return parsedCode;
   }
 
   /**
@@ -2018,6 +2920,9 @@ Generate JSON now.`;
       console.log('🔄 About to make fetch request...');
       const fetchStartTime = Date.now();
 
+      // Create abort controller for cancellable requests
+      this.currentAbortController = new AbortController();
+
       try {
         response = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
@@ -2027,13 +2932,22 @@ Generate JSON now.`;
             'anthropic-version': '2023-06-01',
             'anthropic-dangerous-direct-browser-access': 'true'
           },
-          body: requestBodyString // Use pre-stringified body
+          body: requestBodyString, // Use pre-stringified body
+          signal: this.currentAbortController.signal // Allow cancellation
         });
 
         const fetchDuration = Date.now() - fetchStartTime;
         console.log(`✅ Fetch completed in ${fetchDuration}ms`);
       } catch (innerFetchError) {
         const fetchDuration = Date.now() - fetchStartTime;
+
+        // Check if request was aborted by user
+        if (innerFetchError.name === 'AbortError') {
+          console.log('🛑 Request cancelled by user');
+          this.currentAbortController = null;
+          throw new Error('REQUEST_CANCELLED');
+        }
+
         console.error(`❌ Fetch failed after ${fetchDuration}ms`);
         console.error('Error name:', innerFetchError.name);
         console.error('Error message:', innerFetchError.message);
@@ -2051,6 +2965,9 @@ Generate JSON now.`;
         }
 
         throw innerFetchError;
+      } finally {
+        // Clean up abort controller after request completes
+        this.currentAbortController = null;
       }
 
       console.log('📡 API Response received:', {
@@ -2218,14 +3135,32 @@ Generate JSON now.`;
     // CRITICAL: Force JSON output mode (prevents markdown code blocks)
     requestBody.response_format = { type: "json_object" };
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify(requestBody)
-    });
+    // Create abort controller for cancellable requests
+    this.currentAbortController = new AbortController();
+
+    let response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify(requestBody),
+        signal: this.currentAbortController.signal // Allow cancellation
+      });
+    } catch (fetchError) {
+      // Check if request was aborted by user
+      if (fetchError.name === 'AbortError') {
+        console.log('🛑 Request cancelled by user');
+        this.currentAbortController = null;
+        throw new Error('REQUEST_CANCELLED');
+      }
+      throw fetchError;
+    } finally {
+      // Clean up abort controller after request completes
+      this.currentAbortController = null;
+    }
 
     if (!response.ok) {
       let errorDetail = `ChatGPT API error: ${response.status}`;
@@ -2343,7 +3278,11 @@ Generate JSON now.`;
           break;
         }
       } catch (e) {
-        // Not valid JSON, try next block
+        // Log the error for debugging but don't spam console
+        if (allCodeBlocks.length === 1) {
+          console.warn(`⚠️ JSON parse error:`, e.message);
+        }
+        // Continue to next block
       }
     }
 
@@ -2370,7 +3309,7 @@ Generate JSON now.`;
 
         if (parsed.variations && Array.isArray(parsed.variations)) {
           console.log('✅ Successfully parsed JSON response');
-          
+
           // Debug: Log the actual generated code
           parsed.variations.forEach((v, index) => {
             console.log(`🔍 Generated Code Debug - Variation ${index + 1}:`);
@@ -2378,7 +3317,16 @@ Generate JSON now.`;
             console.log(`  CSS: ${v.css ? v.css.substring(0, 200) + '...' : 'None'}`);
             console.log(`  JS: ${v.js ? v.js.substring(0, 200) + '...' : 'None'}`);
           });
-          
+
+          console.log(`🔍 Generated Code Debug - Global Code:`);
+          console.log(`  GlobalCSS: ${parsed.globalCSS ? parsed.globalCSS.length + ' chars' : 'None'}`);
+          console.log(`  GlobalJS: ${parsed.globalJS ? parsed.globalJS.length + ' chars' : 'None'}`);
+          if (parsed.globalJS) {
+            console.log(`  GlobalJS preview: ${parsed.globalJS.substring(0, 300)}...`);
+          } else {
+            console.warn(`  ⚠️ AI did not generate globalJS despite variation JS being present`);
+          }
+
           return {
             variations: parsed.variations.map(v => ({
               number: v.number || 1,
@@ -2391,7 +3339,120 @@ Generate JSON now.`;
           };
         }
       } catch (jsonError) {
-        console.warn('⚠️ JSON parsing failed, trying CSS/JS block parser:', jsonError.message);
+        console.warn('⚠️ JSON parsing failed:', jsonError.message);
+
+        // 🆕 Check if it's a truncation error (unterminated string)
+        if (jsonError.message.includes('Unterminated string')) {
+          console.log('🔧 Attempting to recover from truncated JSON...');
+
+          try {
+            // Find the last complete variation before truncation
+            const variationMatches = [...cleanedResponse.matchAll(/"variations":\s*\[\s*\{/g)];
+
+            if (variationMatches.length > 0) {
+              // Try to find where the string was cut off
+              const truncationPoint = cleanedResponse.lastIndexOf('"');
+
+              if (truncationPoint > 0) {
+                // Close the truncated string and complete the JSON structure
+                let recovered = cleanedResponse.substring(0, truncationPoint + 1);
+
+                // Add closing brackets based on structure
+                // Count open braces to determine how many we need to close
+                const openBraces = (recovered.match(/\{/g) || []).length;
+                const closeBraces = (recovered.match(/\}/g) || []).length;
+                const openBrackets = (recovered.match(/\[/g) || []).length;
+                const closeBrackets = (recovered.match(/\]/g) || []).length;
+
+                // Close the JS/CSS string if it's open
+                if (!recovered.endsWith('"')) {
+                  recovered += '"';
+                }
+
+                // Close the variation object
+                for (let i = 0; i < (openBraces - closeBraces); i++) {
+                  recovered += '\n}';
+                }
+
+                // Close the variations array
+                for (let i = 0; i < (openBrackets - closeBrackets); i++) {
+                  recovered += '\n]';
+                }
+
+                // Add missing globalCSS and globalJS fields
+                if (!recovered.includes('"globalCSS"')) {
+                  recovered += ',\n  "globalCSS": "",\n  "globalJS": ""';
+                }
+
+                console.log('🔧 Recovered JSON structure:', {
+                  original: cleanedResponse.length,
+                  recovered: recovered.length,
+                  openBraces,
+                  closeBraces,
+                  openBrackets,
+                  closeBrackets
+                });
+
+                const parsedRecovered = JSON.parse(recovered);
+
+                if (parsedRecovered.variations && parsedRecovered.variations.length > 0) {
+                  console.log('✅ Successfully recovered truncated JSON!');
+                  console.log('⚠️ Warning: Code was truncated - some functionality may be incomplete');
+
+                  // Truncate the JS/CSS to valid length and add warning comment
+                  return {
+                    variations: parsedRecovered.variations.map(v => ({
+                      number: v.number || 1,
+                      name: v.name || 'Unnamed',
+                      css: v.css || '',
+                      js: (v.js || '') + '\n// ⚠️ Code was truncated - please refine if incomplete'
+                    })),
+                    globalCSS: parsedRecovered.globalCSS || '',
+                    globalJS: parsedRecovered.globalJS || ''
+                  };
+                }
+              }
+            }
+          } catch (recoveryError) {
+            console.warn('⚠️ Truncation recovery failed:', recoveryError.message);
+          }
+        }
+
+        // Try to fix malformed JSON (AI sometimes returns JSON with literal newlines in strings)
+        try {
+          console.log('🔧 Attempting to fix newlines in JSON strings...');
+
+          // Replace literal newlines inside string values with \\n
+          // This handles the AI putting actual newlines in "css": "..." and "js": "..." values
+          let fixed = cleanedResponse.replace(/"(css|js)":\s*"([\s\S]*?)(?="[,\}])/g, (match, key, content) => {
+            // Escape special characters in the content
+            const escaped = content
+              .replace(/\\/g, '\\\\')  // Escape backslashes
+              .replace(/\n/g, '\\n')    // Escape newlines
+              .replace(/\r/g, '\\r')    // Escape carriage returns
+              .replace(/\t/g, '\\t')    // Escape tabs
+              .replace(/"/g, '\\"');     // Escape quotes
+            return `"${key}": "${escaped}`;
+          });
+
+          const parsedFixed = JSON.parse(fixed);
+
+          if (parsedFixed.variations && Array.isArray(parsedFixed.variations)) {
+            console.log('✅ Successfully fixed and parsed JSON');
+            return {
+              variations: parsedFixed.variations.map(v => ({
+                number: v.number || 1,
+                name: v.name || 'Unnamed',
+                css: v.css || '',
+                js: v.js || ''
+              })),
+              globalCSS: parsedFixed.globalCSS || '',
+              globalJS: parsedFixed.globalJS || ''
+            };
+          }
+        } catch (fixError) {
+          console.warn('⚠️ Could not fix JSON:', fixError.message);
+        }
       }
     }
 
@@ -2661,6 +3722,49 @@ Generate JSON now.`;
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * Load and execute a script in the service worker context
+   * @param {string} scriptPath - Path to script file
+   * @returns {Promise<any>} - The exported class or function from the script
+   */
+  async loadScript(scriptPath) {
+    try {
+      // Check if already loaded
+      const className = scriptPath.split('/').pop().replace('.js', '').split('-').map(
+        part => part.charAt(0).toUpperCase() + part.slice(1)
+      ).join('');
+
+      // Try to access in global scope
+      if (typeof self[className] !== 'undefined') {
+        console.log(`✅ Script already loaded: ${className}`);
+        return self[className];
+      }
+
+      // Use importScripts (CSP-compliant for service workers)
+      const scriptUrl = chrome.runtime.getURL(scriptPath);
+
+      try {
+        // importScripts is synchronous and CSP-compliant
+        importScripts(scriptUrl);
+      } catch (importError) {
+        console.error(`Failed to importScripts: ${importError.message}`);
+        throw new Error(`Cannot load ${scriptPath} - importScripts failed: ${importError.message}`);
+      }
+
+      // Return the loaded class
+      if (typeof self[className] !== 'undefined') {
+        console.log(`✅ Loaded script: ${className} from ${scriptPath}`);
+        return self[className];
+      } else {
+        throw new Error(`Script loaded but class ${className} not found in global scope`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Failed to load script ${scriptPath}:`, error);
+      throw error;
+    }
+  }
+
   isCapturePermitted(url = '') {
     if (!url) return false;
     const blockedSchemes = ['chrome://', 'edge://', 'devtools://', 'about:', 'chrome-extension://'];
@@ -2695,6 +3799,8 @@ Generate JSON now.`;
   async adjustCode(data, tabId = null) {
     const logger = this.createOperationLogger('AdjustCode');
     try {
+      console.log('🔄 [adjustCode] Starting refinement');
+
       // Support both old format (generationData) and new format (direct params)
       const {
         generationData,
@@ -2706,14 +3812,22 @@ Generate JSON now.`;
         conversationHistory,
         variations,
         settings,
-        extraContext
+        extraContext,
+        selectedElement  // 🆕 Element attached to refinement request
       } = data || {};
 
       // Determine which format we're using
       const isNewFormat = pageData && newRequest;
       const actualPageData = isNewFormat ? pageData : generationData?.pageData;
+
+      console.log('📊 [adjustCode] Input:', {
+        format: isNewFormat ? 'new' : 'old',
+        hasPageData: !!actualPageData,
+        hasPreviousCode: !!previousCode,
+        requestLength: newRequest?.length || 0
+      });
       const actualDescription = isNewFormat ? newRequest : (feedback || generationData?.description);
-      const actualVariations = isNewFormat ? variations : generationData?.variations;
+      const actualVariations = isNewFormat ? (variations || []) : generationData?.variations;
       const actualSettings = isNewFormat ? settings : generationData?.settings;
 
       if (!actualPageData) {
@@ -2749,10 +3863,59 @@ Generate JSON now.`;
       }
 
       if (previousCode) {
+        console.log('📝 [adjustCode] Previous code received:', {
+          type: typeof previousCode,
+          hasVariations: !!previousCode?.variations,
+          variationsCount: previousCode?.variations?.length,
+          hasGlobalJS: !!previousCode?.globalJS,
+          globalJSLength: previousCode?.globalJS?.length || 0,
+          hasGlobalCSS: !!previousCode?.globalCSS,
+          variation0HasJS: !!previousCode?.variations?.[0]?.js,
+          variation0JSLength: previousCode?.variations?.[0]?.js?.length || 0,
+          variation0HasCSS: !!previousCode?.variations?.[0]?.css,
+          variation0CSSLength: previousCode?.variations?.[0]?.css?.length || 0
+        });
+
         // Format previous code to clearly show what's already implemented
-        const formattedPreviousCode = this.formatPreviousCodeContext(previousCode);
-        adjustmentContext += `\n**PREVIOUS IMPLEMENTATION OUTPUT (ALREADY APPLIED TO PAGE):**\n\`\`\`javascript\n${formattedPreviousCode}\n\`\`\``;
-        logger.log('Including previous code in adjustment', `length=${formattedPreviousCode.length}`);
+        // If previousCode is an object with variations, convert to string format
+        let codeString = previousCode;
+        if (typeof previousCode === 'object' && previousCode.variations) {
+          // Convert code object to readable string format
+          codeString = previousCode.variations.map((v, i) => {
+            let varCode = `// ===== VARIATION ${v.number || i + 1}: ${v.name || 'Unnamed'} =====\n\n`;
+            if (v.css) varCode += `/* CSS */\n${v.css}\n\n`;
+            if (v.js) varCode += `/* JavaScript */\n${v.js}\n`;
+            return varCode;
+          }).join('\n\n');
+
+          console.log('📝 [adjustCode] After variations map, codeString length:', codeString.length);
+
+          if (previousCode.globalCSS) {
+            codeString = `/* GLOBAL CSS */\n${previousCode.globalCSS}\n\n${codeString}`;
+            console.log('📝 [adjustCode] After adding globalCSS, length:', codeString.length);
+          }
+          if (previousCode.globalJS) {
+            codeString = `/* GLOBAL JAVASCRIPT */\n${previousCode.globalJS}\n\n${codeString}`;
+            console.log('📝 [adjustCode] After adding globalJS, length:', codeString.length);
+          }
+
+          console.log('📝 [adjustCode] Final codeString type:', typeof codeString, 'length:', codeString.length);
+        }
+
+        const formattedPreviousCode = this.formatPreviousCodeContext(codeString);
+        console.log('📝 [adjustCode] After formatPreviousCodeContext, length:', formattedPreviousCode.length);
+
+        // Use special marker to trigger strict refinement validation
+        adjustmentContext += `\n**🚨 CURRENT GENERATED CODE (ALREADY APPLIED TO PAGE):**
+
+This code is WORKING and LIVE on the page RIGHT NOW (${formattedPreviousCode.length} characters).
+
+\`\`\`javascript
+${formattedPreviousCode}
+\`\`\`
+
+**NEW REQUEST TO ADD:**`;
+        logger.log('Including previous code in adjustment (refinement mode)', `length=${formattedPreviousCode.length}`);
       }
       if (testSummary) {
         adjustmentContext += `\nLATEST TEST RESULTS:\n${this.formatTestSummary(testSummary)}`;
@@ -2789,7 +3952,33 @@ Generate JSON now.`;
           adjustmentContext += `\n**VISUAL QUALITY ASSURANCE FEEDBACK:**\n${userRequest}\n\n**CRITICAL - VISUAL QA IMPLEMENTATION REQUIREMENTS:**\n- You MUST implement EVERY fix mentioned in the Visual QA feedback\n- Use the EXACT CSS properties and values suggested in "Required Fix" sections\n- Visual QA has identified specific problems that MUST be resolved\n- This is automated quality control - treat feedback as mandatory requirements\n- Test your changes against the specific issues mentioned (contrast, positioning, etc.)`;
           logger.log('Including Visual QA feedback with mandatory implementation instructions');
         } else if (isNewFormat) {
-          adjustmentContext += `\n**NEW USER REQUEST (Follow-up):**\n"${userRequest}"\n\n**CRITICAL CONTEXT:**\nThis is a follow-up request. The page data comes from the ORIGINAL capture (before any modifications).\nThe PREVIOUS IMPLEMENTATION shows code already applied.\nYour task: Preserve ALL previous changes AND add the new request.`;
+          adjustmentContext += `\n**NEW USER REQUEST (Follow-up):**\n"${userRequest}"`;
+
+          // 🆕 Add selected element as attachment to this specific request
+          if (selectedElement) {
+            adjustmentContext += `\n\n**📎 ATTACHED ELEMENT (User Selected This Element):**`;
+            adjustmentContext += `\n- Tag: ${selectedElement.tag || 'unknown'}`;
+            if (selectedElement.id) adjustmentContext += `\n- ID: #${selectedElement.id}`;
+            if (selectedElement.classes && selectedElement.classes.length > 0) {
+              adjustmentContext += `\n- Classes: .${selectedElement.classes.join('.')}`;
+            }
+            if (selectedElement.selector) adjustmentContext += `\n- Selector: ${selectedElement.selector}`;
+            if (selectedElement.text) {
+              const truncatedText = selectedElement.text.substring(0, 100);
+              adjustmentContext += `\n- Text Content: "${truncatedText}${selectedElement.text.length > 100 ? '...' : ''}"`;
+            }
+            adjustmentContext += `\n\n**Context:** The user clicked on this specific element when making the request above. They are referring to THIS element when they say "${userRequest}".`;
+
+            // 🆕 Add note about generated elements
+            adjustmentContext += `\n\n**Important:** If the user is describing layout/positioning issues (like "below", "above", "aligned with"), you may need to look at BOTH:`;
+            adjustmentContext += `\n1. The attached element screenshot (what they clicked)`;
+            adjustmentContext += `\n2. The CURRENT GENERATED CODE below (features we created, like countdown banners)`;
+            adjustmentContext += `\nThe issue might be about how elements created by our code relate to existing page elements.`;
+
+            logger.log('Including selected element attachment', `selector=${selectedElement.selector}`);
+          }
+
+          adjustmentContext += `\n\n**CRITICAL CONTEXT:**\nThis is a follow-up request. The page data comes from the ORIGINAL capture (before any modifications).\nThe PREVIOUS IMPLEMENTATION shows code already applied.\nYour task: Preserve ALL previous changes AND add the new request.`;
           logger.log('Including follow-up request');
         } else {
           adjustmentContext += `\nUSER FEEDBACK:\n${userRequest}`;
@@ -2805,28 +3994,60 @@ Generate JSON now.`;
       // Build context-aware adjustment instructions
       const adjustmentInstructions = previousCode
         ? `
-**CRITICAL - CUMULATIVE CHANGES:**
-The code shown in PREVIOUS IMPLEMENTATION OUTPUT is ALREADY APPLIED to the page.
-Your task is to ADD the new changes requested in USER FEEDBACK while PRESERVING all existing changes.
+**🚨 CRITICAL - THIS IS A REFINEMENT REQUEST 🚨**
 
-**RULES FOR ITERATIVE CHANGES:**
-1. DO NOT remove or replace code from PREVIOUS IMPLEMENTATION
-2. ADD new changes alongside existing ones
-3. If modifying same element, MERGE changes (keep old + add new)
-4. Use different selectors for new elements vs existing ones
-5. Keep ALL waitForElement calls from previous code
-6. Add duplication checks for ALL new elements/changes
-
-**EXAMPLE - CORRECT APPROACH:**
-Previous: Changed button color to red
-New request: Add lock icon to same button
-✅ CORRECT: Keep color change + add icon
-✗ WRONG: Only add icon, losing color change
+The code shown in "CURRENT GENERATED CODE (ALREADY APPLIED TO PAGE)" is WORKING and LIVE on the page right now.
 
 **YOUR TASK:**
-Analyze PREVIOUS IMPLEMENTATION OUTPUT to understand what's already done.
-Then add the changes from USER FEEDBACK without breaking existing code.
-Output the COMPLETE code (previous changes + new changes combined).`
+Look at the CURRENT GENERATED CODE section above.
+Then read the NEW REQUEST TO ADD section.
+Generate code that includes BOTH:
+- Everything from CURRENT GENERATED CODE (all CSS, all JavaScript, all functionality)
+- Plus the new change from NEW REQUEST TO ADD
+
+**MANDATORY RULES:**
+1. ✅ Include ALL CSS from current code + any new CSS needed
+2. ✅ Include ALL JavaScript from current code + any new JS needed
+3. ✅ Keep ALL globalJS helper functions
+4. ✅ Keep ALL globalCSS styles
+5. ⚠️ SPECIAL: When request says "remove element", determine if it means:
+   - Removing an EXISTING page element → Add CSS: display: none (KEEP all JS)
+   - Removing a FEATURE we created → Keep JS, modify to hide the feature
+   - NEVER delete JavaScript code unless explicitly told "delete the code"
+
+**EXAMPLES:**
+
+Example 1 - Adding to existing code:
+Current code: Red countdown banner with timer (100 lines JS)
+New request: "Add a close button"
+✅ CORRECT: Red banner + timer + close button (100+ lines JS)
+❌ WRONG: Only close button code (10 lines - WHERE IS THE OTHER 90 LINES?!)
+
+Example 2 - Modifying existing code:
+Current code: Banner says "Sale ends Friday" (100 lines JS)
+New request: "Change text to 'Limited time offer'"
+✅ CORRECT: Banner with timer + new text (100+ lines JS)
+❌ WRONG: Only new text (5 lines - CODE DESTROYED!)
+
+Example 3 - "Remove" request (CRITICAL - READ THIS):
+Current code: Countdown banner with timer (100 lines JS) + hides announcement (2 lines CSS)
+New request: "Remove this element" (user clicks the countdown banner)
+✅ CORRECT: Keep all 100 lines JS + add CSS to hide banner (102 lines total)
+❌ WRONG: Delete all JS, only output CSS (2 lines - CODE DESTROYED!)
+
+Example 4 - "Remove" request for page element:
+Current code: Countdown banner (100 lines JS) + hides announcement bar (CSS)
+New request: "Remove this element" (user clicks existing page announcement bar)
+✅ CORRECT: Keep all 100 lines JS + update CSS to hide announcement (100+ lines)
+❌ WRONG: Delete all JS (0 lines - CODE DESTROYED!)
+
+**🚨 KEY INSIGHT: "Remove element" ALMOST NEVER means "delete JavaScript code"**
+- 95% of the time: User wants to HIDE something with CSS
+- Keep the countdown banner JS, timer logic, helper functions
+- Just add CSS or modify display logic
+
+**OUTPUT THE COMPLETE, MERGED CODE:**
+Do not skip or abbreviate. Include every line from current code plus your changes.`
         : `
 **INITIAL GENERATION:**
 Generate code based on the USER FEEDBACK.
@@ -2883,7 +4104,70 @@ ${outputFormatRequirement}
 Generate the complete, merged code as JSON NOW (no other text):`;
 
       const systemMessage = previousCode
-        ? 'You are an expert A/B testing developer who iteratively refines code. When previous code exists, you PRESERVE all existing changes and ADD new ones. You NEVER remove or replace working code from previous iterations. CRITICAL: (1) You MUST respond with ONLY valid JSON - no explanatory text before or after. (2) When Visual QA feedback is provided, you MUST implement every fix mentioned.'
+        ? `You are an expert A/B testing developer performing ITERATIVE REFINEMENT on EXISTING, WORKING code.
+
+🚨 CRITICAL RULES FOR REFINEMENTS:
+
+**YOU HAVE FULL EDITORIAL FREEDOM** to modify existing code to achieve the user's request efficiently.
+
+✅ You CAN and SHOULD:
+- Edit existing code to make changes (e.g., change "Try now" to "Try later" by editing the text directly)
+- Restructure code for better implementation (e.g., turn sticky banner into pop-up)
+- Replace functionality completely if user requests it (e.g., "change countdown to progress bar")
+- Add, modify, or reorganize CSS and JavaScript as needed
+- Remove specific features if user explicitly requests it (e.g., "remove the countdown timer")
+- Make code shorter if edits are legitimate (e.g., simplifying logic, removing requested features)
+
+❌ You CANNOT:
+- Delete ALL JavaScript when user says vague things like "remove this element" or "hide this"
+- Output only CSS when the current code has substantial JavaScript functionality (unless user explicitly asked to remove JS)
+- Ignore existing features unless user explicitly asks to remove them
+- Generate fresh code that loses unrelated existing functionality
+
+🎯 UNDERSTANDING USER INTENT - Think Before Acting:
+
+**Editing/Modification requests** (MODIFY existing code freely):
+- "Change text to 'Try later'" → Edit the string directly in existing code
+- "Make banner green" → Edit the background color property
+- "Turn sticky banner into popup" → Restructure existing code to be popup instead
+- "Add close button" → Add close button to existing banner code
+→ Result: Code may be shorter or longer, both are fine
+
+**Hiding requests** (PRESERVE functionality, hide visually):
+- "Remove this element" (with attached element screenshot) → User wants to hide THAT specific element
+- "Hide this" → Keep all code, add CSS: display: none for the attached element
+- "Don't show banner" → Keep banner code, prevent display
+→ Result: Code stays same length + small CSS addition
+
+**🔍 USING ATTACHED ELEMENTS:**
+- When you see "📎 ATTACHED ELEMENT" in the prompt, the user clicked a specific element
+- Look for the attached element screenshot (appears FIRST, before page screenshot)
+- Check the "ATTACHED ELEMENT" section for selector, ID, classes, and text
+- The user's request refers to THIS specific element
+- Example: "Remove this element" + Attached element "#countdown-banner" → Hide #countdown-banner with CSS, keep all JS
+
+**Deletion requests** (REMOVE features):
+- "Delete the countdown timer" → Remove countdown-specific code
+- "Remove all JavaScript" → Remove JS (explicit instruction)
+- "Get rid of the banner completely" → Remove banner code
+→ Result: Code gets shorter (expected and correct)
+
+🔍 CRITICAL QUESTION TO ASK YOURSELF:
+"If I remove this JavaScript, will the user lose functionality they still want?"
+
+Examples:
+- User: "hide element" + Code has countdown timer → KEEP timer code (they said hide, not delete)
+- User: "change text" + Code has timer → EDIT text, KEEP timer (unrelated feature)
+- User: "remove countdown" + Code has countdown → REMOVE countdown code (explicit request)
+- User: "turn banner into popup" + Code creates banner → RESTRUCTURE into popup (legitimate edit)
+
+**Character count is a GUIDE, not a hard rule:**
+- ✅ Editing text makes code shorter: GOOD
+- ✅ Restructuring improves code: GOOD
+- ✅ Removing explicitly requested feature reduces code: GOOD
+- ❌ Code shrinks by 90% with no clear reason: PROBLEM (you probably deleted something by accident)
+
+CRITICAL: (1) Respond with ONLY valid JSON. (2) Make smart editorial decisions to achieve user's request efficiently.`
         : 'You are an expert A/B testing developer who generates clean, production-ready code using only vanilla JavaScript. CRITICAL: (1) You MUST respond with ONLY valid JSON - no explanatory text before or after. (2) When Visual QA feedback is provided, you MUST implement every fix mentioned.';
 
       const messages = [{
@@ -2893,6 +4177,23 @@ Generate the complete, merged code as JSON NOW (no other text):`;
 
       // Build user message with screenshot for brand/style context
       const userContent = [];
+
+      // 🆕 Include selected element screenshot FIRST (most relevant)
+      if (selectedElement?.screenshot) {
+        userContent.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: selectedElement.screenshot.replace(/^data:image\/png;base64,/, '')
+          }
+        });
+        userContent.push({
+          type: 'text',
+          text: '📎 **ATTACHED ELEMENT SCREENSHOT:**\nThis is the specific element the user clicked and is referring to in their request.\n\n'
+        });
+        logger.log('Including selected element screenshot', `for ${selectedElement.selector}`);
+      }
 
       // Include full page screenshot for brand context in iterative changes
       if (actualPageData?.screenshot) {
@@ -2926,17 +4227,21 @@ Generate the complete, merged code as JSON NOW (no other text):`;
 
       // Use unified AI call
       const aiSettings = {
-        provider: generationData.settings?.provider || 'openai',
+        provider: actualSettings?.provider || 'openai',
         authToken: authToken,
-        anthropicApiKey: generationData.settings?.anthropicApiKey,
-        model: generationData.settings?.model || 'gpt-4o-mini'
+        anthropicApiKey: actualSettings?.anthropicApiKey,
+        model: actualSettings?.model || 'gpt-4o-mini'
       };
 
+      console.log('🤖 [adjustCode] Calling AI with model:', aiSettings.model);
       const aiResponse = await this.callAI(messages, aiSettings);
-      logger.log('AI adjustment response received', `provider=${aiSettings.provider}, promptTokens=${aiResponse.usage?.promptTokens || 0} completionTokens=${aiResponse.usage?.completionTokens || 0}`);
+      console.log('✅ [adjustCode] AI response received, parsing code...');
+
+      const parsedCode = this.parseGeneratedCode(aiResponse.content);
+      console.log('✅ [adjustCode] Code parsed successfully, returning result');
 
       return {
-        code: this.parseGeneratedCode(aiResponse.content),
+        code: parsedCode,
         usage: this.normalizeUsage(aiResponse),
         logs: logger.entries()
       };
@@ -3831,7 +5136,7 @@ Generate the complete, merged code as JSON NOW (no other text):`;
         ? includeParam.split(',').map((item) => item.trim()).filter(Boolean)
         : [];
 
-    const expand = Array.isArray(expandParam)
+    let expand = Array.isArray(expandParam)
       ? expandParam
       : typeof expandParam === 'string'
         ? expandParam.split(',').map((item) => item.trim()).filter(Boolean)
@@ -4397,6 +5702,44 @@ Respond in JSON format:
     }
     
     return { critical, warnings };
+  }
+
+  /**
+   * Check if refinement added new interactive features requiring test script update
+   * @param {string} description - Refinement request description
+   * @returns {boolean} - True if new interactions likely added
+   */
+  refinementAddedNewInteractions(description) {
+    // Keywords that suggest new interactive features
+    const interactionKeywords = [
+      'click', 'button', 'hover', 'popup', 'modal', 'dropdown',
+      'menu', 'form', 'submit', 'toggle', 'accordion', 'tab',
+      'slider', 'carousel', 'animation', 'transition', 'scroll',
+      'link', 'navigation', 'expand', 'collapse', 'open', 'close'
+    ];
+
+    const lowerDescription = description.toLowerCase();
+
+    // Check if any interaction keywords are in the refinement request
+    const hasInteractionKeywords = interactionKeywords.some(keyword =>
+      lowerDescription.includes(keyword)
+    );
+
+    // Also check for "add" or "create" combined with interactive elements
+    const isAdding = lowerDescription.match(/\b(add|create|insert|include)\b/);
+    const mentionsInteractive = interactionKeywords.some(keyword =>
+      lowerDescription.includes(keyword)
+    );
+
+    const likelyAddsInteraction = isAdding && mentionsInteractive;
+
+    if (hasInteractionKeywords || likelyAddsInteraction) {
+      console.log('[Test Script] Refinement likely adds new interactions - will regenerate test script');
+      return true;
+    }
+
+    console.log('[Test Script] Refinement appears to be visual-only - skipping test script regeneration');
+    return false;
   }
 
   /**

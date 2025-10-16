@@ -85,8 +85,6 @@ class PageCapture {
         return false;
       }
 
-
-
       if (message.type === 'APPLY_VARIATION') {
         const payload = message;
         try {
@@ -130,6 +128,91 @@ class PageCapture {
           sendResponse({ success: false, error: error.message });
         }
         return true; // Keep message channel open for async response
+      }
+
+      // ✨ NEW: Verify selectors exist on page (for RefinementContext validation)
+      if (message.type === 'VERIFY_SELECTORS') {
+        try {
+          const { selectors } = message;
+          const exists = {};
+
+          selectors.forEach(selector => {
+            try {
+              const elements = document.querySelectorAll(selector);
+              exists[selector] = elements.length > 0;
+            } catch (error) {
+              // Invalid selector
+              exists[selector] = false;
+            }
+          });
+
+          sendResponse({ success: true, exists });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        return false;
+      }
+
+      // ✨ NEW: Test code validation (runtime testing for RefinementContext)
+      if (message.type === 'TEST_CODE_VALIDATION') {
+        try {
+          const { code, timeout } = message;
+          const errors = [];
+          const warnings = [];
+
+          // Basic runtime test: Try to apply code and catch errors
+          const testKey = 'validation-test-' + Date.now();
+
+          // Test CSS injection
+          if (code.variations && code.variations.length > 0) {
+            code.variations.forEach((variation, idx) => {
+              if (variation.css) {
+                try {
+                  const style = document.createElement('style');
+                  style.id = testKey + '-css-' + idx;
+                  style.textContent = variation.css;
+                  document.head.appendChild(style);
+
+                  // Check if any selectors matched
+                  const cssRules = Array.from(style.sheet?.cssRules || []);
+                  if (cssRules.length === 0) {
+                    warnings.push({
+                      type: 'NO_CSS_RULES',
+                      message: `Variation ${idx + 1} CSS has no rules`
+                    });
+                  }
+
+                  // Clean up
+                  style.remove();
+                } catch (error) {
+                  errors.push({
+                    type: 'CSS_ERROR',
+                    variation: idx + 1,
+                    message: error.message
+                  });
+                }
+              }
+
+              // Test JS syntax (don't execute, just parse)
+              if (variation.js) {
+                try {
+                  new Function(variation.js);
+                } catch (error) {
+                  errors.push({
+                    type: 'JS_SYNTAX_ERROR',
+                    variation: idx + 1,
+                    message: error.message
+                  });
+                }
+              }
+            });
+          }
+
+          sendResponse({ success: true, errors, warnings });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+        return false;
       }
     });
 
@@ -179,25 +262,36 @@ class PageCapture {
         // Quick validation: only check if at least one CSS rule matches
         // (Removed expensive per-rule debugging to prevent timeout)
         let debugCSS = css.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim();
-        const cssRules = debugCSS.match(/([^{]+)\s*{/g);
-        if (cssRules && cssRules.length > 0) {
+
+        // Extract selectors more carefully
+        // Match: selector { ... } pattern and extract just the selector
+        const selectorMatches = debugCSS.matchAll(/([^{}]+)\s*{[^}]*}/g);
+        const selectors = [];
+        for (const match of selectorMatches) {
+          const selector = match[1].trim();
+          // Skip if it looks like it has CSS properties (contains :)
+          if (!selector.includes(':') || selector.includes(':hover') || selector.includes(':focus')) {
+            selectors.push(selector);
+          }
+        }
+
+        if (selectors.length > 0) {
           let matchedCount = 0;
-          // Only check first 3 rules to avoid timeout
-          cssRules.slice(0, 3).forEach(rule => {
-            const selector = rule.replace('{', '').trim();
+          // Only check first 3 selectors to avoid timeout
+          selectors.slice(0, 3).forEach(selector => {
             try {
               const matchingElements = document.querySelectorAll(selector);
               if (matchingElements.length > 0) matchedCount++;
             } catch (e) {
-              console.warn(`[Convert CSS] Invalid selector: ${selector}`);
+              console.warn(`[Convert CSS] Invalid selector: ${selector.substring(0, 100)}`);
             }
           });
-          console.log(`[Convert CSS] ${matchedCount}/${Math.min(3, cssRules.length)} selectors matched`);
+          console.log(`[Convert CSS] ${matchedCount}/${Math.min(3, selectors.length)} selectors matched`);
         }
 
         console.log('[Convert Variation] CSS applied', {
           key: variationKey,
-          rules: cssRules?.length || 0
+          rules: selectors.length || 0
         });
       }
 
@@ -992,12 +1086,34 @@ class PageCapture {
 
     // STEP 3: Inject CSS (CSS doesn't have CSP restrictions)
     if (css && css.trim()) {
+      // Remove any existing preview CSS first
+      const existing = document.getElementById(`convert-preview-css-${variationNumber}`);
+      if (existing) {
+        console.log(`🗑️ Removing existing preview CSS for variation ${variationNumber}`);
+        existing.remove();
+      }
+
       const styleEl = document.createElement('style');
       styleEl.id = `convert-preview-css-${variationNumber}`;
       styleEl.setAttribute('data-convert-preview', 'true');
       styleEl.textContent = css;
       document.head.appendChild(styleEl);
-      console.log(`✅ Preview CSS injected for variation ${variationNumber}`);
+
+      console.log(`✅ Preview CSS injected for variation ${variationNumber}:`);
+      console.log(`   📝 CSS length: ${css.length} characters`);
+      console.log(`   📝 CSS preview (first 200 chars):`, css.substring(0, 200));
+      console.log(`   🎯 Style element ID: ${styleEl.id}`);
+      console.log(`   📍 Style element in DOM:`, !!document.getElementById(styleEl.id));
+
+      // Verify the CSS is actually in the DOM
+      setTimeout(() => {
+        const check = document.getElementById(`convert-preview-css-${variationNumber}`);
+        if (check) {
+          console.log(`✅ CSS still in DOM after 100ms, styles should be applied`);
+        } else {
+          console.error(`❌ CSS was removed from DOM! Something cleaned it up.`);
+        }
+      }, 100);
     }
 
     // STEP 4: Execute JavaScript via service worker (bypasses CSP)

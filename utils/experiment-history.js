@@ -1,0 +1,540 @@
+/**
+ * Experiment History Manager
+ * Manages per-domain experiment storage and retrieval
+ * Provides session continuity by persisting experiment data
+ */
+class ExperimentHistory {
+  constructor() {
+    this.STORAGE_KEY = 'experimentHistory';
+    this.MAX_EXPERIMENTS_PER_DOMAIN = 10;
+    this.MAX_TOTAL_SIZE_BYTES = 4 * 1024 * 1024; // 4MB conservative limit (Chrome limit is ~5MB)
+    this.MAX_SCREENSHOT_SIZE = 50 * 1024; // 50KB max per screenshot
+  }
+
+  /**
+   * Extract domain from URL
+   */
+  getDomainFromUrl(url) {
+    try {
+      const urlObj = new URL(url);
+      return urlObj.hostname;
+    } catch (e) {
+      console.error('Invalid URL:', url);
+      return null;
+    }
+  }
+
+  /**
+   * Generate unique experiment ID
+   */
+  generateExperimentId() {
+    return `exp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Save or update an experiment
+   * @param {string} url - Current page URL
+   * @param {object} experimentData - Experiment data to save
+   * @returns {Promise<string>} - Experiment ID
+   */
+  async saveExperiment(url, experimentData) {
+    try {
+      const domain = this.getDomainFromUrl(url);
+      if (!domain) {
+        throw new Error('Invalid URL for experiment save');
+      }
+
+      // Load existing history
+      const history = await this.loadHistory();
+
+      // Initialize domain array if needed
+      if (!history[domain]) {
+        history[domain] = [];
+      }
+
+      // Create or update experiment
+      const experimentId = experimentData.id || this.generateExperimentId();
+      const timestamp = Date.now();
+
+      // Optimize screenshot size (compress or remove if too large)
+      let optimizedScreenshot = null;
+      if (experimentData.screenshot) {
+        const screenshotSize = experimentData.screenshot.length;
+        if (screenshotSize <= this.MAX_SCREENSHOT_SIZE) {
+          optimizedScreenshot = experimentData.screenshot;
+        } else {
+          console.warn(`⚠️ Screenshot too large (${Math.round(screenshotSize / 1024)}KB), skipping to save storage`);
+        }
+      }
+
+      const experiment = {
+        id: experimentId,
+        domain,
+        url,
+        title: experimentData.title || this.extractTitle(experimentData),
+        pageTitle: experimentData.pageTitle || '',
+        timestamp: experimentData.timestamp || timestamp,
+        lastModified: timestamp,
+
+        // Core experiment data
+        variations: experimentData.variations || [],
+        generatedCode: experimentData.generatedCode || null,
+
+        // Optional metadata
+        description: experimentData.description || '',
+        screenshot: optimizedScreenshot,
+        chatHistory: experimentData.chatHistory || [], // 🆕 Save chat history
+
+        // Convert.com sync metadata
+        convertMetadata: experimentData.convertMetadata || {
+          accountId: null,
+          projectId: null,
+          experienceId: null,
+          lastSyncedAt: null,
+          createdInConvert: false,
+          apiKeyId: null // Which API key was used
+        },
+
+        // NEVER save pageData - it's huge and causes quota issues
+        pageData: null
+      };
+
+      // Find and update existing, or add new
+      const existingIndex = history[domain].findIndex(exp => exp.id === experimentId);
+      if (existingIndex >= 0) {
+        history[domain][existingIndex] = experiment;
+        console.log(`✅ Updated experiment ${experimentId} for ${domain}`);
+      } else {
+        history[domain].unshift(experiment); // Add to beginning
+        console.log(`✅ Saved new experiment ${experimentId} for ${domain}`);
+      }
+
+      // Enforce limits
+      this.enforceStorageLimits(history, domain);
+
+      // Check total size before saving
+      const historySize = this.estimateSize(history);
+      if (historySize > this.MAX_TOTAL_SIZE_BYTES) {
+        console.warn(`⚠️ Storage too large (${Math.round(historySize / 1024 / 1024 * 10) / 10}MB), removing old experiments...`);
+        this.aggressiveCleanup(history);
+      }
+
+      // Save back to storage
+      await chrome.storage.local.set({ [this.STORAGE_KEY]: history });
+
+      return experimentId;
+    } catch (error) {
+      console.error('Failed to save experiment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all experiments for a specific domain
+   * @param {string} url - Page URL to extract domain from
+   * @returns {Promise<Array>} - Array of experiments, sorted by date (newest first)
+   */
+  async getExperimentsForDomain(url) {
+    try {
+      const domain = this.getDomainFromUrl(url);
+      if (!domain) return [];
+
+      const history = await this.loadHistory();
+      const experiments = history[domain] || [];
+
+      // Sort by lastModified descending
+      return experiments.sort((a, b) => b.lastModified - a.lastModified);
+    } catch (error) {
+      console.error('Failed to get experiments for domain:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get a specific experiment
+   * @param {string} url - Page URL
+   * @param {string} experimentId - Experiment ID
+   * @returns {Promise<object|null>} - Experiment data or null
+   */
+  async getExperiment(url, experimentId) {
+    try {
+      const domain = this.getDomainFromUrl(url);
+      if (!domain) return null;
+
+      const history = await this.loadHistory();
+      const experiments = history[domain] || [];
+
+      return experiments.find(exp => exp.id === experimentId) || null;
+    } catch (error) {
+      console.error('Failed to get experiment:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete an experiment
+   * @param {string} url - Page URL
+   * @param {string} experimentId - Experiment ID to delete
+   * @returns {Promise<boolean>} - Success status
+   */
+  async deleteExperiment(url, experimentId) {
+    try {
+      const domain = this.getDomainFromUrl(url);
+      if (!domain) return false;
+
+      const history = await this.loadHistory();
+      if (!history[domain]) return false;
+
+      const initialLength = history[domain].length;
+      history[domain] = history[domain].filter(exp => exp.id !== experimentId);
+
+      if (history[domain].length === initialLength) {
+        return false; // Nothing deleted
+      }
+
+      // Clean up empty domain arrays
+      if (history[domain].length === 0) {
+        delete history[domain];
+      }
+
+      await chrome.storage.local.set({ [this.STORAGE_KEY]: history });
+      console.log(`✅ Deleted experiment ${experimentId} from ${domain}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to delete experiment:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Delete all experiments for a specific URL/domain
+   * @param {string} url - Page URL
+   * @returns {Promise<boolean>} - Success status
+   */
+  async deleteAllExperiments(url) {
+    try {
+      const domain = this.getDomainFromUrl(url);
+      if (!domain) return false;
+
+      const history = await this.loadHistory();
+      if (!history[domain] || history[domain].length === 0) {
+        return false; // Nothing to delete
+      }
+
+      const count = history[domain].length;
+
+      // Remove all experiments for this domain
+      delete history[domain];
+
+      await chrome.storage.local.set({ [this.STORAGE_KEY]: history });
+      console.log(`✅ Deleted all ${count} experiments from ${domain}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to delete all experiments:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get all domains with saved experiments
+   * @returns {Promise<Array>} - Array of domain names
+   */
+  async getAllDomains() {
+    try {
+      const history = await this.loadHistory();
+      return Object.keys(history).sort();
+    } catch (error) {
+      console.error('Failed to get all domains:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get storage usage statistics
+   * @returns {Promise<object>} - Storage stats
+   */
+  async getStorageStats() {
+    try {
+      const history = await this.loadHistory();
+      const domains = Object.keys(history);
+      const totalExperiments = domains.reduce((sum, domain) => {
+        return sum + history[domain].length;
+      }, 0);
+
+      const sizeBytes = this.estimateSize(history);
+      const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(2);
+      const percentUsed = ((sizeBytes / this.MAX_TOTAL_SIZE_BYTES) * 100).toFixed(1);
+
+      return {
+        domains: domains.length,
+        totalExperiments,
+        sizeMB,
+        sizeBytes,
+        percentUsed,
+        maxSizeMB: (this.MAX_TOTAL_SIZE_BYTES / (1024 * 1024)).toFixed(2)
+      };
+    } catch (error) {
+      console.error('Failed to get storage stats:', error);
+      return { domains: 0, totalExperiments: 0, sizeMB: 0, sizeBytes: 0, percentUsed: 0 };
+    }
+  }
+
+  /**
+   * Clear all experiment history (use with caution)
+   * @returns {Promise<boolean>} - Success status
+   */
+  async clearAllHistory() {
+    try {
+      await chrome.storage.local.remove([this.STORAGE_KEY]);
+      console.log('✅ Cleared all experiment history');
+      return true;
+    } catch (error) {
+      console.error('Failed to clear history:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Manually optimize storage by removing old data
+   * @returns {Promise<object>} - Cleanup stats
+   */
+  async optimizeStorage() {
+    try {
+      const history = await this.loadHistory();
+      const beforeSize = this.estimateSize(history);
+
+      // Remove screenshots from experiments older than 3 per domain
+      let screenshotsRemoved = 0;
+      const domains = Object.keys(history);
+
+      for (const domain of domains) {
+        history[domain].forEach((exp, index) => {
+          if (index >= 3 && exp.screenshot) {
+            exp.screenshot = null;
+            screenshotsRemoved++;
+          }
+        });
+      }
+
+      // Save optimized history
+      await chrome.storage.local.set({ [this.STORAGE_KEY]: history });
+
+      const afterSize = this.estimateSize(history);
+      const savedBytes = beforeSize - afterSize;
+
+      console.log(`🧹 Storage optimized: Removed ${screenshotsRemoved} screenshots, saved ${Math.round(savedBytes / 1024)}KB`);
+
+      return {
+        screenshotsRemoved,
+        savedBytes,
+        savedKB: Math.round(savedBytes / 1024),
+        beforeSizeMB: (beforeSize / (1024 * 1024)).toFixed(2),
+        afterSizeMB: (afterSize / (1024 * 1024)).toFixed(2)
+      };
+    } catch (error) {
+      console.error('Failed to optimize storage:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load history from storage
+   * @private
+   */
+  async loadHistory() {
+    try {
+      const result = await chrome.storage.local.get([this.STORAGE_KEY]);
+      return result[this.STORAGE_KEY] || {};
+    } catch (error) {
+      console.error('Failed to load history:', error);
+      return {};
+    }
+  }
+
+  /**
+   * Enforce storage limits (max experiments per domain)
+   * @private
+   */
+  enforceStorageLimits(history, domain) {
+    if (!history[domain]) return;
+
+    // Limit experiments per domain
+    if (history[domain].length > this.MAX_EXPERIMENTS_PER_DOMAIN) {
+      // Sort by lastModified descending
+      history[domain].sort((a, b) => b.lastModified - a.lastModified);
+
+      // Keep only the most recent N
+      const removed = history[domain].splice(this.MAX_EXPERIMENTS_PER_DOMAIN);
+      console.log(`⚠️ Removed ${removed.length} old experiments from ${domain} (limit: ${this.MAX_EXPERIMENTS_PER_DOMAIN})`);
+    }
+  }
+
+  /**
+   * Estimate size of history object in bytes
+   * @private
+   */
+  estimateSize(history) {
+    try {
+      const jsonString = JSON.stringify(history);
+      return new Blob([jsonString]).size;
+    } catch (error) {
+      console.error('Failed to estimate size:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Aggressive cleanup when storage is too large
+   * Removes old experiments across all domains
+   * @private
+   */
+  aggressiveCleanup(history) {
+    const domains = Object.keys(history);
+    let totalRemoved = 0;
+
+    // First pass: Remove screenshots from old experiments
+    for (const domain of domains) {
+      history[domain].forEach((exp, index) => {
+        if (index >= 3 && exp.screenshot) { // Keep screenshots only for 3 most recent
+          exp.screenshot = null;
+          totalRemoved++;
+        }
+      });
+    }
+
+    console.log(`🧹 Aggressive cleanup: Removed ${totalRemoved} screenshots from old experiments`);
+
+    // Second pass: If still too large, reduce experiment count per domain
+    const currentSize = this.estimateSize(history);
+    if (currentSize > this.MAX_TOTAL_SIZE_BYTES) {
+      const reducedLimit = 5; // Reduce to 5 experiments per domain
+      for (const domain of domains) {
+        if (history[domain].length > reducedLimit) {
+          const removed = history[domain].splice(reducedLimit);
+          console.log(`🧹 Removed ${removed.length} old experiments from ${domain}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Extract a meaningful title from experiment data
+   * @private
+   */
+  extractTitle(experimentData) {
+    // Try various sources for title
+    if (experimentData.generatedCode?.variations?.[0]?.name) {
+      return experimentData.generatedCode.variations[0].name;
+    }
+
+    if (experimentData.variations?.[0]?.name) {
+      return experimentData.variations[0].name;
+    }
+
+    if (experimentData.variations?.[0]?.description) {
+      const desc = experimentData.variations[0].description;
+      return desc.length > 50 ? desc.substring(0, 50) + '...' : desc;
+    }
+
+    if (experimentData.pageTitle) {
+      return `Experiment on ${experimentData.pageTitle}`;
+    }
+
+    return 'Untitled Experiment';
+  }
+
+  /**
+   * Format timestamp as relative time
+   */
+  formatTimeAgo(timestamp) {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+
+    if (seconds < 60) return 'Just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)} days ago`;
+    return new Date(timestamp).toLocaleDateString();
+  }
+
+  /**
+   * Create a lightweight experiment snapshot (without heavy data)
+   * Useful for listing experiments without loading full page data
+   */
+  createSnapshot(experimentData) {
+    return {
+      id: experimentData.id,
+      title: experimentData.title,
+      timestamp: experimentData.timestamp,
+      lastModified: experimentData.lastModified,
+      variationCount: experimentData.variations?.length || 0,
+      hasScreenshot: !!experimentData.screenshot,
+      url: experimentData.url,
+      pageTitle: experimentData.pageTitle,
+      isSyncedToConvert: !!experimentData.convertMetadata?.experienceId
+    };
+  }
+
+  /**
+   * Mark experiment as synced to Convert.com
+   * @param {string} url - Page URL
+   * @param {string} experimentId - Experiment ID
+   * @param {object} syncData - { accountId, projectId, experienceId, apiKeyId }
+   * @returns {Promise<boolean>} - Success status
+   */
+  async markAsSynced(url, experimentId, syncData) {
+    try {
+      const experiment = await this.getExperiment(url, experimentId);
+      if (!experiment) {
+        throw new Error('Experiment not found');
+      }
+
+      experiment.convertMetadata = {
+        accountId: syncData.accountId,
+        projectId: syncData.projectId,
+        experienceId: syncData.experienceId,
+        apiKeyId: syncData.apiKeyId,
+        lastSyncedAt: Date.now(),
+        createdInConvert: true
+      };
+
+      await this.saveExperiment(url, experiment);
+      console.log(`✅ Marked experiment ${experimentId} as synced to Convert.com`);
+      return true;
+    } catch (error) {
+      console.error('Failed to mark as synced:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Update last synced timestamp
+   * @param {string} url - Page URL
+   * @param {string} experimentId - Experiment ID
+   * @returns {Promise<boolean>} - Success status
+   */
+  async updateSyncTimestamp(url, experimentId) {
+    try {
+      const experiment = await this.getExperiment(url, experimentId);
+      if (!experiment) {
+        throw new Error('Experiment not found');
+      }
+
+      if (experiment.convertMetadata) {
+        experiment.convertMetadata.lastSyncedAt = Date.now();
+        await this.saveExperiment(url, experiment);
+        console.log(`✅ Updated sync timestamp for experiment ${experimentId}`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('Failed to update sync timestamp:', error);
+      return false;
+    }
+  }
+}
+
+// Export for use in other modules
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = ExperimentHistory;
+}

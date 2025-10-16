@@ -16,12 +16,13 @@ html,
    ======================================== */
 .chat-drawer {
   position: fixed;
-  top: 0;
+  top: 70px; /* Below unified header (12px padding + ~18px h1 + 12px padding + 12px subtitle + border = ~70px) */
+  bottom: 32px; /* Above bottom bar */
   right: 0;
   width: min(420px, 90vw);
   max-width: 600px;
   min-width: 320px;
-  height: 100vh;
+  height: auto; /* Auto height to fit between header and bottom */
   background: var(--bg-primary, #1a1a1a);
   border-left: 1px solid var(--border, #3a3a3a);
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
@@ -40,67 +41,84 @@ html,
   transform: translateX(100%);
 }
 
-/* Header */
+/* Header - Ultra Minimal Design */
 .chat-drawer-header {
-  padding: 20px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border, #3a3a3a);
   flex-shrink: 0;
   background: var(--bg-secondary, #242424);
+  min-height: 32px; /* Minimal fixed height */
 }
 
 .chat-header-content {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 8px;
 }
 
 .chat-header-content h3 {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary, #e0e0e0);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary, #a0a0a0);
   margin: 0;
+  line-height: 1;
+  flex: 0 0 auto;
 }
 
 .drawer-close-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
   background: transparent;
-  border: 1px solid var(--border, #3a3a3a);
+  border: none;
   color: var(--text-secondary, #a0a0a0);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.drawer-close-btn svg {
+  width: 12px;
+  height: 12px;
 }
 
 .drawer-close-btn:hover {
   background: var(--bg-tertiary, #2a2a2a);
-  border-color: var(--primary, #4a9eff);
-  color: var(--primary, #4a9eff);
+  color: var(--text-primary, #e0e0e0);
 }
 
-/* Context Badge */
+/* Context Badge - Compact Design */
 .chat-context-badge {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 4px;
+  padding: 2px 6px;
   background: var(--bg-tertiary, #2a2a2a);
   border: 1px solid var(--border, #3a3a3a);
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1;
+  flex: 1;
+  min-width: 0;
 }
 
 .context-icon {
-  font-size: 14px;
+  font-size: 10px;
+  flex-shrink: 0;
 }
 
 .context-text {
   color: var(--text-secondary, #a0a0a0);
-  font-weight: 500;
+  font-weight: 400;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Messages Container */
@@ -898,7 +916,7 @@ input[type="text"]:focus {
   background: var(--bg-secondary) !important;
   border: 1px solid var(--border) !important;
   color: var(--text-primary) !important;
-  padding: 16px !important;
+  padding: 8px !important;
   border-radius: 8px !important;
   transition: all 0.2s ease !important;
 }
@@ -912,7 +930,7 @@ input[type="text"]:focus {
   display: flex !important;
   justify-content: space-between !important;
   align-items: center !important;
-  margin-bottom: 12px !important;
+  margin-bottom: 0px !important;
   padding-bottom: 12px !important;
   border-bottom: 1px solid var(--border) !important;
 }
@@ -1008,7 +1026,6 @@ input[type="text"]:focus {
 
 /* Variations Grid */
 .variations-grid {
-  padding: 16px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
@@ -1049,7 +1066,7 @@ input[type="text"]:focus {
 .variation-stats {
   display: flex;
   gap: 8px;
-  margin: 8px 0;
+  margin: 0px 0;
 }
 
 .stat-mini {
@@ -1557,6 +1574,47 @@ input[type="text"]:focus {
 }
 
 .empty-state {
+  color: var(--text-secondary) !important;
+}
+
+/* Experiment History - Dark Mode */
+.experiment-history-section {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border) !important;
+}
+
+.history-header {
+  border-bottom-color: var(--border) !important;
+}
+
+.history-header h3 {
+  color: var(--text-primary) !important;
+}
+
+.experiment-item {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--border) !important;
+}
+
+.experiment-item:hover {
+  border-color: var(--primary) !important;
+  box-shadow: 0 2px 8px rgba(74, 158, 255, 0.2) !important;
+}
+
+.experiment-thumbnail {
+  background: var(--bg-primary) !important;
+  border-color: var(--border) !important;
+}
+
+.experiment-title {
+  color: var(--text-primary) !important;
+}
+
+.experiment-meta {
+  color: var(--text-secondary) !important;
+}
+
+.history-toggle {
   color: var(--text-secondary) !important;
 }
 

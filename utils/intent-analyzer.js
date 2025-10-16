@@ -115,8 +115,22 @@ class IntentAnalyzer {
       analysis.scope.needsScreenshot = false;
       analysis.dataRequirements.pageContext = this.PAGE_CONTEXT.MINIMAL;
 
+      // Phase 2.1: Ensure refinementType is set (default to incremental if missing)
+      if (!analysis.refinementType) {
+        analysis.refinementType = 'incremental';
+        console.log('⚠️ [Intent Analyzer] refinementType missing, defaulting to incremental');
+      }
+
+      // Visual QA check: Ensure needsVisualQA is set (default to false for simple refinements)
+      if (analysis.needsVisualQA === undefined) {
+        analysis.needsVisualQA = false;
+        console.log('⚠️ [Intent Analyzer] needsVisualQA missing, defaulting to false (skip Visual QA)');
+      }
+
       console.log('✅ [Intent Analyzer] Refinement analysis:', {
         intent: analysis.intent,
+        refinementType: analysis.refinementType,
+        needsVisualQA: analysis.needsVisualQA,
         targetElements: analysis.scope.targetElements
       });
 
@@ -127,6 +141,8 @@ class IntentAnalyzer {
       // Fallback: assume modifying current selectors
       return {
         intent: this.INTENT_TYPES.MULTIPLE,
+        refinementType: 'incremental', // Phase 2.1: Default to incremental
+        needsVisualQA: false, // Visual QA: Skip for simple refinements
         scope: {
           needsScreenshot: false,
           needsVisuals: false,
@@ -220,9 +236,46 @@ NEW REQUEST: "${message}"
     }
 
     prompt += `
+🔴 PHASE 2.1: DETECT REFINEMENT TYPE
+
+Analyze whether this is an INCREMENTAL change or FULL REWRITE:
+
+INCREMENTAL (most common):
+- "add this"
+- "make it more prominent"
+- "change the color to X"
+- "also add Y"
+- User wants to KEEP existing code and ADD new changes
+
+FULL REWRITE (explicit user intent):
+- "completely redo this"
+- "start over with X"
+- "rebuild from scratch"
+- "totally change the approach"
+- "forget everything and do Y instead"
+- User explicitly wants to REPLACE existing code
+
+🔍 VISUAL QA ANALYSIS:
+
+Does this refinement require new Visual QA (element selection with screenshot)?
+
+**REQUIRES Visual QA (needsVisualQA: true):**
+- Adding NEW elements not in current code (e.g., "add a banner above the button")
+- Modifying DIFFERENT element than existing code targets
+- User explicitly mentions selecting/targeting a new element
+- Complex layout changes affecting multiple new elements
+
+**SKIP Visual QA (needsVisualQA: false):**
+- Modifying SAME elements already in code (e.g., "make button bigger", "change color")
+- Pure CSS changes (colors, sizes, spacing, fonts)
+- Text content changes to existing elements
+- Simple style refinements to existing elements
+
 Respond with JSON ONLY:
 {
   "intent": "change_text|change_color|...",
+  "refinementType": "incremental" or "full_rewrite",
+  "needsVisualQA": true or false,
   "scope": {
     "needsScreenshot": false,
     "needsVisuals": true/false,
@@ -233,11 +286,13 @@ Respond with JSON ONLY:
     "elementProperties": ["selector"],
     "pageContext": "minimal"
   },
-  "reasoning": "What changed"
+  "reasoning": "What changed, why incremental/full_rewrite, and why Visual QA is/isn't needed"
 }
 
 For refinements:
-- needsScreenshot is always false (we already have visuals)
+- needsScreenshot is always false (we already have page screenshot)
+- needsVisualQA should be FALSE for simple refinements to existing elements
+- refinementType defaults to "incremental" unless user EXPLICITLY requests rewrite
 - targetElements should be from current selectors OR new element if different
 - contextRadius is usually "self" unless layout changes
 - pageContext is usually "minimal"
@@ -293,17 +348,20 @@ For refinements:
       let cleaned = responseText.trim();
 
       // STEP 1: Try to extract from markdown code blocks first
+      let extractedFromCodeBlock = false;
       if (cleaned.includes('```')) {
         const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
         if (codeBlockMatch) {
           cleaned = codeBlockMatch[1].trim();
           console.log('📦 [Intent Analyzer] Extracted JSON from code block');
+          extractedFromCodeBlock = true;
         }
       }
 
       // STEP 2: If no code block, extract JSON object from text
-      // Find first '{' and last '}' to extract just the JSON portion
-      if (!cleaned.startsWith('{')) {
+      // Find first '{' and last MATCHING '}' to extract just the JSON portion
+      // This handles cases where AI adds explanatory text before or after JSON
+      if (!extractedFromCodeBlock) {
         const startIndex = cleaned.indexOf('{');
         if (startIndex === -1) {
           throw new Error('No JSON object found in response');
@@ -325,9 +383,12 @@ For refinements:
           throw new Error('Malformed JSON - no matching closing brace');
         }
 
-        const extractedJSON = cleaned.substring(startIndex, endIndex + 1);
-        console.log(`🔪 [Intent Analyzer] Extracted JSON from position ${startIndex} to ${endIndex}`);
-        cleaned = extractedJSON;
+        // Only extract if there's text before or after the JSON
+        if (startIndex > 0 || endIndex < cleaned.length - 1) {
+          const extractedJSON = cleaned.substring(startIndex, endIndex + 1);
+          console.log(`🔪 [Intent Analyzer] Extracted JSON from position ${startIndex} to ${endIndex} (removed ${startIndex + (cleaned.length - endIndex - 1)} extra chars)`);
+          cleaned = extractedJSON;
+        }
       }
 
       // STEP 3: Fix unescaped newlines in JSON strings
@@ -335,6 +396,9 @@ For refinements:
       cleaned = cleaned.replace(/"([^"]*(?:\n[^"]*)*)"(?=\s*[,}:])/g, (match, content) => {
         return `"${content.replace(/\n/g, '\\n').replace(/\t/g, '\\t').replace(/\r/g, '\\r')}"`;
       });
+
+      // STEP 3.5: Remove trailing commas (AI sometimes adds them)
+      cleaned = cleaned.replace(/,(\s*[}\]])/g, '$1');
 
       // STEP 4: Parse JSON
       const analysis = JSON.parse(cleaned);

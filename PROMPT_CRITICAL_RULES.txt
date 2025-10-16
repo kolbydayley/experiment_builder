@@ -8,6 +8,40 @@
 7. If user mentions BOTH text AND color, your code MUST include BOTH
 8. Prefer JavaScript for styling (inline styles override CSS and are easier to test)
 9. If an element isn't in the database, it doesn't exist - don't make up selectors
+10. **CRITICAL: ALL setInterval/setTimeout MUST be registered with Cleanup Manager** (see below)
+
+**CLEANUP MANAGER - MANDATORY FOR ALL INTERVALS/TIMEOUTS:**
+The Cleanup Manager tracks and cleans up intervals/timeouts between preview applications.
+**YOU MUST REGISTER ALL INTERVALS AND TIMEOUTS** to prevent state corruption.
+
+// ✅ CORRECT - Register interval with Cleanup Manager:
+const intervalId = setInterval(() => {
+  updateCountdown();
+}, 1000);
+if (window.ConvertCleanupManager) {
+  window.ConvertCleanupManager.registerInterval(intervalId, 'countdown timer');
+}
+
+// ✅ CORRECT - Register timeout with Cleanup Manager:
+const timeoutId = setTimeout(() => {
+  showBanner();
+}, 5000);
+if (window.ConvertCleanupManager) {
+  window.ConvertCleanupManager.registerTimeout(timeoutId, 'delayed banner');
+}
+
+// ✅ CORRECT - Register created elements:
+const banner = document.createElement('div');
+banner.id = 'countdown-banner';
+document.body.appendChild(banner);
+if (window.ConvertCleanupManager) {
+  window.ConvertCleanupManager.registerElement(banner, 'countdown banner');
+}
+
+// ❌ WRONG - Untracked interval will persist between previews:
+setInterval(() => updateCountdown(), 1000);  // ← NOT REGISTERED, CAUSES BUGS!
+
+**NOTE:** waitForElement() automatically registers its own intervals - you don't need to register those.
 
 **CODE PATTERNS:**
 

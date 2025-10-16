@@ -185,13 +185,23 @@
       });
       this.modifiedElements.clear();
 
-      // 6. Reset all data-var-applied flags (idempotency checks from generated code)
-      const flaggedElements = document.querySelectorAll('[data-var-applied]');
-      flaggedElements.forEach(el => {
-        delete el.dataset.varApplied;
+      // 6. Reset ALL dataset attributes (idempotency checks from generated code)
+      // Find all elements with any dataset attributes that might be used for idempotency
+      const allElements = document.querySelectorAll('*');
+      let resetCount = 0;
+      allElements.forEach(el => {
+        // Clear any dataset attributes that look like idempotency flags
+        const datasetKeys = Object.keys(el.dataset);
+        datasetKeys.forEach(key => {
+          // Reset any dataset that ends with 'Applied', 'Initialized', 'Modified', etc.
+          if (key.match(/(Applied|Initialized|Modified|Processed|Updated)$/i)) {
+            delete el.dataset[key];
+            resetCount++;
+          }
+        });
       });
-      summary.flags = flaggedElements.length;
-      console.log(`[Cleanup Manager]   ✓ Reset ${flaggedElements.length} data-var-applied flags`);
+      summary.flags = resetCount;
+      console.log(`[Cleanup Manager]   ✓ Reset ${resetCount} idempotency flags`);
 
       // 7. Remove any orphaned tracked elements by attribute
       const trackedElements = document.querySelectorAll('[data-convert-tracked]');
