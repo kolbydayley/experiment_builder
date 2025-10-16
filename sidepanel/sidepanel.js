@@ -224,7 +224,6 @@ class UnifiedExperimentBuilder {
       console.log('Step 2: Initialize utilities...');
       this.initializeUtilities();
       
-      console.log('Step 3: Initialize Convert.com integration...');
       this.initializeConvertState();
       
       console.log('Step 4: Bind events...');
@@ -5727,15 +5726,12 @@ Return ONLY the description, nothing else.`;
     const descGroup = document.getElementById('convertExperienceDescriptionGroup');
     nameGroup?.classList.remove('hidden');
     descGroup?.classList.remove('hidden');
-    console.log('[Convert Sync] Showing name and description groups');
 
     // For now, always show Create button (experiment tracking not yet implemented)
     // TODO: Check if current experiment has convertMetadata.experienceId to show Update instead
     const createBtn = document.getElementById('createConvertExperience');
     const updateBtn = document.getElementById('updateConvertExperience');
 
-    console.log('[Convert Sync] Create button:', createBtn);
-    console.log('[Convert Sync] Showing Create button');
 
     createBtn?.classList.remove('hidden');
     updateBtn?.classList.add('hidden');
@@ -5819,7 +5815,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
         payload.global_css = this.generatedCode.globalCSS;
       }
 
-      console.log('[Convert Sync] Creating experience with payload:', JSON.stringify(payload, null, 2));
 
       const response = await chrome.runtime.sendMessage({
         type: 'CONVERT_CREATE_EXPERIENCE',
@@ -5836,20 +5831,12 @@ function waitForElement(selector, callback, maxWait = 10000) {
         throw new Error(response.error || 'Failed to create experience');
       }
 
-      console.log('[Convert Sync] API Response:', response);
-
       const experience = response.experience;
       const experienceId = experience?.id || experience?.data?.id || response.data?.id;
 
-      console.log('[Convert Sync] Extracted experience ID:', experienceId);
-
       if (!experienceId) {
-        console.error('[Convert Sync] No experience ID found in response:', response);
+        throw new Error('No experience ID returned from Convert.com API');
       }
-
-      // Code is already included in variations via the changes array during creation
-      // No need to update variations separately
-      console.log('[Convert Sync] ✅ Experience created with code in variations');
 
       // Hide status, show success with link
       this.hideConvertSyncStatus();
@@ -5901,12 +5888,10 @@ function waitForElement(selector, callback, maxWait = 10000) {
       let selectedKey = mapping.apiKeyId ? apiKeys.find(k => k.id === mapping.apiKeyId) : null;
 
       if (!selectedKey) {
-        console.log('[updateExistingExperience] Stored API key not found, trying current API key:', this.convertApiKeyId);
         selectedKey = this.convertApiKeyId ? apiKeys.find(k => k.id === this.convertApiKeyId) : null;
       }
 
       if (!selectedKey && apiKeys.length > 0) {
-        console.log('[updateExistingExperience] Using first available API key');
         selectedKey = apiKeys[0];
       }
 
@@ -5981,15 +5966,10 @@ function waitForElement(selector, callback, maxWait = 10000) {
       }
 
       const variations = fetchResponse.experience?.variations || [];
-      console.log(`[Convert Update] Found ${variations.length} variations to update`);
-      console.log(`[Convert Update] Variations data:`, JSON.stringify(variations, null, 2));
-
       // Check if all variations are baseline
       const allBaseline = variations.every(v => v.is_baseline);
       if (allBaseline && variations.length === 1) {
-        console.warn(`[Convert Update] ⚠️ This experience only has a baseline variation.`);
-        console.warn(`[Convert Update] 💡 Tip: Create a new experience to get proper baseline + variation structure.`);
-        console.warn(`[Convert Update] The global JS/CSS will still be updated.`);
+        console.warn('⚠️ Experience only has baseline variation. Global JS/CSS will be updated, but consider creating a new experience for proper A/B test structure.');
       }
 
       // Update each variation with new code
@@ -5997,23 +5977,10 @@ function waitForElement(selector, callback, maxWait = 10000) {
         const apiVariation = variations[i];
         const codeVariation = this.generatedCode.variations[i];
 
-        console.log(`[Convert Update] Updating variation ${i + 1}...`);
-        console.log(`[Convert Update] Variation info:`, {
-          id: apiVariation.id,
-          name: apiVariation.name,
-          isBaseline: apiVariation.is_baseline,
-          hasChanges: apiVariation.changes?.length > 0
-        });
-        console.log(`[Convert Update] Code lengths - CSS: ${codeVariation.css?.length || 0}, JS: ${codeVariation.js?.length || 0}`);
-
         // Skip baseline variations - they represent the original page without changes
         if (apiVariation.is_baseline) {
-          console.log(`[Convert Update] Skipping baseline variation ${i + 1} - baseline = original page`);
           continue;
         }
-
-        // For non-baseline variations, update with the code
-        console.log(`[Convert Update] This is a non-baseline variation - will update with code`);
 
         // Build the change data object
         // IMPORTANT: When adding a new change, ALL THREE fields (css, js, custom_js) are REQUIRED
@@ -6026,7 +5993,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
         // If no code at all, skip this variation
         if (!changeData.css && !changeData.custom_js) {
-          console.log(`[Convert Update] Skipping variation ${i + 1} - no code to update`);
           continue;
         }
 
@@ -6044,7 +6010,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
           updatePayload.concurrency_key = apiVariation.concurrency_key;
         }
 
-        console.log(`[Convert Update] Full payload:`, JSON.stringify(updatePayload, null, 2));
 
         const updateResponse = await chrome.runtime.sendMessage({
           type: 'CONVERT_UPDATE_VARIATION',
@@ -6057,17 +6022,12 @@ function waitForElement(selector, callback, maxWait = 10000) {
         });
 
         if (!updateResponse.success) {
-          console.warn(`⚠️ Could not update variation ${i + 1} code:`, updateResponse.error);
-          console.warn(`Note: Global JS/CSS will still be updated at experience level`);
-          // Don't fail the whole update - global JS/CSS is more important
-        } else {
-          console.log(`✅ Updated variation ${i + 1}`);
+          console.warn(`⚠️ Could not update variation code: ${updateResponse.error}`);
         }
       }
 
       // Update global JS/CSS at experience level if available
       if (this.generatedCode?.globalJS || this.generatedCode?.globalCSS) {
-        console.log('[Convert Update] Updating experience-level global JS/CSS...');
 
         // CRITICAL: Include waitForElement utility in global_js
         const waitForElementUtility = `// Utility function (required for code execution)
@@ -6114,10 +6074,8 @@ function waitForElement(selector, callback, maxWait = 10000) {
           payload: experienceUpdatePayload
         });
 
-        if (experienceUpdateResponse.success) {
-          console.log('[Convert Update] ✅ Updated experience-level global JS/CSS');
-        } else {
-          console.error('[Convert Update] Failed to update global JS/CSS:', experienceUpdateResponse.error);
+        if (!experienceUpdateResponse.success) {
+          throw new Error('Failed to update global JS/CSS: ' + experienceUpdateResponse.error);
         }
       }
 
@@ -6141,11 +6099,8 @@ function waitForElement(selector, callback, maxWait = 10000) {
   }
 
   async updateConvertExperience() {
-    console.log('[updateConvertExperience] Button clicked - updateMode:', this.updateMode);
-
     // If in update mode, use the mapping approach
     if (this.updateMode && this.updateModeMapping) {
-      console.log('[updateConvertExperience] Using update mode with mapping');
 
       // Get selected account and project from modal
       const apiKeySelect = document.getElementById('convertApiKeySelect');
@@ -6321,7 +6276,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
       metadata
     );
 
-    console.log('✅ Saved Convert.com metadata:', metadata);
   }
 
   async getCurrentExperiment() {
@@ -6400,18 +6354,10 @@ function waitForElement(selector, callback, maxWait = 10000) {
     // Build Convert.com URL with /editor path
     const convertUrl = `https://app.convert.com/accounts/${accountId}/projects/${projectId}/experiences/${experienceId}/editor`;
 
-    console.log('[Convert Sync] Experience created with IDs:', {
-      accountId,
-      projectId,
-      experienceId,
-      url: convertUrl
-    });
-
     // Set link href
     const link = document.getElementById('convertExperienceLink');
     if (link) {
       link.href = convertUrl;
-      console.log('[Convert Sync] Link set to:', convertUrl);
     }
 
     // Hide form buttons, show only close
@@ -6461,7 +6407,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
       domainPrefs[domain] = preferences;
 
       await chrome.storage.local.set({ convertDomainPreferences: domainPrefs });
-      console.log(`✅ Saved Convert.com preferences for ${domain}:`, preferences);
     } catch (error) {
       console.error('Failed to save domain preferences:', error);
     }
@@ -6485,7 +6430,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
         return;
       }
 
-      console.log(`🔄 Restoring Convert.com preferences for ${domain}:`, preferences);
 
       // Restore API key
       const apiKeySelect = document.getElementById('convertApiKeySelect');
@@ -6511,7 +6455,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
             projectSelect.value = preferences.projectId;
             await this.onConvertProjectChange();
 
-            console.log(`✅ Restored preferences for ${domain}`);
           }
         }
       }
@@ -6532,12 +6475,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
         return;
       }
 
-      console.log('[saveExperimentMapping] Current state:', {
-        accountId: this.convertAccountId,
-        projectId: this.convertProjectId,
-        apiKeyId: this.convertApiKeyId,
-        experienceId: experienceId
-      });
 
       const mapping = {
         experienceId: experienceId,
@@ -6550,17 +6487,11 @@ function waitForElement(selector, callback, maxWait = 10000) {
         codeHash: this.getCodeHash()
       };
 
-      console.log('[saveExperimentMapping] Mapping to save:', mapping);
-
-      // Load existing mappings
       const result = await chrome.storage.local.get(['convertExperimentMappings']);
       const mappings = result.convertExperimentMappings || {};
-
-      // Save mapping
       mappings[experimentKey] = mapping;
 
       await chrome.storage.local.set({ convertExperimentMappings: mappings });
-      console.log(`✅ Saved experiment mapping for key: ${experimentKey}`, mapping);
 
       // Update UI to show this is a synced experiment
       this.currentExperimentMapping = mapping;
@@ -7668,7 +7599,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
     }
   }
   async loadCurrentPage() { console.log('📄 Current page loaded'); }
-  async loadConvertAPIKeys() { console.log('🔑 Convert API keys loaded'); }
+  async loadConvertAPIKeys() { }
 
   // Legacy compatibility method stubs
   addStatusLog(message, type) {
