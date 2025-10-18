@@ -42,13 +42,30 @@ class SmartContextAssembler {
       };
     }
 
+    // Preserve hierarchical context if available, otherwise use element database
+    const hasHierarchicalContext = pageData.context && pageData.context.mode;
+
     const context = {
+      // NEW: Preserve hierarchical context structure
+      context: hasHierarchicalContext ? {
+        mode: pageData.context.mode,
+        primary: [],
+        proximity: [],
+        structure: [],
+        metadata: {
+          ...pageData.context.metadata,
+          optimized: true,
+          intentDriven: true
+        }
+      } : null,
+
+      // LEGACY: Element database (for backward compatibility)
       elementDatabase: {
         elements: [],
         metadata: {
           mode: 'optimized',
           intentDriven: true,
-          originalElementCount: pageData.elementDatabase.elements.length,
+          originalElementCount: pageData.elementDatabase?.elements?.length || 0,
           filteredElementCount: 0
         }
       },
@@ -74,6 +91,30 @@ class SmartContextAssembler {
     if (context.elementDatabase.elements.length === 0) {
       console.warn('⚠️ [Smart Context] 0 elements after initial assembly, using top 20 as fallback');
       context.elementDatabase.elements = pageData.elementDatabase.elements.slice(0, 20);
+    }
+
+    // NEW: Populate hierarchical context if available
+    if (hasHierarchicalContext && pageData.context) {
+      // For now, use the same elements for all levels (optimization can be added later)
+      // Just preserve the hierarchical structure with enhanced data (styles, behaviors)
+      const allElements = [
+        ...(pageData.context.primary || []),
+        ...(pageData.context.proximity || []),
+        ...(pageData.context.structure || [])
+      ];
+
+      // Limit to top elements based on scope
+      const limitedElements = allElements.slice(0, context.elementDatabase.elements.length || 20);
+
+      // Split back into hierarchical structure (preserve original levels if possible)
+      context.context.primary = limitedElements.filter(el => el.level === 'primary');
+      context.context.proximity = limitedElements.filter(el => el.level === 'proximity');
+      context.context.structure = limitedElements.filter(el => el.level === 'structure');
+
+      // If no level info, put everything in primary
+      if (context.context.primary.length === 0 && limitedElements.length > 0) {
+        context.context.primary = limitedElements;
+      }
     }
 
     // 2. Filter element properties based on requirements
@@ -259,6 +300,19 @@ class SmartContextAssembler {
       // Always include selector (critical)
       if (!filtered.selector && element.selector) {
         filtered.selector = element.selector;
+      }
+
+      // NEW: Always include styles and behaviors (critical for AI context)
+      if (element.styles) {
+        filtered.styles = element.styles;
+      }
+      if (element.behaviors) {
+        filtered.behaviors = element.behaviors;
+      }
+
+      // Always include level for hierarchical context
+      if (element.level) {
+        filtered.level = element.level;
       }
 
       return filtered;

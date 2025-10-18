@@ -67,11 +67,18 @@ class ExperimentHistory {
         }
       }
 
+      // Generate AI title if not provided
+      let aiTitle = experimentData.title;
+      if (!aiTitle && experimentData.generatedCode) {
+        aiTitle = await this.generateAITitle(experimentData);
+      }
+
       const experiment = {
         id: experimentId,
         domain,
         url,
-        title: experimentData.title || this.extractTitle(experimentData),
+        title: aiTitle || this.extractTitle(experimentData),
+        aiGenerated: !!aiTitle && !experimentData.title, // Track if title was AI-generated
         pageTitle: experimentData.pageTitle || '',
         timestamp: experimentData.timestamp || timestamp,
         lastModified: timestamp,
@@ -140,7 +147,19 @@ class ExperimentHistory {
       if (!domain) return [];
 
       const history = await this.loadHistory();
-      const experiments = history[domain] || [];
+      let experiments = history[domain] || [];
+
+      // Remove experiments older than 30 days
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const beforeCount = experiments.length;
+      experiments = experiments.filter(exp => exp.lastModified > thirtyDaysAgo);
+
+      // If any were removed, update storage
+      if (experiments.length < beforeCount) {
+        history[domain] = experiments;
+        await chrome.storage.local.set({ [this.STORAGE_KEY]: history });
+        console.log(`🗑️ Removed ${beforeCount - experiments.length} expired experiments (>30 days old)`);
+      }
 
       // Sort by lastModified descending
       return experiments.sort((a, b) => b.lastModified - a.lastModified);
@@ -530,6 +549,49 @@ class ExperimentHistory {
     } catch (error) {
       console.error('Failed to update sync timestamp:', error);
       return false;
+    }
+  }
+
+  /**
+   * Generate AI-based title for experiment
+   * @param {object} experimentData - Experiment data
+   * @returns {Promise<string|null>} - Generated title or null
+   */
+  async generateAITitle(experimentData) {
+    try {
+      // Extract variation info for the AI prompt
+      const variationInfo = experimentData.generatedCode?.variations?.[0];
+      if (!variationInfo) return null;
+
+      // Build a compact summary of what the experiment does
+      const summary = [];
+      if (variationInfo.name) summary.push(variationInfo.name);
+      if (variationInfo.description) summary.push(variationInfo.description);
+
+      // Extract key changes from chat history if available
+      const chatContext = experimentData.chatHistory?.slice(0, 3)
+        .filter(msg => msg.role === 'user')
+        .map(msg => msg.content)
+        .join(' | ');
+
+      if (chatContext) summary.push(chatContext);
+
+      if (summary.length === 0) return null;
+
+      // Call service worker to generate title
+      const response = await chrome.runtime.sendMessage({
+        type: 'GENERATE_EXPERIMENT_NAME',
+        summary: summary.join(' - ').substring(0, 500) // Limit context size
+      });
+
+      if (response.success && response.title) {
+        return response.title;
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('AI title generation failed, using fallback:', error);
+      return null;
     }
   }
 }

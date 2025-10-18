@@ -16,13 +16,13 @@ html,
    ======================================== */
 .chat-drawer {
   position: fixed;
-  top: 70px; /* Below unified header (12px padding + ~18px h1 + 12px padding + 12px subtitle + border = ~70px) */
+  top: 0; /* Start from top edge */
   bottom: 32px; /* Above bottom bar */
   right: 0;
   width: min(420px, 90vw);
   max-width: 600px;
   min-width: 320px;
-  height: auto; /* Auto height to fit between header and bottom */
+  height: auto; /* Auto height to fit between top and bottom */
   background: var(--bg-primary, #1a1a1a);
   border-left: 1px solid var(--border, #3a3a3a);
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);

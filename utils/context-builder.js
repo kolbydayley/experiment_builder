@@ -107,7 +107,13 @@ class ContextBuilder {
         section: this.findSection(element),
         path: this.getElementPath(element),
         nearbyText: this.getNearbyText(element, 100)
-      }
+      },
+
+      // NEW: JavaScript behaviors
+      behaviors: this.extractElementBehaviors(element),
+
+      // NEW: CSS rules from stylesheets
+      cssRules: this.extractCSSRules(element)
     };
   }
 
@@ -317,6 +323,13 @@ class ContextBuilder {
       // Layout
       display: computed.display,
       position: computed.position,
+
+      // Positioning (CRITICAL for fixed/sticky/absolute elements)
+      top: computed.top,
+      bottom: computed.bottom,
+      left: computed.left,
+      right: computed.right,
+      zIndex: computed.zIndex,
 
       // Box model
       width: computed.width,
@@ -558,7 +571,7 @@ class ContextBuilder {
   }
 
   /**
-   * Capture page metadata
+   * Capture page metadata including JS behaviors
    */
   captureMetadata() {
     // Extract color scheme
@@ -584,8 +597,354 @@ class ContextBuilder {
         primary: this.extractPrimaryColor()
       },
       fontFamilies: Array.from(fonts).slice(0, 3),
+      jsBehaviors: this.detectPageBehaviors(), // NEW: JS context
       timestamp: Date.now()
     };
+  }
+
+  /**
+   * Detect JavaScript behaviors on the page
+   * Captures scroll handlers, dynamic classes, sticky elements, etc.
+   */
+  detectPageBehaviors() {
+    const behaviors = {
+      hasScrollHandler: false,
+      stickyElements: [],
+      fixedElements: [],
+      dynamicClasses: [],
+      inlineHandlers: []
+    };
+
+    try {
+      // Detect scroll handlers (check for scroll event listeners on window/document)
+      const scrollDetector = window.addEventListener ? 'has addEventListener (likely has scroll handlers)' : 'no addEventListener';
+      behaviors.hasScrollHandler = scrollDetector;
+
+      // Find sticky/fixed position elements
+      document.querySelectorAll('*').forEach(el => {
+        const position = window.getComputedStyle(el).position;
+        if (position === 'sticky') {
+          behaviors.stickyElements.push({
+            selector: this.generateSelector(el),
+            tag: el.tagName.toLowerCase(),
+            top: window.getComputedStyle(el).top
+          });
+        }
+        if (position === 'fixed') {
+          behaviors.fixedElements.push({
+            selector: this.generateSelector(el),
+            tag: el.tagName.toLowerCase(),
+            top: window.getComputedStyle(el).top
+          });
+        }
+
+        // Detect inline event handlers
+        ['onclick', 'onscroll', 'onmouseover', 'onmouseout'].forEach(handler => {
+          if (el[handler]) {
+            behaviors.inlineHandlers.push({
+              selector: this.generateSelector(el),
+              handler: handler
+            });
+          }
+        });
+
+        // Detect classes that might be dynamic (common scroll/state classes)
+        const dynamicClassPatterns = /scroll|sticky|fixed|active|open|visible|hidden|show|hide/i;
+        Array.from(el.classList).forEach(cls => {
+          if (dynamicClassPatterns.test(cls)) {
+            behaviors.dynamicClasses.push({
+              selector: this.generateSelector(el),
+              class: cls
+            });
+          }
+        });
+      });
+
+      // Limit results to avoid token bloat
+      behaviors.stickyElements = behaviors.stickyElements.slice(0, 5);
+      behaviors.fixedElements = behaviors.fixedElements.slice(0, 10);
+      behaviors.dynamicClasses = behaviors.dynamicClasses.slice(0, 20);
+      behaviors.inlineHandlers = behaviors.inlineHandlers.slice(0, 10);
+
+    } catch (error) {
+      console.warn('Failed to detect page behaviors:', error);
+    }
+
+    return behaviors;
+  }
+
+  /**
+   * Extract CSS rules that apply to an element from stylesheets
+   */
+  extractCSSRules(element) {
+    const matchingRules = [];
+
+    try {
+      // Get all stylesheets
+      const sheets = Array.from(document.styleSheets);
+
+      for (const sheet of sheets) {
+        try {
+          // Skip external stylesheets that may cause CORS errors
+          if (sheet.href && !sheet.href.startsWith(window.location.origin)) continue;
+
+          const rules = Array.from(sheet.cssRules || sheet.rules || []);
+
+          for (const rule of rules) {
+            if (rule.type === CSSRule.STYLE_RULE) {
+              // Check if this rule's selector matches our element
+              try {
+                if (element.matches(rule.selectorText)) {
+                  matchingRules.push({
+                    selector: rule.selectorText,
+                    cssText: rule.style.cssText
+                  });
+                }
+              } catch (e) {
+                // Invalid selector, skip
+              }
+            }
+          }
+        } catch (e) {
+          // CORS or other error accessing stylesheet, skip
+        }
+      }
+
+      // Limit to most relevant rules (last 10, which are usually most specific)
+      return matchingRules.slice(-10);
+
+    } catch (error) {
+      console.warn('Failed to extract CSS rules:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Extract JavaScript behaviors for a specific element
+   */
+  extractElementBehaviors(element) {
+    const behaviors = {};
+
+    try {
+      const computedStyle = window.getComputedStyle(element);
+
+      // Check for inline event handlers
+      const handlers = [];
+      ['onclick', 'onscroll', 'onmouseover', 'onmouseout', 'onchange', 'onsubmit', 'onfocus', 'onblur'].forEach(handler => {
+        if (element[handler]) {
+          handlers.push(handler);
+        }
+      });
+      if (handlers.length > 0) behaviors.inlineHandlers = handlers;
+
+      // Check for data attributes that might indicate JS framework usage
+      const dataAttrs = [];
+      Array.from(element.attributes).forEach(attr => {
+        if (attr.name.startsWith('data-') || attr.name.startsWith('ng-') || attr.name.startsWith('v-') || attr.name.startsWith('@')) {
+          dataAttrs.push(attr.name);
+        }
+      });
+      if (dataAttrs.length > 0) behaviors.dataAttributes = dataAttrs.slice(0, 5);
+
+      // Check positioning (fixed/sticky elements likely have scroll behaviors)
+      const position = computedStyle.position;
+      if (position === 'fixed' || position === 'sticky') {
+        behaviors.positioning = position;
+      }
+
+      // Check for dynamic classes (enhanced patterns)
+      const dynamicClassPatterns = /scroll|sticky|fixed|active|open|visible|hidden|show|hide|expanded|collapsed|animated|transition|transform/i;
+      const dynamicClasses = Array.from(element.classList).filter(cls => dynamicClassPatterns.test(cls));
+      if (dynamicClasses.length > 0) behaviors.dynamicClasses = dynamicClasses;
+
+      // Detect active CSS transitions
+      const transition = computedStyle.transition;
+      if (transition && transition !== 'all 0s ease 0s' && transition !== 'none') {
+        behaviors.hasTransition = transition.split(',')[0].trim(); // Show first transition property
+      }
+
+      // Detect active CSS animations
+      const animation = computedStyle.animation;
+      if (animation && animation !== 'none') {
+        const animationName = computedStyle.animationName;
+        if (animationName && animationName !== 'none') {
+          behaviors.hasAnimation = animationName;
+        }
+      }
+
+      // Detect transforms (commonly used for scroll effects)
+      const transform = computedStyle.transform;
+      if (transform && transform !== 'none') {
+        behaviors.hasTransform = true;
+      }
+
+      // Detect scroll-triggered behavior patterns (check for scroll event listeners)
+      // This is a heuristic - we can't directly access event listeners, but we can look for common patterns
+      const classList = Array.from(element.classList).join(' ');
+      if (/scroll|parallax|fade-in|slide-in/i.test(classList)) {
+        behaviors.likelyScrollTriggered = true;
+      }
+
+      // Detect if element is likely managed by Intersection Observer (common for lazy loading, scroll animations)
+      if (element.hasAttribute('data-src') || element.hasAttribute('data-lazy') ||
+          classList.includes('lazy') || classList.includes('lazyload')) {
+        behaviors.likelyIntersectionObserver = true;
+      }
+
+    } catch (error) {
+      console.warn('Failed to extract element behaviors:', error);
+    }
+
+    return Object.keys(behaviors).length > 0 ? behaviors : null;
+  }
+
+  /**
+   * Analyze page-wide behavior patterns
+   * Returns comprehensive analysis of dynamic behaviors that affect layout
+   */
+  analyzePageBehaviors() {
+    const analysis = {
+      fixedElements: [],
+      stickyElements: [],
+      scrollPatterns: [],
+      transitionPatterns: [],
+      animationPatterns: [],
+      zIndexStrategy: null,
+      recommendations: []
+    };
+
+    try {
+      // Find all fixed and sticky elements
+      const allElements = document.querySelectorAll('*');
+      const fixedEls = [];
+      const stickyEls = [];
+
+      allElements.forEach(el => {
+        const style = window.getComputedStyle(el);
+        const position = style.position;
+
+        if (position === 'fixed') {
+          const rect = el.getBoundingClientRect();
+          fixedEls.push({
+            selector: this.generateSelector(el),
+            zIndex: style.zIndex,
+            top: rect.top,
+            bottom: rect.bottom,
+            height: rect.height
+          });
+        } else if (position === 'sticky') {
+          stickyEls.push({
+            selector: this.generateSelector(el),
+            zIndex: style.zIndex,
+            stickyTop: style.top
+          });
+        }
+      });
+
+      analysis.fixedElements = fixedEls;
+      analysis.stickyElements = stickyEls;
+
+      // Determine z-index strategy
+      if (fixedEls.length > 0 || stickyEls.length > 0) {
+        const zIndexes = [...fixedEls, ...stickyEls]
+          .map(el => parseInt(el.zIndex))
+          .filter(z => !isNaN(z) && z > 0);
+
+        if (zIndexes.length > 0) {
+          const maxZ = Math.max(...zIndexes);
+          const minZ = Math.min(...zIndexes);
+          analysis.zIndexStrategy = {
+            range: `${minZ}-${maxZ}`,
+            highest: maxZ,
+            recommendedForNewElements: maxZ + 1
+          };
+        }
+      }
+
+      // Detect scroll patterns by checking for scroll event listeners or scroll-related classes
+      const scrollRelatedElements = document.querySelectorAll('[class*="scroll"], [class*="parallax"], [class*="fade-in"], [class*="slide-in"]');
+      if (scrollRelatedElements.length > 0) {
+        analysis.scrollPatterns.push({
+          count: scrollRelatedElements.length,
+          type: 'scroll-triggered-classes',
+          description: 'Elements with scroll-related class names detected'
+        });
+      }
+
+      // Check if header/nav has scroll behavior (common pattern)
+      const header = document.querySelector('header, .header, nav, .navbar');
+      if (header) {
+        const headerStyle = window.getComputedStyle(header);
+        const hasTransition = headerStyle.transition && headerStyle.transition !== 'all 0s ease 0s' && headerStyle.transition !== 'none';
+        const position = headerStyle.position;
+
+        if ((position === 'fixed' || position === 'sticky') && hasTransition) {
+          analysis.scrollPatterns.push({
+            element: 'header/nav',
+            behavior: 'transforms on scroll',
+            position: position,
+            transition: headerStyle.transition
+          });
+        }
+      }
+
+      // Detect common transition patterns
+      const elementsWithTransitions = Array.from(allElements).filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.transition && style.transition !== 'all 0s ease 0s' && style.transition !== 'none';
+      });
+
+      if (elementsWithTransitions.length > 5) {
+        const transitions = elementsWithTransitions
+          .map(el => window.getComputedStyle(el).transition)
+          .slice(0, 5);
+        analysis.transitionPatterns = transitions;
+      }
+
+      // Detect common animation patterns
+      const elementsWithAnimations = Array.from(allElements).filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.animationName && style.animationName !== 'none';
+      });
+
+      if (elementsWithAnimations.length > 0) {
+        const animations = elementsWithAnimations
+          .map(el => window.getComputedStyle(el).animationName)
+          .filter((name, idx, arr) => arr.indexOf(name) === idx) // unique
+          .slice(0, 5);
+        analysis.animationPatterns = animations;
+      }
+
+      // Generate recommendations
+      if (fixedEls.some(el => el.top < 100 && el.height > 40)) {
+        analysis.recommendations.push('Fixed header detected at top - new fixed elements should coordinate z-index and consider body padding');
+      }
+
+      if (analysis.scrollPatterns.length > 0) {
+        analysis.recommendations.push('Page has scroll-triggered behaviors - new elements should respect existing scroll animations');
+      }
+
+      if (stickyEls.length > 0) {
+        analysis.recommendations.push('Sticky elements detected - ensure new elements don\'t conflict with sticky positioning');
+      }
+
+    } catch (error) {
+      console.warn('Failed to analyze page behaviors:', error);
+    }
+
+    return analysis;
+  }
+
+  /**
+   * Generate a simple selector for an element
+   */
+  generateSelector(element) {
+    if (element.id) return `#${element.id}`;
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).slice(0, 2);
+      if (classes.length > 0) return `${element.tagName.toLowerCase()}.${classes.join('.')}`;
+    }
+    return element.tagName.toLowerCase();
   }
 
   /**

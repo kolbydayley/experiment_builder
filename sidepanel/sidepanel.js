@@ -72,20 +72,30 @@ class UnifiedExperimentBuilder {
   setupMessageListeners() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log('📨 Sidepanel received message:', message);
-      
+
       if (message.type === 'ELEMENT_SELECTED') {
         this.handleElementSelected(message.data);
         sendResponse({ success: true });
         return true; // Keep the message channel open
       }
-      
+
       if (message.type === 'ELEMENT_SELECTION_CANCELLED') {
         this.handleElementSelectionCancelled();
         sendResponse({ success: true });
         return true; // Keep the message channel open
       }
+
+      // Handle status updates from service worker
+      if (message.type === 'STATUS_UPDATE') {
+        this.showStatus(message.message, message.statusType || 'info', null, true);
+        // Show typing indicator and update its status
+        const cleanMessage = message.message.replace(/^[^\s]+\s+/, ''); // Remove emoji
+        this.showTypingIndicator(cleanMessage);
+        sendResponse({ success: true });
+        return false;
+      }
     });
-    
+
     console.log('✅ Message listeners set up for sidepanel');
   }
 
@@ -1092,6 +1102,25 @@ class UnifiedExperimentBuilder {
   }
 
   setupDeleteAllButton() {
+    // Setup history menu toggle
+    const historyMenuBtn = document.getElementById('historyMenuBtn');
+    const historyMenu = document.getElementById('historyMenu');
+
+    if (historyMenuBtn && historyMenu) {
+      historyMenuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        historyMenu.classList.toggle('hidden');
+      });
+
+      // Close menu when clicking outside
+      document.addEventListener('click', (e) => {
+        if (!historyMenuBtn.contains(e.target) && !historyMenu.contains(e.target)) {
+          historyMenu.classList.add('hidden');
+        }
+      });
+    }
+
+    // Setup delete all button with confirmation
     const deleteAllBtn = document.getElementById('deleteAllExperimentsBtn');
     if (!deleteAllBtn) return;
 
@@ -1099,8 +1128,15 @@ class UnifiedExperimentBuilder {
     const newBtn = deleteAllBtn.cloneNode(true);
     deleteAllBtn.parentNode.replaceChild(newBtn, deleteAllBtn);
 
-    // Add click handler
-    newBtn.addEventListener('click', () => this.deleteAllExperiments());
+    // Add click handler with confirmation
+    newBtn.addEventListener('click', async () => {
+      historyMenu.classList.add('hidden');
+
+      const confirmed = confirm('Are you sure you want to delete ALL experiments for this site? This action cannot be undone.');
+      if (confirmed) {
+        await this.deleteAllExperiments();
+      }
+    });
   }
 
   setupHistoryToggle() {
@@ -1261,16 +1297,11 @@ class UnifiedExperimentBuilder {
     }
 
     // Get count of experiments for this page
-    const experiments = await this.experimentHistory.getExperiments(currentUrl);
+    const experiments = await this.experimentHistory.getExperimentsForDomain(currentUrl);
     const count = experiments?.length || 0;
 
     if (count === 0) {
       this.showStatus('No experiments to delete', 'info', 2000);
-      return;
-    }
-
-    // Confirm deletion
-    if (!confirm(`Are you sure you want to delete ALL ${count} saved experiment${count > 1 ? 's' : ''} for this page? This cannot be undone.`)) {
       return;
     }
 
@@ -1772,7 +1803,7 @@ class UnifiedExperimentBuilder {
       if (error.message !== 'CANCELLED') {
         this.updateApiStatus('error'); // Show error indicator (red dot)
         this.showStatus('Generation failed: ' + error.message, 'error', 5000);
-        this.addActivity('Generation failed: ' + error.message, 'error');
+        // Note: showError() will call addActivity() via showNotification(), so don't duplicate here
         this.showError(error.message);
       }
     }
@@ -1787,13 +1818,13 @@ class UnifiedExperimentBuilder {
       this.currentRequestType = 'CODE_GENERATION';
 
       // Update status with stop button
-      this.updateTypingStatus('Analyzing');
-      this.showStatus('🤖 Generating experiment code...', 'loading', null, true);
+      this.updateTypingStatus('Analyzing request');
+      this.showStatus('🔍 Analyzing your request...', 'loading', null, true);
 
       // Use background service worker for AI generation (proper approach for Manifest V3)
       console.log('🔗 Calling background service worker for AI generation...');
 
-      this.updateTypingStatus('Generating');
+      this.updateTypingStatus('Preparing generation');
 
       // Add timeout to prevent infinite hanging
       const messagePromise = chrome.runtime.sendMessage({
@@ -5381,6 +5412,20 @@ function waitForElement(selector, callback, maxWait = 10000) {
       }
       createBtn?.classList.remove('hidden');
       updateBtn?.classList.add('hidden');
+
+      // Auto-populate experiment name from current experiment if available
+      const nameInput = document.getElementById('convertExperienceName');
+      if (nameInput && this.currentExperimentId && this.experimentHistory) {
+        try {
+          const currentUrl = this.currentPageData?.url || (await this.getCurrentTabUrl());
+          const experiment = await this.experimentHistory.getExperiment(currentUrl, this.currentExperimentId);
+          if (experiment?.title) {
+            nameInput.value = experiment.title;
+          }
+        } catch (error) {
+          console.warn('Could not load experiment title:', error);
+        }
+      }
     }
 
     // Show modal
@@ -6581,7 +6626,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
     const mapping = await this.getExperimentMapping();
 
     if (mapping) {
-      pushText.textContent = '↻ Update in Convert.com';
+      pushText.textContent = 'Update in Convert.com';
       pushBtn.title = `Update existing experience (ID: ${mapping.experienceId})`;
       console.log(`📝 Experiment is synced to experience ${mapping.experienceId}`);
 
@@ -6811,7 +6856,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
           target: { tabId: tab.id },
           files: ['content-scripts/element-selector.js']
         });
-        console.log('✅ Content script injected successfully');
+        console.log('Content script injected successfully');
         // Small delay to ensure script is ready
         await new Promise(resolve => setTimeout(resolve, 200));
       } catch (injectError) {
@@ -6849,7 +6894,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
     // Show template selector in the main workflow area instead of chat
     this.showInlineTemplateSelector();
     
-    console.log('✅ Template selector displayed in main workflow');
+    console.log('Template selector displayed in main workflow');
   }
 
   async showInlineTemplateSelector() {
@@ -7470,7 +7515,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
         this.clearStatus();
 
         // Stay on current view without triggering any generation
-        console.log('✅ Request stopped, staying on current view without any automatic actions');
+        console.log('Request stopped, staying on current view without any automatic actions');
       } else {
         this.showStatus('No active request to stop', 'info', 2000);
       }

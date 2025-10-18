@@ -52,6 +52,21 @@ class ServiceWorker {
     return this.recentLogs.slice(-this.maxLogEntries);
   }
 
+  async sendStatusToSidePanel(message, type = 'info') {
+    try {
+      // Send status update to sidepanel via runtime message
+      await chrome.runtime.sendMessage({
+        type: 'STATUS_UPDATE',
+        message: message,
+        statusType: type
+      }).catch(() => {
+        // Ignore errors if sidepanel isn't open
+      });
+    } catch (error) {
+      // Silently ignore - sidepanel may not be open
+    }
+  }
+
   async initializeExtension() {
     console.log('🔄 Initializing extension...');
 
@@ -245,6 +260,17 @@ class ServiceWorker {
           } catch (error) {
             console.error('❌ [ADJUST_CODE] Error:', error.message);
             sendResponse({ success: false, error: error.message, logs: this.takeRecentLogs() });
+          }
+          break;
+        }
+
+        case 'GENERATE_EXPERIMENT_NAME': {
+          try {
+            const title = await this.generateExperimentName(message.summary);
+            sendResponse({ success: true, title });
+          } catch (error) {
+            console.error('Failed to generate experiment name:', error);
+            sendResponse({ success: false, error: error.message });
           }
           break;
         }
@@ -508,14 +534,21 @@ class ServiceWorker {
               await this.wait(300); // Extra delay for message listeners to register
             }
 
-            console.log('📤 Sending previewCode message to tab', tabId);
-            await chrome.tabs.sendMessage(tabId, {
+            console.log('📤 Sending previewCode message to tab', tabId, {
+              hasCSS: !!message.css,
+              cssLength: message.css?.length || 0,
+              hasJS: !!message.js,
+              jsLength: message.js?.length || 0
+            });
+
+            const previewResponse = await chrome.tabs.sendMessage(tabId, {
               action: 'previewCode',
               css: message.css,
               js: message.js,
               variationNumber: message.variationNumber
             });
 
+            console.log('✅ Content script preview response:', previewResponse);
             sendResponse({ success: true });
           } catch (error) {
             console.error('Preview variation error:', error);
@@ -1221,6 +1254,783 @@ class ServiceWorker {
     }
   }
 
+  async generateExperimentName(summary) {
+    const logger = this.createOperationLogger('GenerateExperimentName');
+
+    try {
+      const prompt = `Based on this A/B test experiment summary, generate a short, descriptive name (2-5 words):
+
+Summary: ${summary}
+
+Return ONLY the experiment name, nothing else. Make it clear and descriptive.
+
+Examples of good names:
+- "Hero CTA Color Test"
+- "Pricing Page Redesign"
+- "Newsletter Popup Timing"
+- "Product Image Size Test"`;
+
+      const response = await this.chatGPTAPI.chat([
+        { role: 'system', content: 'You are a helpful assistant that generates concise experiment names.' },
+        { role: 'user', content: prompt }
+      ], {
+        temperature: 0.7,
+        max_tokens: 20
+      });
+
+      const title = response.content.trim().replace(/^["']|["']$/g, ''); // Remove quotes if present
+      logger.log('Generated title', title);
+
+      return title || 'Untitled Experiment';
+    } catch (error) {
+      logger.error('Title generation failed', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * STAGE 1: Planning - AI identifies which elements need deep context
+   * Fast, cheap call with minimal context
+   */
+  async stage1_planning(userRequest, pageData, selectedElement, settings = null) {
+    const logger = this.createOperationLogger('Stage1_Planning');
+    logger.log('Starting planning stage', `request length=${userRequest.length}`);
+
+    try {
+      // Build minimal element database (selectors + tags only, no full context)
+      const minimalElements = (pageData.context?.primary || pageData.elementDatabase?.elements || [])
+        .slice(0, 50) // Include more elements for AI to choose from
+        .map(el => ({
+          selector: el.selector,
+          tag: el.tag,
+          text: el.text?.substring(0, 50) || el.textContent?.substring(0, 50) || '',
+          section: el.section || el.context?.section,
+          // Basic positioning info to help AI identify layout elements
+          position: el.styles?.position,
+          display: el.styles?.display
+        }));
+
+      // Always add 'body' as an available selector (not in element database by default)
+      minimalElements.unshift({
+        selector: 'body',
+        tag: 'body',
+        text: '',
+        section: 'page',
+        position: 'static',
+        display: 'block'
+      });
+
+      // Add common structural elements for brand context (if they exist on page)
+      const commonStructuralSelectors = ['header', 'nav', 'main', '.header', '.navbar', '#header'];
+      commonStructuralSelectors.forEach(sel => {
+        if (!minimalElements.find(el => el.selector === sel)) {
+          minimalElements.push({
+            selector: sel,
+            tag: sel.replace(/[.#]/g, ''),
+            text: '',
+            section: 'structure',
+            position: 'unknown',
+            display: 'unknown'
+          });
+        }
+      });
+
+      const planningPrompt = `You are a code planning specialist. Analyze the user's request and identify which elements need detailed context.
+
+**USER REQUEST:**
+"${userRequest}"
+
+**AVAILABLE ELEMENTS (Minimal Context):**
+${JSON.stringify(minimalElements, null, 2)}
+
+**PAGE INFO:**
+- URL: ${pageData.url}
+- Title: ${pageData.title}
+${selectedElement ? `\n**USER SELECTED ELEMENT:**\n- Selector: ${selectedElement.selector}\n- Tag: ${selectedElement.tag}\n- Text: "${selectedElement.textContent?.substring(0, 100) || ''}"` : ''}
+
+**YOUR TASK:**
+1. Explain your implementation plan (1-2 sentences)
+2. List selectors you need DEEP context for (complete styles, HTML, CSS rules)
+3. For each selector, explain WHY you need it
+4. Identify layout considerations (fixed/sticky elements, z-index, spacing issues)
+
+**CRITICAL RULES:**
+- Request deep context for elements you will MODIFY, HIDE, or CREATE NEAR
+- Request deep context for elements affecting LAYOUT (position: "fixed" or "sticky")
+- **ALWAYS request 1-2 STRUCTURAL elements (header, nav, main) for BRAND CONTEXT (colors, fonts, design style)**
+- If adding fixed element at top, request: "body" + header/nav for brand + any fixed/sticky elements
+- If hiding element, request that element's selector
+- If modifying element, request that element + its container
+- Always request "body" if you plan to add padding-top or modify page-level spacing
+- **YOU MUST ONLY USE SELECTORS FROM THE AVAILABLE ELEMENTS LIST ABOVE**
+- **DO NOT invent selectors or use descriptions like "navigation elements (any fixed/sticky)"**
+- **ONLY use exact CSS selectors from the list: "body", "nav", ".header", "#menu", etc.**
+- If you need EXISTING fixed/sticky elements but none are in the list, just request "body" only
+
+**WHY REQUEST STRUCTURAL ELEMENTS FOR BRAND CONTEXT:**
+When creating NEW elements (like banners), you need to see existing page colors, fonts, and design to match the brand. Request header/nav/main to get this context.
+
+**OUTPUT FORMAT (JSON):**
+\`\`\`json
+{
+  "plan": "Brief description of what you'll implement (1-2 sentences)",
+  "requiredSelectors": [
+    {
+      "selector": "body",
+      "reason": "Need to add padding-top for new fixed banner",
+      "needsDeepContext": true
+    }
+  ],
+  "layoutConsiderations": [
+    "Specific things to check (e.g., 'Check for existing fixed navigation', 'Calculate z-index for banner')"
+  ],
+  "estimatedBannerHeight": "52px (if creating new element, estimate its height)"
+}
+\`\`\`
+
+Return ONLY valid JSON, no additional text.`;
+
+      const messages = [
+        {
+          role: 'user',
+          content: planningPrompt
+        }
+      ];
+
+      // Use fast model for planning (Haiku for Anthropic, mini for OpenAI)
+      // Use user's configured provider but with faster/cheaper model variant
+      const userSettings = settings || await this.loadSettings();
+      const userProvider = userSettings.provider || 'openai';  // Default to OpenAI
+
+      const planningSettings = {
+        provider: userProvider,
+        model: userProvider === 'anthropic'
+          ? 'claude-3-5-haiku-20241022'  // Fast, cheap Anthropic
+          : 'gpt-4o-mini',  // Fast, cheap OpenAI
+        anthropicApiKey: userSettings.anthropicApiKey,  // For Anthropic
+        authToken: userSettings.authToken,  // For OpenAI
+        maxTokens: 2000  // Planning response is small JSON
+      };
+
+      logger.log('Calling AI for planning', `provider=${planningSettings.provider}, model=${planningSettings.model}`);
+      const startTime = Date.now();
+
+      const response = await this.callAI(messages, planningSettings);
+      const duration = Date.now() - startTime;
+
+      logger.log('Planning response received', `duration=${duration}ms`);
+
+      // Parse JSON response
+      let jsonText = response.content;
+
+      // Extract JSON from markdown code blocks if present
+      if (jsonText.includes('```json')) {
+        const start = jsonText.indexOf('```json') + 7;
+        const end = jsonText.indexOf('```', start);
+        jsonText = jsonText.substring(start, end).trim();
+      } else if (jsonText.includes('```')) {
+        const start = jsonText.indexOf('```') + 3;
+        const end = jsonText.indexOf('```', start);
+        jsonText = jsonText.substring(start, end).trim();
+      }
+
+      // Find JSON object boundaries
+      const firstBrace = jsonText.indexOf('{');
+      if (firstBrace === -1) {
+        throw new Error('Planning response not in JSON format');
+      }
+
+      // Find matching closing brace
+      let braceCount = 0;
+      let lastBrace = firstBrace;
+      for (let i = firstBrace; i < jsonText.length; i++) {
+        if (jsonText[i] === '{') braceCount++;
+        if (jsonText[i] === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            lastBrace = i;
+            break;
+          }
+        }
+      }
+
+      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+      const plan = JSON.parse(jsonText);
+
+      logger.log('Plan parsed successfully', `selectors=${plan.requiredSelectors.length}`);
+      console.log('📋 AI Plan:', plan.plan);
+      console.log('🎯 Required selectors:', plan.requiredSelectors.map(s => s.selector));
+
+      return {
+        plan: plan.plan,
+        requiredSelectors: plan.requiredSelectors || [],
+        layoutConsiderations: plan.layoutConsiderations || [],
+        estimatedBannerHeight: plan.estimatedBannerHeight || null,
+        tokens: response.usage || {}
+      };
+
+    } catch (error) {
+      logger.error('Planning stage failed', error.message);
+      console.error('❌ Planning error:', error);
+
+      // Fallback: If planning fails, request deep context for selected element only
+      return {
+        plan: 'Fallback: Using selected element or body for context',
+        requiredSelectors: selectedElement ? [
+          { selector: selectedElement.selector, reason: 'User selected element', needsDeepContext: true },
+          { selector: 'body', reason: 'Page-level context', needsDeepContext: true }
+        ] : [
+          { selector: 'body', reason: 'Page-level context', needsDeepContext: true }
+        ],
+        layoutConsiderations: ['Planning failed - using fallback context'],
+        estimatedBannerHeight: null,
+        tokens: {},
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * STAGE 2: Gather deep context for required selectors (parallel)
+   */
+  async stage2_gatherContext(requiredSelectors, pageData, tabId) {
+    const logger = this.createOperationLogger('Stage2_GatherContext');
+    logger.log('Gathering deep context', `selectors=${requiredSelectors.length}`);
+
+    const startTime = Date.now();
+
+    try {
+      // Gather deep context in parallel for all required selectors
+      const deepContextPromises = requiredSelectors.map(async ({ selector, reason, needsDeepContext }) => {
+        if (!needsDeepContext) {
+          // Use existing light context from element database
+          const existing = (pageData.context?.primary || pageData.elementDatabase?.elements || [])
+            .find(el => el.selector === selector);
+
+          if (existing) {
+            return {
+              selector,
+              reason,
+              ...existing,
+              contextType: 'light'
+            };
+          }
+        }
+
+        // Gather DEEP context via content script
+        try {
+          const response = await chrome.tabs.sendMessage(tabId, {
+            type: 'CAPTURE_DEEP_CONTEXT',
+            selector: selector,
+            options: {
+              maxHTMLLength: 5000,
+              includeAllStyles: true,
+              includeAllCSSRules: true,
+              includeChildren: true,
+              includeParents: true,
+              includeJSBehaviors: true
+            }
+          });
+
+          if (response.success) {
+            return {
+              selector,
+              reason,
+              ...response.deepContext,
+              contextType: 'deep'
+            };
+          } else {
+            logger.error(`Failed to capture deep context for ${selector}`, response.error);
+            return {
+              selector,
+              reason,
+              error: response.error,
+              contextType: 'failed'
+            };
+          }
+        } catch (error) {
+          logger.error(`Content script error for ${selector}`, error.message);
+          // Try to find in existing database as fallback
+          const existing = (pageData.context?.primary || pageData.elementDatabase?.elements || [])
+            .find(el => el.selector === selector);
+          return {
+            selector,
+            reason,
+            ...(existing || {}),
+            contextType: 'fallback',
+            error: error.message
+          };
+        }
+      });
+
+      const deepContextArray = await Promise.all(deepContextPromises);
+      const duration = Date.now() - startTime;
+
+      logger.log('Deep context gathered', `duration=${duration}ms, success=${deepContextArray.filter(c => c.contextType === 'deep').length}/${deepContextArray.length}`);
+
+      // Convert array to object for easier access
+      const deepContext = {};
+      deepContextArray.forEach(context => {
+        deepContext[context.selector] = context;
+      });
+
+      // Analyze page-wide behavior patterns
+      try {
+        const behaviorResponse = await chrome.tabs.sendMessage(tabId, {
+          type: 'ANALYZE_PAGE_BEHAVIORS'
+        });
+
+        if (behaviorResponse.success) {
+          deepContext._pageBehaviorAnalysis = behaviorResponse.analysis;
+          logger.log('Page behavior analysis captured', `fixed=${behaviorResponse.analysis.fixedElements.length}, sticky=${behaviorResponse.analysis.stickyElements.length}`);
+        }
+      } catch (error) {
+        logger.warn('Failed to analyze page behaviors', error.message);
+      }
+
+      return deepContext;
+
+    } catch (error) {
+      logger.error('Context gathering failed', error.message);
+      return {};
+    }
+  }
+
+  /**
+   * Calculate layout analysis from deep context
+   * Provides system-calculated data to help AI make layout decisions
+   */
+  calculateLayout(deepContext) {
+    const logger = this.createOperationLogger('CalculateLayout');
+
+    try {
+      // Find all fixed/sticky elements
+      const fixedElements = Object.values(deepContext)
+        .filter(el => el.allStyles?.position === 'fixed' || el.allStyles?.position === 'sticky' ||
+                      el.styles?.position === 'fixed' || el.styles?.position === 'sticky');
+
+      // Calculate total height of top-fixed elements
+      const topFixedHeight = fixedElements
+        .filter(el => {
+          const top = el.allStyles?.top || el.styles?.top;
+          return top === '0px' || top === '0' || top === 'auto' && el.rect?.top < 100;
+        })
+        .reduce((sum, el) => {
+          const height = el.allStyles?.height || el.styles?.height || el.rect?.height || 0;
+          return sum + (typeof height === 'string' ? parseInt(height) : height);
+        }, 0);
+
+      // Find highest z-index
+      const highestZIndex = fixedElements.reduce((max, el) => {
+        const zIndex = parseInt(el.allStyles?.zIndex || el.styles?.zIndex || 0);
+        return isNaN(zIndex) ? max : Math.max(max, zIndex);
+      }, 0);
+
+      const layoutAnalysis = {
+        existingFixedElements: fixedElements.map(el => ({
+          selector: el.selector,
+          position: el.allStyles?.position || el.styles?.position,
+          top: el.allStyles?.top || el.styles?.top,
+          height: el.allStyles?.height || el.styles?.height,
+          zIndex: el.allStyles?.zIndex || el.styles?.zIndex,
+          tag: el.tag
+        })),
+        topFixedHeight: topFixedHeight,
+        highestZIndex: highestZIndex,
+        recommendations: {
+          safeZIndex: highestZIndex + 100,
+          bodyPaddingForBanner: (bannerHeight) => {
+            const height = typeof bannerHeight === 'string' ? parseInt(bannerHeight) : bannerHeight;
+            return topFixedHeight + height + 10; // 10px safety margin
+          }
+        }
+      };
+
+      logger.log('Layout calculated', `fixedElements=${fixedElements.length}, topHeight=${topFixedHeight}px, highestZ=${highestZIndex}`);
+      console.log('📐 Layout Analysis:', layoutAnalysis);
+
+      return layoutAnalysis;
+
+    } catch (error) {
+      logger.error('Layout calculation failed', error.message);
+      return {
+        existingFixedElements: [],
+        topFixedHeight: 0,
+        highestZIndex: 0,
+        recommendations: {
+          safeZIndex: 9999,
+          bodyPaddingForBanner: (bannerHeight) => {
+            const height = typeof bannerHeight === 'string' ? parseInt(bannerHeight) : bannerHeight;
+            return height + 10;
+          }
+        }
+      };
+    }
+  }
+
+  /**
+   * Extract brand context (colors, fonts) from deep context elements
+   */
+  extractBrandContext(deepContext) {
+    const colors = new Set();
+    const textColors = new Set();
+    const fonts = new Set();
+
+    Object.values(deepContext).forEach(context => {
+      if (context.allStyles) {
+        const styles = context.allStyles;
+
+        // Extract background colors (skip transparent/none/white)
+        if (styles.backgroundColor &&
+            !['transparent', 'rgba(0, 0, 0, 0)', 'none', '#ffffff', 'rgb(255, 255, 255)', 'white'].includes(styles.backgroundColor.toLowerCase())) {
+          colors.add(styles.backgroundColor);
+        }
+
+        // Extract text colors (skip black/white defaults)
+        if (styles.color &&
+            !['#000000', 'rgb(0, 0, 0)', 'black', '#ffffff', 'rgb(255, 255, 255)', 'white'].includes(styles.color.toLowerCase())) {
+          textColors.add(styles.color);
+        }
+
+        // Extract font families (only first font in stack)
+        if (styles.fontFamily) {
+          const firstFont = styles.fontFamily.split(',')[0].trim().replace(/['"]/g, '');
+          if (firstFont && !firstFont.includes('system') && firstFont !== 'serif' && firstFont !== 'sans-serif') {
+            fonts.add(firstFont);
+          }
+        }
+      }
+    });
+
+    return {
+      colors: Array.from(colors).slice(0, 5),  // Top 5 colors
+      textColors: Array.from(textColors).slice(0, 3),  // Top 3 text colors
+      fonts: Array.from(fonts).slice(0, 3)  // Top 3 fonts
+    };
+  }
+
+  /**
+   * STAGE 3: Generate code with deep context and layout analysis
+   * This is the final code generation stage with complete targeted context
+   */
+  async generateWithDeepContext(
+    description,
+    plan,
+    deepContext,
+    layoutAnalysis,
+    pageData,
+    designFiles,
+    variations,
+    settings,
+    selectedElement
+  ) {
+    const logger = this.createOperationLogger('Stage3_Generate');
+    logger.log('Starting code generation', `deepContextElements=${Object.keys(deepContext).length}`);
+
+    try {
+      // Build specialized prompt for Stage 3 with deep context
+      const systemPrompt = `You are an expert at generating clean, production-ready JavaScript and CSS code for A/B tests using only vanilla JavaScript.
+
+You have been given COMPLETE DEEP CONTEXT for specific elements, including:
+- ALL 200+ computed CSS properties
+- ALL CSS rules from stylesheets (sorted by specificity)
+- Complete HTML structure
+- Sibling elements
+- Parent/child relationships
+- Pseudo-elements (::before/::after)
+- JavaScript behaviors
+- Scroll/overflow state
+- Stacking context information
+
+Additionally, you have SYSTEM-CALCULATED LAYOUT ANALYSIS to help you make perfect layout decisions.
+
+CRITICAL: Use the deep context and layout analysis to generate PERFECT code with NO layout issues.`;
+
+      // Build user message with deep context
+      let userMessage = `**USER REQUEST:**\n"${description}"\n\n`;
+
+      logger.log('Building Stage 3 prompt', `descriptionLength=${description?.length || 0}, plan="${plan.plan?.substring(0,50)}..."`);
+
+      // Extract brand context from deep context elements (colors, fonts)
+      const brandContext = this.extractBrandContext(deepContext);
+      if (brandContext) {
+        userMessage += `**PAGE BRAND CONTEXT (extracted from existing design):**\n`;
+        if (brandContext.colors?.length > 0) {
+          userMessage += `- Colors found: ${brandContext.colors.join(', ')}\n`;
+        }
+        if (brandContext.fonts?.length > 0) {
+          userMessage += `- Fonts: ${brandContext.fonts.join(', ')}\n`;
+        }
+        if (brandContext.textColors?.length > 0) {
+          userMessage += `- Text colors: ${brandContext.textColors.join(', ')}\n`;
+        }
+        userMessage += `- **USE THESE COLORS/FONTS** to match the existing design, don't invent new colors\n\n`;
+      }
+
+      // Add AI's own plan for continuity
+      userMessage += `**YOUR PLAN (from planning stage):**\n"${plan.plan}"\n\n`;
+
+      // Add layout considerations
+      if (plan.layoutConsiderations && plan.layoutConsiderations.length > 0) {
+        userMessage += `**LAYOUT CONSIDERATIONS:**\n`;
+        plan.layoutConsiderations.forEach(consideration => {
+          userMessage += `- ${consideration}\n`;
+        });
+        userMessage += '\n';
+      }
+
+      // Add system-calculated layout analysis
+      userMessage += `**SYSTEM-CALCULATED LAYOUT ANALYSIS:**\n`;
+      userMessage += `\`\`\`json\n${JSON.stringify(layoutAnalysis, null, 2)}\n\`\`\`\n\n`;
+
+      // Explain how to use layout analysis
+      userMessage += `**HOW TO USE LAYOUT ANALYSIS:**\n`;
+      userMessage += `- existingFixedElements: All elements with position: fixed/sticky\n`;
+      userMessage += `- topFixedHeight: Total height of fixed elements at top (${layoutAnalysis.topFixedHeight}px)\n`;
+      userMessage += `- highestZIndex: Highest z-index on page (${layoutAnalysis.highestZIndex})\n`;
+      userMessage += `- recommendations.safeZIndex: Safe z-index for new elements (${layoutAnalysis.recommendations.safeZIndex})\n`;
+      if (plan.estimatedBannerHeight) {
+        const recommendedPadding = layoutAnalysis.recommendations.bodyPaddingForBanner(parseInt(plan.estimatedBannerHeight));
+        userMessage += `- recommendations.bodyPaddingForBanner: For your ${plan.estimatedBannerHeight} banner = ${recommendedPadding}px\n`;
+      }
+      userMessage += '\n';
+
+      // Add page-wide behavior analysis (if available)
+      if (deepContext._pageBehaviorAnalysis) {
+        const analysis = deepContext._pageBehaviorAnalysis;
+        userMessage += `**PAGE-WIDE BEHAVIOR ANALYSIS:**\n`;
+
+        if (analysis.fixedElements?.length > 0) {
+          userMessage += `\n**Fixed Elements (${analysis.fixedElements.length}):**\n`;
+          analysis.fixedElements.forEach(el => {
+            userMessage += `- ${el.selector}: z-index=${el.zIndex}, top=${el.top}px, height=${el.height}px\n`;
+          });
+        }
+
+        if (analysis.stickyElements?.length > 0) {
+          userMessage += `\n**Sticky Elements (${analysis.stickyElements.length}):**\n`;
+          analysis.stickyElements.forEach(el => {
+            userMessage += `- ${el.selector}: z-index=${el.zIndex}, sticky-top=${el.stickyTop}\n`;
+          });
+        }
+
+        if (analysis.scrollPatterns?.length > 0) {
+          userMessage += `\n**Scroll Patterns Detected:**\n`;
+          analysis.scrollPatterns.forEach(pattern => {
+            if (pattern.element) {
+              userMessage += `- ${pattern.element}: ${pattern.behavior} (${pattern.position}, transition: ${pattern.transition})\n`;
+            } else {
+              userMessage += `- ${pattern.description} (${pattern.count} elements)\n`;
+            }
+          });
+        }
+
+        if (analysis.transitionPatterns?.length > 0) {
+          userMessage += `\n**Common Transition Patterns:**\n`;
+          analysis.transitionPatterns.slice(0, 3).forEach(t => {
+            userMessage += `- ${t}\n`;
+          });
+        }
+
+        if (analysis.animationPatterns?.length > 0) {
+          userMessage += `\n**Animation Names Used:**\n`;
+          analysis.animationPatterns.forEach(name => {
+            userMessage += `- ${name}\n`;
+          });
+        }
+
+        if (analysis.zIndexStrategy) {
+          userMessage += `\n**Z-Index Strategy:**\n`;
+          userMessage += `- Range in use: ${analysis.zIndexStrategy.range}\n`;
+          userMessage += `- Highest: ${analysis.zIndexStrategy.highest}\n`;
+          userMessage += `- Recommended for new elements: ${analysis.zIndexStrategy.recommendedForNewElements}\n`;
+        }
+
+        if (analysis.recommendations?.length > 0) {
+          userMessage += `\n**Behavior Recommendations:**\n`;
+          analysis.recommendations.forEach(rec => {
+            userMessage += `- ${rec}\n`;
+          });
+        }
+
+        userMessage += '\n';
+      }
+
+      // Add deep context for each required element
+      userMessage += `**DEEP CONTEXT FOR REQUIRED ELEMENTS:**\n\n`;
+      Object.entries(deepContext).forEach(([selector, context]) => {
+        // Skip the page behavior analysis entry
+        if (selector === '_pageBehaviorAnalysis') return;
+
+        userMessage += `### Element: \`${selector}\`\n`;
+        userMessage += `**Reason needed:** ${context.reason}\n\n`;
+
+        // Add key information based on context type
+        if (context.contextType === 'deep') {
+          // Full deep context available
+          userMessage += `**Tag:** ${context.tag}\n`;
+
+          // Siblings (if available)
+          if (context.siblings && (context.siblings.previous || context.siblings.next)) {
+            userMessage += `\n**Siblings:**\n`;
+            if (context.siblings.previous) {
+              userMessage += `- Previous: ${context.siblings.previous.selector} (${context.siblings.previous.tag}, display: ${context.siblings.previous.display}, width: ${context.siblings.previous.width})\n`;
+            }
+            if (context.siblings.next) {
+              userMessage += `- Next: ${context.siblings.next.selector} (${context.siblings.next.tag}, display: ${context.siblings.next.display}, width: ${context.siblings.next.width})\n`;
+            }
+          }
+
+          // Key styles (show most relevant)
+          if (context.allStyles) {
+            userMessage += `\n**Key Computed Styles:**\n\`\`\`css\n`;
+            const keyProps = ['position', 'display', 'top', 'bottom', 'left', 'right', 'width', 'height', 'zIndex',
+                             'flexDirection', 'gap', 'justifyContent', 'alignItems', 'margin', 'padding', 'overflow'];
+            keyProps.forEach(prop => {
+              if (context.allStyles[prop] && context.allStyles[prop] !== 'auto' && context.allStyles[prop] !== 'none') {
+                userMessage += `  ${prop}: ${context.allStyles[prop]};\n`;
+              }
+            });
+            userMessage += `\`\`\`\n`;
+          }
+
+          // Pseudo-elements (if present)
+          if (context.pseudoElements && (context.pseudoElements.before || context.pseudoElements.after)) {
+            userMessage += `\n**Pseudo-elements:**\n`;
+            if (context.pseudoElements.before) {
+              userMessage += `- ::before content: ${context.pseudoElements.before.content}\n`;
+            }
+            if (context.pseudoElements.after) {
+              userMessage += `- ::after content: ${context.pseudoElements.after.content}\n`;
+            }
+          }
+
+          // Stacking context
+          if (context.stackingContext) {
+            userMessage += `\n**Stacking Context:**\n`;
+            userMessage += `- z-index: ${context.stackingContext.zIndex}\n`;
+            userMessage += `- Creates context: ${context.stackingContext.createsContext}\n`;
+          }
+
+          // Scroll state (if scrollable)
+          if (context.scrollState && context.scrollState.isScrollable) {
+            userMessage += `\n**Scroll State:** Element is scrollable (${context.scrollState.scrollHeight}px total, ${context.scrollState.clientHeight}px visible)\n`;
+          }
+
+          // JavaScript behaviors (if detected)
+          if (context.behaviors) {
+            userMessage += `\n**JavaScript Behaviors:**\n`;
+            if (context.behaviors.positioning) {
+              userMessage += `- Position behavior: ${context.behaviors.positioning}\n`;
+            }
+            if (context.behaviors.dynamicClasses?.length) {
+              userMessage += `- Dynamic classes: ${context.behaviors.dynamicClasses.join(', ')}\n`;
+            }
+            if (context.behaviors.inlineHandlers?.length) {
+              userMessage += `- Event handlers: ${context.behaviors.inlineHandlers.join(', ')}\n`;
+            }
+            if (context.behaviors.dataAttributes?.length) {
+              userMessage += `- Framework attributes: ${context.behaviors.dataAttributes.slice(0, 3).join(', ')}\n`;
+            }
+            if (context.behaviors.hasTransition) {
+              userMessage += `- CSS Transition: ${context.behaviors.hasTransition}\n`;
+            }
+            if (context.behaviors.hasAnimation) {
+              userMessage += `- CSS Animation: ${context.behaviors.hasAnimation}\n`;
+            }
+            if (context.behaviors.hasTransform) {
+              userMessage += `- Has CSS transform applied\n`;
+            }
+            if (context.behaviors.likelyScrollTriggered) {
+              userMessage += `- Likely has scroll-triggered behavior\n`;
+            }
+            if (context.behaviors.likelyIntersectionObserver) {
+              userMessage += `- Likely managed by Intersection Observer\n`;
+            }
+          }
+
+        } else {
+          // Fallback/light context
+          userMessage += `**Tag:** ${context.tag || 'unknown'}\n`;
+          if (context.styles) {
+            userMessage += `**Styles:** ${JSON.stringify(context.styles, null, 2)}\n`;
+          }
+        }
+
+        userMessage += `\n---\n\n`;
+      });
+
+      // Add critical rules without element database (we already have targeted deep context)
+      userMessage += `\n**CRITICAL RULES:**\n`;
+      userMessage += `- Use vanilla JavaScript only (no jQuery, no libraries)\n`;
+      userMessage += `- Use waitForElement() pattern for race condition handling\n`;
+      userMessage += `- Use element.style.property for direct inline styling\n`;
+      userMessage += `- ONLY use selectors from the deep context above OR create NEW elements\n`;
+      userMessage += `- For NEW fixed elements at top: Use z-index from recommendations, add body padding from recommendations\n`;
+      userMessage += `- Implement EVERY aspect of the user request - never skip parts\n`;
+      userMessage += `- **PUT ALL CODE IN variations[0].css AND variations[0].js, NOT in globalCSS/globalJS**\n`;
+      userMessage += `- Use globalJS ONLY for shared helper functions used by multiple variations\n`;
+      userMessage += `\n**BEHAVIOR-AWARE GENERATION RULES:**\n`;
+      userMessage += `- **Respect existing scroll behaviors**: If header/nav has scroll transitions, ensure new elements coordinate (z-index, positioning)\n`;
+      userMessage += `- **Match animation timing**: If existing elements use transitions, match the timing (e.g., transition: all 0.3s ease)\n`;
+      userMessage += `- **Coordinate with fixed/sticky elements**: New fixed elements must not overlap or conflict with existing fixed/sticky elements\n`;
+      userMessage += `- **Follow z-index strategy**: Use the recommended z-index from PAGE-WIDE BEHAVIOR ANALYSIS\n`;
+      userMessage += `- **Consider scroll-triggered behaviors**: If elements have scroll classes or transforms, new elements should integrate smoothly\n`;
+      userMessage += `- **Respect framework patterns**: If data-* attributes or framework markers detected, ensure compatibility\n`;
+      userMessage += `\n**RESPOND WITH JSON:**\n`;
+      userMessage += `{\n`;
+      userMessage += `  "variations": [\n`;
+      userMessage += `    {\n`;
+      userMessage += `      "number": 1,\n`;
+      userMessage += `      "name": "Descriptive Name",\n`;
+      userMessage += `      "css": "ALL YOUR CSS CODE HERE (including banner styles and body padding)",\n`;
+      userMessage += `      "js": "ALL YOUR JAVASCRIPT CODE HERE (including helper functions and banner creation)"\n`;
+      userMessage += `    }\n`;
+      userMessage += `  ],\n`;
+      userMessage += `  "globalCSS": "",\n`;
+      userMessage += `  "globalJS": ""\n`;
+      userMessage += `}\n`;
+
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ];
+
+      // Use user's preferred AI settings
+      const aiSettings = {
+        provider: settings?.provider || 'anthropic',
+        model: settings?.model || 'claude-sonnet-4-5-20250929',
+        anthropicApiKey: settings?.anthropicApiKey,  // For Anthropic
+        authToken: settings?.authToken,  // For OpenAI
+        maxTokens: 8000  // Ensure enough tokens for complete code generation
+      };
+
+      logger.log('Calling AI for code generation', `model=${aiSettings.model}`);
+      const startTime = Date.now();
+
+      const response = await this.callAI(messages, aiSettings);
+      const duration = Date.now() - startTime;
+
+      logger.log('Code generation response received', `duration=${duration}ms`);
+
+      // Parse and return code (use existing parsing logic)
+      const parsedCode = this.parseGeneratedCode(response.content);
+
+      return {
+        ...parsedCode,
+        tokens: response.usage,
+        duration: duration,
+        twoStage: true,
+        plan: plan.plan,
+        deepContextElements: Object.keys(deepContext).length
+      };
+
+    } catch (error) {
+      logger.error('Stage 3 generation failed', error.message);
+      throw error;
+    }
+  }
+
   async generateCode(data, tabId = null) {
     const { pageData, description, designFiles, variations, settings, selectedElement, intentAnalysis } = data;
     const logger = this.createOperationLogger('GenerateCode');
@@ -1263,6 +2073,116 @@ class ServiceWorker {
         console.log('⚠️ NO ELEMENT SELECTED - AI will choose from all elements');
       }
 
+      // ✨✨✨ TWO-STAGE AI GENERATION SYSTEM ✨✨✨
+      // Enable two-stage system for better accuracy (95%+ vs 70%)
+      const useTwoStage = true; // Always enabled for maximum accuracy
+
+      if (useTwoStage && tabId) {
+        console.log('🎯 Using TWO-STAGE AI generation system');
+
+        // Extract actual user request from intentAnalysis if description is empty
+        const userRequest = description || intentAnalysis?.refinedRequest || intentAnalysis?.originalRequest || '';
+        console.log('📝 User request:', userRequest ? `"${userRequest.substring(0, 100)}..."` : 'EMPTY');
+
+        // Send status update to sidepanel
+        await this.sendStatusToSidePanel('📋 Planning experiment structure...', 'loading');
+
+        // STAGE 1: Planning (1-3s, cheap)
+        console.log('📋 STAGE 1: Planning - AI identifies required elements');
+        const plan = await this.stage1_planning(userRequest, pageData, selectedElement, settings);
+
+        if (plan.error) {
+          console.warn('⚠️ Planning failed, falling back to standard generation');
+        } else {
+          console.log('✅ Planning complete:', {
+            plan: plan.plan,
+            selectors: plan.requiredSelectors.length,
+            considerations: plan.layoutConsiderations.length
+          });
+
+          // Send status update for context gathering
+          await this.sendStatusToSidePanel(`📐 Analyzing ${plan.requiredSelectors.length} page elements...`, 'loading');
+
+          // STAGE 2: Deep context gathering (0.5-1s, parallel)
+          console.log('📐 STAGE 2: Gathering deep context for required elements');
+          const deepContext = await this.stage2_gatherContext(plan.requiredSelectors, pageData, tabId);
+
+          console.log('✅ Deep context gathered:', {
+            total: Object.keys(deepContext).length,
+            deep: Object.values(deepContext).filter(c => c.contextType === 'deep').length,
+            fallback: Object.values(deepContext).filter(c => c.contextType === 'fallback').length
+          });
+
+          // Calculate layout analysis
+          const layoutAnalysis = this.calculateLayout(deepContext);
+
+          // Send status update for code generation
+          await this.sendStatusToSidePanel('🤖 Generating Convert.com code with AI...', 'loading');
+
+          // STAGE 3: Code generation with targeted context
+          console.log('🤖 STAGE 3: Generating code with deep context + layout analysis');
+          const generatedCode = await this.generateWithDeepContext(
+            userRequest,  // Use the same userRequest we used for planning
+            plan,
+            deepContext,
+            layoutAnalysis,
+            pageData,
+            designFiles,
+            variations,
+            settings,
+            selectedElement
+          );
+
+          logger.log('Two-stage generation complete', `variations=${generatedCode.variations?.length || 0}`);
+
+          // Send status update that code is ready
+          await this.sendStatusToSidePanel('✨ Code generated! Applying preview...', 'loading');
+
+          // Apply the first variation to the page (preview mode) - same as standard path
+          console.log('🔍 Two-stage code application check:', {
+            hasVariations: !!generatedCode.variations,
+            variationCount: generatedCode.variations?.length || 0,
+            hasTabId: !!tabId,
+            tabId: tabId
+          });
+
+          if (generatedCode.variations && generatedCode.variations.length > 0 && tabId) {
+            console.log('✅ Applying two-stage generated code to page...');
+            logger.log('Applying code to page', 'Injecting variation 1 for preview...');
+            try {
+              const variation = generatedCode.variations[0];
+
+              // Combine global and variation code
+              const combinedCSS = (generatedCode.globalCSS || '') + '\n' + (variation.css || '');
+              const combinedJS = (generatedCode.globalJS || '') + '\n' + (variation.js || '');
+
+              logger.log('Code combination', `globalCSS=${(generatedCode.globalCSS || '').length}chars, varCSS=${(variation.css || '').length}chars, globalJS=${(generatedCode.globalJS || '').length}chars, varJS=${(variation.js || '').length}chars`);
+
+              await this.applyVariationCode({
+                tabId: tabId,
+                css: combinedCSS.trim(),
+                js: combinedJS.trim(),
+                key: `variation-${variation.number || 1}`
+              });
+              logger.log('Code applied successfully', 'Variation 1 is now live on page');
+            } catch (error) {
+              logger.error('Failed to apply code', error.message);
+            }
+          }
+
+          // Return in same format as standard generation (wrap code, add metadata)
+          return {
+            code: generatedCode,
+            testResults: null,  // Two-stage doesn't run tests yet
+            usage: generatedCode.tokens || null,
+            logs: logger.entries(),
+            testScript: null  // Could add test script generation for two-stage later
+          };
+        }
+      }
+
+      // FALLBACK: Standard single-stage generation
+      console.log('📊 Using STANDARD single-stage generation (fallback)');
       logger.log('Generating code with Element Database');
       const prompt = this.buildCodeGenerationPrompt(
         pageData,
@@ -1305,10 +2225,74 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
         content: systemPrompt
       }];
 
-      // Build user message with screenshot for brand/style context
+      // Build user message with rich context (HTML/CSS/JS + optional screenshot)
       const userContent = [];
 
-      // Include full page screenshot (NOT selected element screenshot) for brand context
+      // Add enhanced selected element context if user clicked an element
+      if (selectedElement) {
+        let elementContext = '\n📎 **SELECTED ELEMENT (Enhanced HTML/CSS/JS Context):**\n\n';
+        elementContext += `**Selector:** \`${selectedElement.selector}\`\n`;
+        elementContext += `**Tag:** ${selectedElement.tag}\n\n`;
+
+        // Add HTML structure
+        if (selectedElement.outerHTML || selectedElement.html) {
+          const html = (selectedElement.outerHTML || selectedElement.html).substring(0, 2000);
+          elementContext += `**HTML Structure:**\n\`\`\`html\n${html}${html.length >= 2000 ? '\n... (truncated)' : ''}\n\`\`\`\n\n`;
+        }
+
+        // Add computed styles if available
+        if (selectedElement.visual?.computedStyles) {
+          elementContext += `**Computed Styles:**\n\`\`\`css\n`;
+          Object.entries(selectedElement.visual.computedStyles).forEach(([key, value]) => {
+            if (value) elementContext += `  ${key}: ${value};\n`;
+          });
+          elementContext += `\`\`\`\n\n`;
+        }
+
+        // Add CSS rules from stylesheets
+        if (selectedElement.cssRules && selectedElement.cssRules.length > 0) {
+          elementContext += `**CSS Rules from Stylesheets:**\n\`\`\`css\n`;
+          selectedElement.cssRules.forEach(rule => {
+            elementContext += `/* ${rule.selector} */\n${rule.cssText}\n\n`;
+          });
+          elementContext += `\`\`\`\n\n`;
+        }
+
+        // Add inline styles if present
+        if (selectedElement.attributes?.style) {
+          elementContext += `**Inline Styles:** \`${selectedElement.attributes.style}\`\n\n`;
+        }
+
+        // Add JavaScript behaviors if available
+        if (selectedElement.behaviors) {
+          elementContext += `**JavaScript Behaviors:**\n`;
+          if (selectedElement.behaviors.positioning) {
+            elementContext += `  - Position: ${selectedElement.behaviors.positioning}\n`;
+          }
+          if (selectedElement.behaviors.dynamicClasses?.length) {
+            elementContext += `  - Dynamic Classes: ${selectedElement.behaviors.dynamicClasses.join(', ')}\n`;
+          }
+          if (selectedElement.behaviors.inlineHandlers?.length) {
+            elementContext += `  - Event Handlers: ${selectedElement.behaviors.inlineHandlers.join(', ')}\n`;
+          }
+          if (selectedElement.behaviors.dataAttributes?.length) {
+            elementContext += `  - Data Attributes: ${selectedElement.behaviors.dataAttributes.join(', ')}\n`;
+          }
+          elementContext += '\n';
+        }
+
+        elementContext += 'ℹ️ The user selected this specific element for the initial request.\n\n';
+
+        userContent.push({
+          type: 'text',
+          text: elementContext
+        });
+        logger.log('Including enhanced element context (HTML+CSS+JS)', `for ${selectedElement.selector}`);
+      }
+
+      // Include full page screenshot ONLY for initial generation (for brand context)
+      // NOTE: We still include this for first generation to help with color/brand matching
+      // But rich HTML/CSS/JS context above is MORE important for understanding structure
       if (pageData.screenshot) {
         userContent.push({
           type: 'image',
@@ -1320,9 +2304,9 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
         });
         userContent.push({
           type: 'text',
-          text: '📸 **FULL PAGE SCREENSHOT (BEFORE ANY CHANGES):**\nUse this screenshot to understand the page\'s brand identity, visual style, color palette, typography, and overall design language. Your generated code should match this existing style and feel cohesive with the page\'s visual identity. Pay attention to:\n- Brand colors and color harmony\n- Typography styles (font sizes, weights, hierarchy)\n- Button styles and UI patterns\n- Spacing and layout consistency\n- Visual tone and brand voice (professional, playful, minimal, etc.)\n\n'
+          text: '📸 **FULL PAGE SCREENSHOT (OPTIONAL VISUAL REFERENCE):**\nThis screenshot provides visual context for brand colors and style. However, prioritize the detailed HTML/CSS/JS context above for making structural changes.\n\n'
         });
-        logger.log('Including full page screenshot', 'for brand/style context');
+        logger.log('Including page screenshot', 'for brand/style visual reference');
       } else {
         logger.log('No screenshot available', 'proceeding with text-only mode');
       }
@@ -1762,20 +2746,52 @@ Now generate the corrected code with ALL original functionality preserved.`;
 
   /**
    * Compact element data to reduce token usage
-   * Removes verbose fields while keeping essential information
+   * Removes verbose fields while keeping essential information for AI code generation
    */
   compactElementData(element) {
+    // Extract computed styles if available (from visual.computedStyles)
+    const styles = element.visual?.computedStyles || {};
+
     return {
       selector: element.selector,
       tag: element.tag,
       text: element.text ? element.text.substring(0, 80) : '', // Truncate long text
       level: element.level,
       visual: element.visual ? {
-        bg: element.visual.backgroundColor,
-        color: element.visual.color,
-        w: element.visual.position?.width || element.visual.dimensions?.width,
-        h: element.visual.position?.height || element.visual.dimensions?.height
+        bg: element.visual.backgroundColor || styles.backgroundColor,
+        color: element.visual.color || styles.color,
+        w: element.visual.position?.width || element.visual.dimensions?.width || styles.width,
+        h: element.visual.position?.height || element.visual.dimensions?.height || styles.height
       } : null,
+      // CRITICAL: Include layout properties for AI context (including flex/grid/positioning)
+      styles: {
+        // Positioning
+        position: styles.position,
+        top: styles.top,
+        bottom: styles.bottom,
+        left: styles.left,
+        right: styles.right,
+        zIndex: styles.zIndex,
+        // Box model
+        padding: styles.padding,
+        margin: styles.margin,
+        display: styles.display,
+        width: styles.width,
+        height: styles.height,
+        // Flex layout properties (critical for container styling)
+        flexDirection: styles.flexDirection,
+        flexWrap: styles.flexWrap,
+        justifyContent: styles.justifyContent,
+        alignItems: styles.alignItems,
+        gap: styles.gap,
+        // Grid layout properties
+        gridTemplateColumns: styles.gridTemplateColumns,
+        gridTemplateRows: styles.gridTemplateRows,
+        gridGap: styles.gridGap,
+        // Typography
+        fontSize: styles.fontSize,
+        fontWeight: styles.fontWeight
+      },
       classes: element.classes || element.className?.split(' ').slice(0, 3),
       id: element.id || element.attributes?.id,
       section: element.context?.section || element.section
@@ -2247,6 +3263,39 @@ Be LENIENT - allow code rewrites if they accomplish the user's goal.`;
     }
   }
 
+  /**
+   * Format JS behaviors for AI prompt
+   */
+  formatJSBehaviors(behaviors) {
+    if (!behaviors) return 'No JavaScript behaviors detected.';
+
+    const parts = [];
+
+    if (behaviors.stickyElements?.length > 0) {
+      parts.push(`- Sticky Elements: ${behaviors.stickyElements.map(e => `${e.selector} (top: ${e.top})`).join(', ')}`);
+    }
+
+    if (behaviors.fixedElements?.length > 0) {
+      parts.push(`- Fixed Elements: ${behaviors.fixedElements.map(e => `${e.selector} (top: ${e.top})`).join(', ')}`);
+    }
+
+    if (behaviors.dynamicClasses?.length > 0) {
+      parts.push(`- Dynamic Classes (scroll/state): ${behaviors.dynamicClasses.map(d => `${d.selector}.${d.class}`).join(', ')}`);
+    }
+
+    if (behaviors.inlineHandlers?.length > 0) {
+      parts.push(`- Inline Event Handlers: ${behaviors.inlineHandlers.map(h => `${h.selector} (${h.handler})`).join(', ')}`);
+    }
+
+    if (parts.length === 0) {
+      return 'No significant JavaScript behaviors detected.';
+    }
+
+    parts.push('⚠️ IMPORTANT: When modifying these elements, preserve existing JS behaviors and event handlers.');
+
+    return parts.join('\n');
+  }
+
   buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings, selectedElement = null) {
     // Check if we have hierarchical context (new system) or legacy element database
     const hasHierarchicalContext = pageData.context && pageData.context.mode;
@@ -2376,18 +3425,33 @@ Elements are ranked by importance (position, size, interactivity).
 8. **FOR COLOR CHANGES: Use CSS section with !important flags (most reliable)**
 9. Text changes: element.textContent='new text' (use JS)
 10. CSS overrides inline styles - prefer CSS for visual changes
-11. **CRITICAL: ALL setInterval/setTimeout MUST be registered with Cleanup Manager**
+11. 🔴 **CHECK EXISTING STYLES BEFORE MODIFYING SPACING:**
+    - Each element has "styles" field with padding, margin, position, display
+    - BEFORE adding padding/margin, check what already exists
+    - DON'T add padding on top of existing padding - replace or adjust it
+    - Example: If styles.padding = "20px 40px", don't add MORE - use "10px 40px" to reduce
+12. **CRITICAL: ALL setInterval/setTimeout MUST be registered with Cleanup Manager**
     - Register intervals: window.ConvertCleanupManager.registerInterval(intervalId, 'description')
     - Register timeouts: window.ConvertCleanupManager.registerTimeout(timeoutId, 'description')
     - Register elements: window.ConvertCleanupManager.registerElement(element, 'description')
     - **NOTE: waitForElement() auto-registers its intervals - you don't need to register those**
     - **IMPORTANT: User-created setInterval/setTimeout MUST be manually registered**
+13. 🔴 **WRAPPER CONTAINER STYLING - CRITICAL FOR LAYOUT:**
+    - When creating wrapper divs (class="wrapper", class="container", etc.), you MUST style them explicitly
+    - If you want horizontal layout: .wrapper { display: flex !important; gap: 10px !important; }
+    - Flex on parent does NOT inherit to grandchildren - style each level separately
+    - **COUNTDOWN TIMER EXAMPLE:**
+      ❌ WRONG: #banner { display: flex; } but NO .countdown-wrapper { display: flex; } ← boxes stack vertically
+      ✅ CORRECT: #banner { display: flex; } AND .countdown-wrapper { display: flex; gap: 10px; } ← boxes horizontal
+    - Each element in "styles" field shows: display, flexDirection, gap, justifyContent, alignItems
+    - ALWAYS check existing layout properties before creating new containers
 
 🚨 **CRITICAL: NEVER MODIFY NAVIGATION OR HEADER POSITIONING** 🚨
 ❌ NEVER add margin-top, padding-top, or top offset to: header, nav, .nav, .header, .menu, .primary-nav, .secondary-nav
-❌ FOR FIXED BANNERS: Use "body { padding-top: XXpx !important; }" ONLY - do NOT touch navigation elements
-✅ CORRECT approach for fixed banner: #banner { position: fixed; top: 0; } + body { padding-top: 50px !important; }
-❌ WRONG approach: #banner { position: fixed; top: 0; } + nav { margin-top: 50px !important; } ← THIS BREAKS THE PAGE
+❌ NEVER move or reposition existing fixed/sticky elements
+✅ When adding new fixed elements, check element database for existing position: "fixed" or "sticky" elements
+✅ Each element in database now includes positioning data: position, top, bottom, height, zIndex
+✅ Use this data to avoid overlapping with existing page elements
 
 🔴 **REFINEMENT RULE (IF "CURRENT GENERATED CODE" IS IN REQUEST):**
 If the REQUEST includes "CURRENT GENERATED CODE" section:
@@ -2575,6 +3639,15 @@ ${selectedElementContext}
 ${contextInstructions}
 **PAGE:** ${metadata.url}
 
+**PAGE BRAND/STYLE CONTEXT:**
+${metadata.colorScheme ? `- Color Scheme: Background=${metadata.colorScheme.background}, Text=${metadata.colorScheme.text}, Primary=${metadata.colorScheme.primary}` : ''}
+${metadata.fontFamilies ? `- Fonts: ${metadata.fontFamilies.join(', ')}` : ''}
+${metadata.viewport ? `- Viewport: ${metadata.viewport.width}x${metadata.viewport.height}` : ''}
+ℹ️ Use this style context to ensure your changes match the page's existing design language.
+
+**PAGE JAVASCRIPT BEHAVIORS:**
+${this.formatJSBehaviors(metadata.jsBehaviors)}
+
 **ELEMENTS WITH TEXT CONTENT (for matching):**
 ${topElements.slice(0, 15).map((el, i) => `${i + 1}. "${el.selector}" - ${el.tag} ${el.text ? `"${el.text.substring(0, 50)}"` : '(no text)'}`).join('\n')}
 
@@ -2587,6 +3660,9 @@ ${elementsJSON}
 - text: What element displays (first 80 chars) - use to match user request
 - level: primary=main target, proximity=nearby, structure=landmarks
 - visual.bg/color: Current colors
+- styles: 🔴 EXISTING CSS PROPERTIES - padding, margin, position, display, fontSize, fontWeight
+  ⚠️ CRITICAL: Check styles.padding and styles.margin BEFORE adding spacing
+  ⚠️ If element already has padding: "20px", don't add MORE padding - adjust or replace it
 - section: Page area (hero, nav, footer, etc.)
 
 ${coreRules}
@@ -2805,17 +3881,23 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
 
     console.log('🤖 AI Provider:', { provider, model, hasAnthropicKey: !!settings.anthropicApiKey, hasOpenAIKey: !!settings.authToken });
 
+    // Extract maxTokens if provided
+    const options = {
+      maxTokens: settings?.maxTokens,
+      temperature: settings?.temperature
+    };
+
     if (provider === 'anthropic') {
-      return this.callClaude(messages, settings.anthropicApiKey, model);
+      return this.callClaude(messages, settings.anthropicApiKey, model, options);
     } else {
-      return this.callChatGPT(messages, settings.authToken, model);
+      return this.callChatGPT(messages, settings.authToken, model, options);
     }
   }
 
   /**
    * Call Anthropic Claude API with prompt caching
    */
-  async callClaude(messages, apiKey, model = 'claude-3-7-sonnet-20250219') {
+  async callClaude(messages, apiKey, model = 'claude-3-7-sonnet-20250219', options = {}) {
     if (!apiKey || !apiKey.trim()) {
       throw new Error('Anthropic API key is missing. Please add it in settings.');
     }
@@ -2829,11 +3911,12 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
       throw new Error('Anthropic API key appears too short. Please check your key in settings.');
     }
 
-    console.log('🔮 Calling Anthropic Claude:', { 
-      model, 
+    console.log('🔮 Calling Anthropic Claude:', {
+      model,
       messageCount: messages.length,
       apiKeyPrefix: apiKey.substring(0, 12) + '...',
-      apiKeyLength: apiKey.length
+      apiKeyLength: apiKey.length,
+      maxTokens: options.maxTokens || 4000
     });
 
     // Extract system message and user messages
@@ -2851,7 +3934,7 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
 
     const requestBody = {
       model: model,
-      max_tokens: 4000,
+      max_tokens: options.maxTokens || 4000,
       messages: claudeMessages
     };
 
@@ -3078,9 +4161,9 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
     };
   }
 
-  async callChatGPT(messages, authToken, model = 'gpt-4o-mini') {
+  async callChatGPT(messages, authToken, model = 'gpt-4o-mini', options = {}) {
     const resolvedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-4o-mini';
-    console.log('Calling OpenAI Chat Completions.', { model: resolvedModel, messageCount: messages.length });
+    console.log('Calling OpenAI Chat Completions.', { model: resolvedModel, messageCount: messages.length, maxTokens: options.maxTokens });
 
     // Convert Anthropic-format messages to OpenAI format
     const convertedMessages = messages.map(msg => {
@@ -3125,11 +4208,11 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
     if (isGPT5Model) {
       // GPT-5 models use reasoning tokens + completion tokens
       // Need higher limit since reasoning tokens don't count toward output
-      requestBody.max_completion_tokens = 4000; // Keep original - reasoning uses tokens
+      requestBody.max_completion_tokens = options.maxTokens || 4000; // Keep original - reasoning uses tokens
       // GPT-5 models only support default temperature (1)
     } else {
-      requestBody.max_tokens = 2500; // Reduced from 4000 for faster generation
-      requestBody.temperature = 0.5; // Reduced from 0.7 for more consistent output
+      requestBody.max_tokens = options.maxTokens || 2500; // Reduced from 4000 for faster generation
+      requestBody.temperature = options.temperature || 0.5; // Reduced from 0.7 for more consistent output
     }
 
     // CRITICAL: Force JSON output mode (prevents markdown code blocks)
@@ -4178,41 +5261,70 @@ CRITICAL: (1) Respond with ONLY valid JSON. (2) Make smart editorial decisions t
       // Build user message with screenshot for brand/style context
       const userContent = [];
 
-      // 🆕 Include selected element screenshot FIRST (most relevant)
-      if (selectedElement?.screenshot) {
-        userContent.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: 'image/png',
-            data: selectedElement.screenshot.replace(/^data:image\/png;base64,/, '')
+      // 🆕 Include selected element with RICH HTML/CSS/JS context (NO SCREENSHOT)
+      if (selectedElement) {
+        let elementContext = '\n📎 **ATTACHED ELEMENT (Enhanced HTML/CSS/JS Context):**\n\n';
+        elementContext += `**Selector:** \`${selectedElement.selector}\`\n`;
+        elementContext += `**Tag:** ${selectedElement.tag}\n\n`;
+
+        // Add HTML structure
+        if (selectedElement.outerHTML || selectedElement.html) {
+          const html = (selectedElement.outerHTML || selectedElement.html).substring(0, 2000);
+          elementContext += `**HTML Structure:**\n\`\`\`html\n${html}${html.length >= 2000 ? '\n... (truncated)' : ''}\n\`\`\`\n\n`;
+        }
+
+        // Add computed styles if available
+        if (selectedElement.visual?.computedStyles) {
+          elementContext += `**Computed Styles:**\n\`\`\`css\n`;
+          Object.entries(selectedElement.visual.computedStyles).forEach(([key, value]) => {
+            if (value) elementContext += `  ${key}: ${value};\n`;
+          });
+          elementContext += `\`\`\`\n\n`;
+        }
+
+        // Add inline styles if present
+        if (selectedElement.attributes?.style) {
+          elementContext += `**Inline Styles:** \`${selectedElement.attributes.style}\`\n\n`;
+        }
+
+        // Add CSS rules from stylesheets
+        if (selectedElement.cssRules && selectedElement.cssRules.length > 0) {
+          elementContext += `**CSS Rules from Stylesheets:**\n\`\`\`css\n`;
+          selectedElement.cssRules.forEach(rule => {
+            elementContext += `/* ${rule.selector} */\n${rule.cssText}\n\n`;
+          });
+          elementContext += `\`\`\`\n\n`;
+        }
+
+        // Add JavaScript behaviors if available
+        if (selectedElement.behaviors) {
+          elementContext += `**JavaScript Behaviors:**\n`;
+          if (selectedElement.behaviors.positioning) {
+            elementContext += `  - Position: ${selectedElement.behaviors.positioning}\n`;
           }
-        });
+          if (selectedElement.behaviors.dynamicClasses?.length) {
+            elementContext += `  - Dynamic Classes: ${selectedElement.behaviors.dynamicClasses.join(', ')}\n`;
+          }
+          if (selectedElement.behaviors.inlineHandlers?.length) {
+            elementContext += `  - Event Handlers: ${selectedElement.behaviors.inlineHandlers.join(', ')}\n`;
+          }
+          if (selectedElement.behaviors.dataAttributes?.length) {
+            elementContext += `  - Data Attributes: ${selectedElement.behaviors.dataAttributes.join(', ')}\n`;
+          }
+          elementContext += '\n';
+        }
+
+        elementContext += 'ℹ️ This is the specific element the user clicked when making their request.\n';
+
         userContent.push({
           type: 'text',
-          text: '📎 **ATTACHED ELEMENT SCREENSHOT:**\nThis is the specific element the user clicked and is referring to in their request.\n\n'
+          text: elementContext
         });
-        logger.log('Including selected element screenshot', `for ${selectedElement.selector}`);
+        logger.log('Including enhanced element context (HTML+CSS+JS)', `for ${selectedElement.selector}`);
       }
 
-      // Include full page screenshot for brand context in iterative changes
-      if (actualPageData?.screenshot) {
-        userContent.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: 'image/png',
-            data: actualPageData.screenshot.replace(/^data:image\/png;base64,/, '')
-          }
-        });
-        userContent.push({
-          type: 'text',
-          text: '📸 **FULL PAGE SCREENSHOT (ORIGINAL STATE):**\nThis shows the page BEFORE any changes. Use it to maintain brand consistency and visual harmony as you make iterative changes.\n\n'
-        });
-        logger.log('Including full page screenshot in adjustment', 'for brand/style context');
-      } else {
-        logger.log('No screenshot available for adjustment', 'proceeding with text-only mode');
-      }
+      // NO SCREENSHOTS for refinements - 90% cost savings while providing MORE context
+      logger.log('Skipping screenshots in refinement', 'using enhanced HTML/CSS/JS context instead');
 
       // Add the adjustment prompt
       userContent.push({

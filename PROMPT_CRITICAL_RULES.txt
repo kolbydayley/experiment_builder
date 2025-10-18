@@ -43,6 +43,88 @@ setInterval(() => updateCountdown(), 1000);  // ← NOT REGISTERED, CAUSES BUGS!
 
 **NOTE:** waitForElement() automatically registers its own intervals - you don't need to register those.
 
+**WRAPPER CONTAINER RULES - CRITICAL FOR LAYOUT:**
+
+When creating dynamic HTML with wrapper elements, you MUST style ALL containers explicitly:
+
+// ❌ WRONG - Wrapper has no flex styling, children stack vertically:
+banner.innerHTML = '<span>Text</span><div class="wrapper"></div>';
+wrapper.innerHTML = '<div class="box">1</div><div class="box">2</div>';
+// CSS only styles .box, NOT .wrapper
+.box { background: red; }  // ← Missing .wrapper { display: flex; }
+
+// ✅ CORRECT - Wrapper has explicit flex styling:
+banner.innerHTML = '<span>Text</span><div class="wrapper"></div>';
+wrapper.innerHTML = '<div class="box">1</div><div class="box">2</div>';
+// CSS styles BOTH .wrapper AND .box
+.wrapper {
+  display: flex !important;
+  gap: 10px !important;
+}
+.box { background: red; }
+
+**CRITICAL RULES FOR WRAPPERS:**
+1. If you create a wrapper div (class="wrapper", class="container", etc.)
+2. And you want child elements to be horizontal
+3. You MUST add CSS: .wrapper { display: flex !important; gap: 10px !important; }
+4. Flex on parent does NOT inherit to grandchildren - style each level
+
+**COMMON MISTAKE - COUNTDOWN TIMERS:**
+// ❌ WRONG - Boxes will stack vertically:
+const banner = document.createElement('div');
+banner.id = 'countdown';
+banner.style.display = 'flex';  // ← This is on the banner
+banner.innerHTML = '<div class="countdown-wrapper"></div>';
+wrapper.innerHTML = '<div class="box">1d</div><div class="box">2h</div>';
+// CSS missing: .countdown-wrapper { display: flex; }
+
+// ✅ CORRECT - Boxes will be horizontal:
+const banner = document.createElement('div');
+banner.id = 'countdown';
+banner.innerHTML = '<div class="countdown-wrapper"></div>';
+// CSS for BOTH levels:
+#countdown { display: flex !important; }
+#countdown .countdown-wrapper { display: flex !important; gap: 10px !important; }
+#countdown .box { padding: 8px !important; }
+
+**DATE/TIME HANDLING - KEEP IT SIMPLE:**
+
+Avoid complex timezone calculations. Use simple, working patterns:
+
+// ✅ CORRECT - Simple countdown to specific date:
+const targetDate = new Date('2025-12-31T23:59:59').getTime();
+function updateCountdown() {
+  const now = Date.now();
+  const diff = targetDate - now;
+  if (diff <= 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+  // Update display...
+}
+const intervalId = setInterval(updateCountdown, 1000);
+if (window.ConvertCleanupManager) {
+  window.ConvertCleanupManager.registerInterval(intervalId, 'countdown');
+}
+
+// ✅ CORRECT - Next Friday at midnight:
+function getNextFriday() {
+  const now = new Date();
+  const day = now.getDay();
+  const daysUntilFriday = (5 - day + 7) % 7 || 7;
+  const friday = new Date(now.getTime() + daysUntilFriday * 24 * 60 * 60 * 1000);
+  friday.setHours(0, 0, 0, 0);
+  return friday.getTime();
+}
+
+// ❌ WRONG - Complex timezone math that might fail:
+const ptFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', ... });
+const parts = ptFormatter.formatToParts(nextFriday);
+// ... 30 lines of complex parsing ...
+
 **CODE PATTERNS:**
 
 // ✅ CORRECT - User asks to change text AND color:

@@ -214,6 +214,45 @@ class PageCapture {
         }
         return false;
       }
+
+      // ✨ NEW: Capture deep context for specific element (Stage 2 of two-stage generation)
+      if (message.type === 'CAPTURE_DEEP_CONTEXT') {
+        try {
+          const { selector, options = {} } = message;
+
+          const element = document.querySelector(selector);
+          if (!element) {
+            sendResponse({ success: false, error: `Element not found: ${selector}` });
+            return false;
+          }
+
+          // Capture DEEP context with all available data
+          const deepContext = this.captureDeepElementContext(element, options);
+          sendResponse({ success: true, deepContext });
+        } catch (error) {
+          console.error('[CAPTURE_DEEP_CONTEXT] Error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+        return false;
+      }
+
+      // ✨ NEW: Analyze page-wide behavior patterns
+      if (message.type === 'ANALYZE_PAGE_BEHAVIORS') {
+        try {
+          if (!window.ContextBuilder) {
+            sendResponse({ success: false, error: 'ContextBuilder not loaded' });
+            return false;
+          }
+
+          const contextBuilder = new ContextBuilder();
+          const analysis = contextBuilder.analyzePageBehaviors();
+          sendResponse({ success: true, analysis });
+        } catch (error) {
+          console.error('[ANALYZE_PAGE_BEHAVIORS] Error:', error);
+          sendResponse({ success: false, error: error.message });
+        }
+        return false;
+      }
     });
 
     this.isInitialized = true;
@@ -310,6 +349,350 @@ class PageCapture {
       console.error('[Convert Variation] CSS injection failed:', error.message);
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * Capture DEEP context for a specific element (Stage 2 of two-stage generation)
+   * Returns ALL available data for the element with no token limits
+   */
+  captureDeepElementContext(element, options = {}) {
+    const {
+      maxHTMLLength = 5000,
+      includeAllStyles = true,
+      includeAllCSSRules = true,
+      includeChildren = true,
+      includeParents = true,
+      includeJSBehaviors = true
+    } = options;
+
+    const computed = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+
+    // 1. ALL computed styles (200+ properties, not just key ones)
+    const allStyles = {};
+    if (includeAllStyles) {
+      for (let i = 0; i < computed.length; i++) {
+        const prop = computed[i];
+        allStyles[prop] = computed.getPropertyValue(prop);
+      }
+    }
+
+    // 2. ALL CSS rules that apply to this element (unlimited, sorted by specificity)
+    const allCSSRules = [];
+    if (includeAllCSSRules) {
+      try {
+        const sheets = Array.from(document.styleSheets);
+        for (const sheet of sheets) {
+          try {
+            // Skip external stylesheets for CORS safety
+            if (sheet.href && !sheet.href.startsWith(window.location.origin)) continue;
+
+            const rules = Array.from(sheet.cssRules || sheet.rules || []);
+            for (const rule of rules) {
+              if (rule.type === CSSRule.STYLE_RULE) {
+                try {
+                  if (element.matches(rule.selectorText)) {
+                    allCSSRules.push({
+                      selector: rule.selectorText,
+                      cssText: rule.style.cssText,
+                      specificity: this.calculateSpecificity(rule.selectorText),
+                      href: sheet.href || 'inline'
+                    });
+                  }
+                } catch (e) {
+                  // Invalid selector
+                }
+              }
+            }
+          } catch (e) {
+            // CORS error on external stylesheet
+          }
+        }
+
+        // Sort by specificity (most specific last)
+        allCSSRules.sort((a, b) => a.specificity - b.specificity);
+      } catch (error) {
+        console.warn('[Deep Context] Failed to extract CSS rules:', error);
+      }
+    }
+
+    // 3. Full HTML structure (up to maxHTMLLength)
+    const html = element.outerHTML.substring(0, maxHTMLLength);
+    const innerHTML = element.innerHTML.substring(0, maxHTMLLength);
+
+    // 4. Siblings context (for understanding horizontal relationships)
+    const siblings = {
+      previous: null,
+      next: null
+    };
+    if (element.previousElementSibling) {
+      const prevStyles = window.getComputedStyle(element.previousElementSibling);
+      const prevRect = element.previousElementSibling.getBoundingClientRect();
+      siblings.previous = {
+        selector: this.generateBasicSelector(element.previousElementSibling),
+        tag: element.previousElementSibling.tagName.toLowerCase(),
+        classes: Array.from(element.previousElementSibling.classList),
+        display: prevStyles.display,
+        width: prevStyles.width,
+        height: prevStyles.height,
+        margin: prevStyles.margin,
+        actualWidth: prevRect.width,
+        actualHeight: prevRect.height
+      };
+    }
+    if (element.nextElementSibling) {
+      const nextStyles = window.getComputedStyle(element.nextElementSibling);
+      const nextRect = element.nextElementSibling.getBoundingClientRect();
+      siblings.next = {
+        selector: this.generateBasicSelector(element.nextElementSibling),
+        tag: element.nextElementSibling.tagName.toLowerCase(),
+        classes: Array.from(element.nextElementSibling.classList),
+        display: nextStyles.display,
+        width: nextStyles.width,
+        height: nextStyles.height,
+        margin: nextStyles.margin,
+        actualWidth: nextRect.width,
+        actualHeight: nextRect.height
+      };
+    }
+
+    // 5. Children context (for understanding structure and layout)
+    const children = [];
+    if (includeChildren && element.children.length > 0) {
+      Array.from(element.children).slice(0, 10).forEach(child => {
+        const childStyles = window.getComputedStyle(child);
+        children.push({
+          selector: this.generateBasicSelector(child),
+          tag: child.tagName.toLowerCase(),
+          classes: Array.from(child.classList),
+          text: child.textContent?.substring(0, 100),
+          // Layout properties (enhanced for flex/grid understanding)
+          position: childStyles.position,
+          display: childStyles.display,
+          width: childStyles.width,
+          height: childStyles.height,
+          margin: childStyles.margin,
+          padding: childStyles.padding,
+          // Flex properties
+          flex: childStyles.flex,
+          flexGrow: childStyles.flexGrow,
+          flexShrink: childStyles.flexShrink,
+          flexBasis: childStyles.flexBasis,
+          // Grid properties
+          gridColumn: childStyles.gridColumn,
+          gridRow: childStyles.gridRow
+        });
+      });
+    }
+
+    // 6. Parent chain context
+    const parents = [];
+    if (includeParents) {
+      let parent = element.parentElement;
+      let level = 0;
+      while (parent && level < 3 && parent.tagName.toLowerCase() !== 'body') {
+        const parentComputed = window.getComputedStyle(parent);
+        parents.push({
+          selector: this.generateBasicSelector(parent),
+          tag: parent.tagName.toLowerCase(),
+          classes: Array.from(parent.classList),
+          level: level,
+          position: parentComputed.position,
+          display: parentComputed.display,
+          zIndex: parentComputed.zIndex
+        });
+        parent = parent.parentElement;
+        level++;
+      }
+    }
+
+    // 6. JavaScript behaviors
+    let behaviors = null;
+    if (includeJSBehaviors && window.ContextBuilder) {
+      try {
+        const contextBuilder = new ContextBuilder();
+        behaviors = contextBuilder.extractElementBehaviors(element);
+      } catch (error) {
+        console.warn('[Deep Context] Failed to extract behaviors:', error);
+      }
+    }
+
+    // 7. Pseudo-elements (::before and ::after)
+    const pseudoElements = {
+      before: this.capturePseudoElement(element, '::before'),
+      after: this.capturePseudoElement(element, '::after')
+    };
+
+    // 8. Overflow and scroll state
+    const scrollState = {
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+      scrollWidth: element.scrollWidth,
+      scrollLeft: element.scrollLeft,
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      isScrollable: element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth,
+      overflow: computed.overflow,
+      overflowX: computed.overflowX,
+      overflowY: computed.overflowY
+    };
+
+    // 9. Stacking context information
+    const stackingContext = {
+      zIndex: computed.zIndex,
+      createsContext: computed.zIndex !== 'auto' ||
+                      computed.position === 'fixed' ||
+                      computed.position === 'sticky' ||
+                      computed.position === 'absolute' && computed.zIndex !== 'auto' ||
+                      parseFloat(computed.opacity) < 1 ||
+                      computed.transform !== 'none' ||
+                      computed.filter !== 'none'
+    };
+
+    // 10. Inline styles
+    const inlineStyles = element.getAttribute('style') || null;
+
+    // 11. All attributes
+    const attributes = {};
+    Array.from(element.attributes).forEach(attr => {
+      attributes[attr.name] = attr.value;
+    });
+
+    return {
+      selector: this.generateBasicSelector(element),
+      tag: element.tagName.toLowerCase(),
+
+      // HTML
+      html: html,
+      innerHTML: innerHTML,
+      textContent: element.textContent?.substring(0, 500),
+
+      // Styles (COMPLETE)
+      allStyles: allStyles,
+      inlineStyles: inlineStyles,
+
+      // CSS Rules (COMPLETE, sorted by specificity)
+      allCSSRules: allCSSRules,
+
+      // Pseudo-elements (NEW)
+      pseudoElements: pseudoElements,
+
+      // Structure (ENHANCED)
+      siblings: siblings,
+      children: children,
+      parents: parents,
+
+      // Attributes
+      attributes: attributes,
+
+      // JavaScript
+      behaviors: behaviors,
+
+      // Overflow/Scroll (NEW)
+      scrollState: scrollState,
+
+      // Z-Index/Stacking (NEW)
+      stackingContext: stackingContext,
+
+      // Position
+      rect: {
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+        bottom: rect.bottom,
+        right: rect.right
+      },
+
+      // Viewport
+      isAboveFold: rect.top < window.innerHeight,
+      isVisible: rect.width > 0 && rect.height > 0,
+
+      // Meta
+      timestamp: Date.now()
+    };
+  }
+
+  /**
+   * Capture pseudo-element (::before or ::after) styles
+   */
+  capturePseudoElement(element, pseudo) {
+    try {
+      const styles = window.getComputedStyle(element, pseudo);
+      const content = styles.content;
+
+      // If no content or content is 'none', pseudo-element doesn't exist
+      if (!content || content === 'none' || content === '""' || content === "''") {
+        return null;
+      }
+
+      return {
+        content: content,
+        display: styles.display,
+        width: styles.width,
+        height: styles.height,
+        position: styles.position,
+        color: styles.color,
+        backgroundColor: styles.backgroundColor,
+        fontSize: styles.fontSize,
+        fontWeight: styles.fontWeight,
+        margin: styles.margin,
+        padding: styles.padding,
+        // Useful for icon fonts
+        fontFamily: styles.fontFamily
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Calculate CSS selector specificity (a, b, c) -> number
+   * IDs = 100, Classes/Attributes = 10, Elements = 1
+   */
+  calculateSpecificity(selector) {
+    try {
+      let a = 0, b = 0, c = 0;
+
+      // Count IDs
+      a = (selector.match(/#/g) || []).length;
+
+      // Count classes, attributes, pseudo-classes
+      b = (selector.match(/\./g) || []).length;
+      b += (selector.match(/\[/g) || []).length;
+      b += (selector.match(/:/g) || []).length;
+
+      // Count elements
+      const elements = selector.replace(/[#.\[:\]]/g, ' ').split(/\s+/).filter(e => e && e !== '>' && e !== '+' && e !== '~');
+      c = elements.length;
+
+      return a * 100 + b * 10 + c;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  /**
+   * Generate basic selector for an element
+   */
+  generateBasicSelector(element) {
+    // Prefer ID
+    if (element.id) {
+      return `#${element.id}`;
+    }
+
+    // Use classes
+    const tag = element.tagName.toLowerCase();
+    const classes = Array.from(element.classList)
+      .filter(c => !c.match(/^(active|hover|focus|selected)/) && c.length < 30)
+      .slice(0, 2)
+      .join('.');
+
+    if (classes) {
+      return `${tag}.${classes}`;
+    }
+
+    return tag;
   }
 
   async capturePageData(options = {}) {
@@ -1128,6 +1511,12 @@ class PageCapture {
 
       if (response && response.success) {
         console.log(`✅ Preview JS executed via service worker for variation ${variationNumber}`);
+
+        // Wait for async JS code to complete (e.g., whenReady callbacks, setTimeout delays)
+        // This ensures DOM modifications from the JS have time to execute
+        console.log('⏳ Waiting for async JS operations to complete...');
+        await new Promise(resolve => setTimeout(resolve, 300));
+        console.log('✅ Async JS operations should be complete');
       } else {
         console.error(`❌ Preview JS execution failed:`, response?.error);
         throw new Error(response?.error || 'JS execution failed');
