@@ -90,6 +90,8 @@ class SmartContextAssembler {
     // CRITICAL: If we ended up with 0 elements, use top 20 as fallback
     if (context.elementDatabase.elements.length === 0) {
       console.warn('⚠️ [Smart Context] 0 elements after initial assembly, using top 20 as fallback');
+      console.warn('  Reason: Target elements not found in element database (common for element creation tasks)');
+      console.warn('  Target selectors:', intentAnalysis.scope.targetElements);
       context.elementDatabase.elements = pageData.elementDatabase.elements.slice(0, 20);
     }
 

@@ -4,6 +4,38 @@
  */
 
 const DEFAULT_TEMPLATES = {
+  'countdown-banner-pacific': {
+    id: 'countdown-banner-pacific',
+    name: 'Friday Countdown Banner',
+    icon: '⏰',
+    description: 'Fixed countdown timer to Friday midnight Pacific Time with smart visibility',
+    variations: [
+      {
+        name: 'Friday Countdown Banner',
+        description: `Add a fixed, fully visible banner at the top that says: "Sale ends soon!"
+
+COUNTDOWN BEHAVIOR:
+- Count down to this Friday at midnight Pacific Time (handle DST automatically)
+- When countdown hits zero, hide the banner (do not reset)
+- If end date is in the past, do not render the banner
+- If time can't be computed, fail silently without blocking page interaction
+
+DISPLAY FORMAT:
+- Use four fixed-width boxes: days, hours, minutes, seconds
+- Hide the days box if the value is 0
+- Each box contains the number and its label: [01d][12h][34m][56s]
+- Use short labels (d, h, m, s) instead of full words
+- Make the banner short with all elements side-by-side
+- Ensure boxes are fixed width, accessible (ARIA live region), and legible
+
+PAGE INTEGRATION:
+- Remove any existing top sticky banners
+- Keep this banner fixed at the top while scrolling
+- Ensure it does not overlap navigation or core page elements under any circumstances
+- Add appropriate body padding to prevent content from being hidden`
+      }
+    ]
+  },
   'button-cta-test': {
     id: 'button-cta-test',
     name: 'Button CTA Test',

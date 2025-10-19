@@ -124,14 +124,14 @@ class UnifiedExperimentBuilder {
       this.selectingFromChat = false;
 
       // Show status
-      this.showStatus(`✅ Element added to chat: ${elementDescription}`, 'success', 3000);
+      this.showStatus(`Element added to chat: ${elementDescription}`, 'success', 3000);
 
       return; // Don't do the normal element selection flow
     }
 
     // Normal (non-chat) element selection flow
     // Show success status in persistent status bar
-    this.showStatus(`✅ Element selected: ${elementDescription}`, 'success', 3000);
+    this.showStatus(`Element selected: ${elementDescription}`, 'success', 3000);
 
     // Add success activity
     this.addActivity(`Selected: ${elementDescription}`, 'success');
@@ -148,14 +148,14 @@ class UnifiedExperimentBuilder {
     // Auto-capture page if not already captured
     if (!this.currentPageData) {
       console.log('📸 Auto-capturing page data (element selected but no page data)...');
-      this.showStatus('📸 Capturing page context...', 'loading');
+      this.showStatus('Capturing page context...', 'loading');
 
       try {
         await this.capturePage();
         console.log('✅ Page data captured successfully after element selection');
       } catch (error) {
         console.error('❌ Failed to capture page after element selection:', error);
-        this.showStatus('⚠️ Could not capture page data', 'error', 3000);
+        this.showStatus('Could not capture page data', 'error', 3000);
         // Continue anyway - we have the element data
       }
     }
@@ -628,7 +628,7 @@ class UnifiedExperimentBuilder {
       return;
     }
 
-    this.showStatus('🔄 Regenerating code...', 'loading');
+    this.showStatus('Regenerating code...', 'loading');
     this.addActivity('Regenerating experiment code...', 'info');
 
     // Go back to building state to allow editing
@@ -1765,7 +1765,7 @@ class UnifiedExperimentBuilder {
 
         this.updateWorkflowState('results');
         this.displayGeneratedCode(result);
-        this.showStatus(`✨ Generated ${result.variations.length} variation${result.variations.length > 1 ? 's' : ''} successfully`, 'success', 4000);
+        this.showStatus(`Generated ${result.variations.length} variation${result.variations.length > 1 ? 's' : ''} successfully`, 'success', 4000);
         this.addActivity(`Generated ${result.variations.length} variations`, 'success');
         this.updateApiStatus('success'); // Show success indicator
 
@@ -1824,7 +1824,7 @@ class UnifiedExperimentBuilder {
 
       // Update status with stop button
       this.updateTypingStatus('Analyzing request');
-      this.showStatus('🔍 Analyzing your request...', 'loading', null, true);
+      this.showStatus('Analyzing your request...', 'loading', null, true);
 
       // Use background service worker for AI generation (proper approach for Manifest V3)
       console.log('🔗 Calling background service worker for AI generation...');
@@ -2907,16 +2907,30 @@ The AI attempted to remove your existing JavaScript code, which would break your
       this.updateTypingStatus('Refinement successful!');
       this.addActivity('Code refined successfully', 'success');
 
-      // Show confidence score if available
-      const confidenceText = response.confidence
-        ? ` (Confidence: ${response.confidence}%)`
-        : '';
+      // Build informative response using analysis data
+      let chatMessage = '';
 
-      const chatMessage = `✅ Code updated successfully!${confidenceText}
+      // Extract what was actually done from the analysis
+      if (response.code.analysis && response.code.analysis.requestedChanges && response.code.analysis.requestedChanges.length > 0) {
+        const changes = response.code.analysis.requestedChanges;
 
-I've incorporated your refinement: "${message}"
+        // Create natural language summary
+        if (changes.length === 1) {
+          chatMessage = `Done! I ${changes[0]}.`;
+        } else if (changes.length === 2) {
+          chatMessage = `Done! I ${changes[0]} and ${changes[1]}.`;
+        } else {
+          // Multiple changes - list them naturally
+          const lastChange = changes[changes.length - 1];
+          const otherChanges = changes.slice(0, -1).join(', ');
+          chatMessage = `Done! I ${otherChanges}, and ${lastChange}.`;
+        }
+      } else {
+        // Fallback if no analysis available
+        chatMessage = `Done! I updated the code based on your request.`;
+      }
 
-The updated code has been validated and is ready to preview or deploy.`;
+      chatMessage += '\n\nThe preview has been updated.';
 
       console.log('💬 [Refinement] Adding chat message:', chatMessage.substring(0, 100));
       try {
@@ -3567,7 +3581,7 @@ Generating code for this element...`);
 
     // Copy to clipboard
     navigator.clipboard.writeText(logText).then(() => {
-      this.showStatus('📋 Activity log copied to clipboard!', 'success', 3000);
+      this.showStatus('Activity log copied to clipboard!', 'success', 3000);
       this.addActivity('Activity log copied to clipboard', 'info');
     }).catch(err => {
       console.error('Failed to copy activity log:', err);
@@ -3651,7 +3665,7 @@ Generating code for this element...`);
       }
     }
 
-    this.showStatus('💾 Code changes saved', 'success', 2000);
+    this.showStatus('Code changes saved', 'success', 2000);
     this.addActivity(`Code updated: ${tabId}`, 'success');
 
     console.log('✅ Code saved successfully');
@@ -4169,7 +4183,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
     try {
       await navigator.clipboard.writeText(allCode);
       this.showSuccess('All code copied to clipboard');
-      this.showStatus('📋 Code copied to clipboard', 'success', 3000);
+      this.showStatus('Code copied to clipboard', 'success', 3000);
     } catch (error) {
       console.error('Failed to copy code:', error);
       this.showError('Failed to copy code');
@@ -4189,7 +4203,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       await this.runVisualQAValidation(variation, this.generatedCode);
     }
 
-    this.showStatus('✅ Visual QA complete for all variations', 'success', 5000);
+    this.showStatus('Visual QA complete for all variations', 'success', 5000);
   }
 
   async regenerateAllCode() {
@@ -4204,7 +4218,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       return;
     }
 
-    this.showStatus('🔄 Regenerating all code...', 'loading');
+    this.showStatus('Regenerating all code...', 'loading');
     await this.generateExperiment();
   }
 
@@ -4223,7 +4237,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       // Reset to fresh state
       this.updateWorkflowState('fresh');
 
-      this.showStatus('🗑️ All data cleared', 'success', 3000);
+      this.showStatus('All data cleared', 'success', 3000);
       this.clearActivity();
     }
   }
@@ -4302,25 +4316,21 @@ function waitForElement(selector, callback, maxWait = 10000) {
   }
 
   showSuccess(message) {
-    this.showNotification(message, 'success');
+    // Use new persistent status bar instead of old notification bubbles
+    this.showStatus(message, 'success', 4000);
+    this.addActivity(message, 'success');
   }
 
   showError(message) {
-    this.showNotification(message, 'error');
+    // Use new persistent status bar instead of old notification bubbles
+    this.showStatus(message, 'error', 4000);
+    this.addActivity(message, 'error');
   }
 
+  // Legacy notification method - deprecated, kept for compatibility
   showNotification(message, type) {
-    const notification = document.getElementById(type + 'Display');
-    if (notification) {
-      notification.querySelector('.message').textContent = message;
-      notification.classList.remove('hidden');
-      
-      setTimeout(() => {
-        notification.classList.add('hidden');
-      }, 4000);
-    }
-
-    // Also add to activity stream
+    // Redirect to new status bar system
+    this.showStatus(message, type === 'success' ? 'success' : 'error', 4000);
     this.addActivity(message, type === 'success' ? 'success' : 'error');
   }
 
@@ -4684,7 +4694,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
     if (failedCount === 0) {
       this.updateTestingStatus('complete');
-      this.showStatus(`✅ All ${totalCount} variations passed testing`, 'success', 4000);
+      this.showStatus(`All ${totalCount} variations passed testing`, 'success', 4000);
       this.addActivity(`✅ All ${totalCount} variations passed testing`, 'success');
 
       if (qaStatusEl) {
@@ -4956,7 +4966,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       return; // Skip Visual QA entirely
     }
 
-    this.showStatus(`🔍 Running Visual QA analysis on ${variation.name}...`, 'loading');
+    this.showStatus(`Running Visual QA analysis on ${variation.name}...`, 'loading');
     this.addActivity(`📸 Visual QA validation - ${variation.name}`, 'info');
 
     // Update chat typing indicator if chat-initiated
@@ -5036,7 +5046,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
         // Show result in UI
         if (qaResult.status === 'PASS') {
-          this.showStatus(`✅ Visual QA passed - no issues found`, 'success', 4000);
+          this.showStatus(`Visual QA passed - no issues found`, 'success', 4000);
           this.addActivity(`✅ Visual QA PASSED - code looks good!`, 'success');
           break;
         } else {
@@ -5057,7 +5067,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
         if (!shouldContinue) {
           console.log('[Visual QA] Stopping iterations');
           if (qaResult.status !== 'PASS') {
-            this.showStatus(`⚠️ Visual QA completed with ${qaResult.defects?.length || 0} remaining issues`, 'warning', 5000);
+            this.showStatus(`Visual QA completed with ${qaResult.defects?.length || 0} remaining issues`, 'warning', 5000);
             this.addActivity(`⚠️ Visual QA completed after ${iteration} iteration(s) with remaining issues`, 'warning');
           }
           break;
@@ -5372,7 +5382,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
   async openConvertSyncModal() {
     if (!this.generatedCode) {
-      this.showStatus('⚠️ No code to push', 'error', 3000);
+      this.showStatus('No code to push', 'error', 3000);
       return;
     }
 
@@ -5487,7 +5497,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
     const generateBtn = document.getElementById('generateExperienceName');
 
     if (!this.generatedCode?.variations || this.generatedCode.variations.length === 0) {
-      this.showStatus('❌ No variations to analyze', 'error', 3000);
+      this.showStatus('No variations to analyze', 'error', 3000);
       return;
     }
 
@@ -5531,13 +5541,13 @@ Return ONLY the experiment name, nothing else.`;
         // Extract just the name (remove any quotes or extra formatting)
         const generatedName = response.code.trim().replace(/^["']|["']$/g, '').substring(0, 100);
         if (nameInput) nameInput.value = generatedName;
-        this.showStatus('✅ Name generated', 'success', 2000);
+        this.showStatus('Name generated', 'success', 2000);
       } else {
         throw new Error(response.error || 'Failed to generate name');
       }
     } catch (error) {
       console.error('Failed to generate experiment name:', error);
-      this.showStatus('❌ Failed to generate name', 'error', 3000);
+      this.showStatus('Failed to generate name', 'error', 3000);
     } finally {
       // Restore button
       if (generateBtn) {
@@ -5552,7 +5562,7 @@ Return ONLY the experiment name, nothing else.`;
     const generateBtn = document.getElementById('generateExperienceDescription');
 
     if (!this.generatedCode?.variations || this.generatedCode.variations.length === 0) {
-      this.showStatus('❌ No variations to analyze', 'error', 3000);
+      this.showStatus('No variations to analyze', 'error', 3000);
       return;
     }
 
@@ -5596,13 +5606,13 @@ Return ONLY the description, nothing else.`;
         // Extract description (remove quotes/formatting)
         const generatedDesc = response.code.trim().replace(/^["']|["']$/g, '').substring(0, 500);
         if (descInput) descInput.value = generatedDesc;
-        this.showStatus('✅ Description generated', 'success', 2000);
+        this.showStatus('Description generated', 'success', 2000);
       } else {
         throw new Error(response.error || 'Failed to generate description');
       }
     } catch (error) {
       console.error('Failed to generate experiment description:', error);
-      this.showStatus('❌ Failed to generate description', 'error', 3000);
+      this.showStatus('Failed to generate description', 'error', 3000);
     } finally {
       // Restore button
       if (generateBtn) {
@@ -5624,7 +5634,7 @@ Return ONLY the description, nothing else.`;
 
       if (apiKeys.length === 0) {
         select.innerHTML += '<option value="" disabled>No API keys configured</option>';
-        this.showStatus('⚠️ Please add Convert.com API keys in settings', 'error', 5000);
+        this.showStatus('Please add Convert.com API keys in settings', 'error', 5000);
         return;
       }
 
@@ -5636,7 +5646,7 @@ Return ONLY the description, nothing else.`;
       });
     } catch (error) {
       console.error('Failed to load API keys:', error);
-      this.showStatus('❌ Failed to load API keys', 'error', 3000);
+      this.showStatus('Failed to load API keys', 'error', 3000);
     }
   }
 
@@ -5916,7 +5926,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       if (pushText) pushText.textContent = 'Update in Convert.com';
 
       // Don't auto-close - let user click the link
-      this.showStatus('✅ Pushed to Convert.com successfully', 'success', 3000);
+      this.showStatus('Pushed to Convert.com successfully', 'success', 3000);
     } catch (error) {
       console.error('Failed to create experience:', error);
       this.showConvertSyncStatus('error', `Failed to create experience: ${error.message}`);
@@ -5930,7 +5940,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
   async updateExistingExperience(mapping) {
     console.log('[updateExistingExperience] FIXED VERSION - Starting update for experience:', mapping.experienceId);
     console.log('[updateExistingExperience] Mapping data:', mapping);
-    this.showStatus('🔄 Updating experience in Convert.com...', 'info', 0);
+    this.showStatus('Updating experience in Convert.com...', 'info', 0);
 
     try {
       // Get API credentials
@@ -5952,7 +5962,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
       if (!selectedKey) {
         console.error('[updateExistingExperience] No API keys available');
-        this.showStatus('❌ No API keys configured', 'error', 5000);
+        this.showStatus('No API keys configured', 'error', 5000);
         return;
       }
 
@@ -5984,7 +5994,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       if (!accountId || !projectId || !experienceId) {
         console.error('[updateExistingExperience] Missing required IDs:', { accountId, projectId, experienceId });
         console.log('[updateExistingExperience] Opening modal for user to select account/project...');
-        this.showStatus('⚠️ Please select account and project to update experience', 'info', 3000);
+        this.showStatus('Please select account and project to update experience', 'info', 3000);
 
         // Open modal so user can select account/project
         await this.showConvertSyncModalForUpdate(mapping);
@@ -6144,12 +6154,12 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
       // Show success
       const convertUrl = `https://app.convert.com/accounts/${accountId}/projects/${projectId}/experiences/${experienceId}/editor`;
-      this.showStatus(`✅ <a href="${convertUrl}" target="_blank" style="color: #22c55e; text-decoration: underline;">Experience updated successfully</a>`, 'success', 8000);
+      this.showStatus(`<a href="${convertUrl}" target="_blank" style="color: #22c55e; text-decoration: underline;">Experience updated successfully</a>`, 'success', 8000);
 
       console.log('✅ Experience updated successfully');
     } catch (error) {
       console.error('Failed to update experience:', error);
-      this.showStatus(`❌ Failed to update: ${error.message}`, 'error', 5000);
+      this.showStatus(`Failed to update: ${error.message}`, 'error', 5000);
     }
   }
 
@@ -6244,7 +6254,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       }
 
       // Don't auto-close - let user click the link
-      this.showStatus('✅ Updated in Convert.com', 'success', 3000);
+      this.showStatus('Updated in Convert.com', 'success', 3000);
     } catch (error) {
       console.error('Failed to update experience:', error);
       this.showConvertSyncStatus('error', `Failed to update: ${error.message}`);
@@ -6846,7 +6856,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
 
   async activateElementSelector() {
     console.log('🎯 activateElementSelector called');
-    this.showStatus('🎯 Click any element on the page to select it', 'info');
+    this.showStatus('Click any element on the page to select it', 'info');
     this.addActivity('Element selector activated - click any element on the page', 'info');
 
     try {
@@ -7507,7 +7517,7 @@ function waitForElement(selector, callback, maxWait = 10000) {
       });
 
       if (response.success) {
-        this.showStatus('🛑 Request cancelled', 'warning', 3000);
+        this.showStatus('Request cancelled', 'warning', 3000);
         this.addActivity('AI request cancelled by user', 'warning');
 
         // Reset chat state to prevent any automatic generation
