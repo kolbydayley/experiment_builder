@@ -8,7 +8,77 @@ class ExperimentHistory {
     this.STORAGE_KEY = 'experimentHistory';
     this.MAX_EXPERIMENTS_PER_DOMAIN = 10;
     this.MAX_TOTAL_SIZE_BYTES = 4 * 1024 * 1024; // 4MB conservative limit (Chrome limit is ~5MB)
-    this.MAX_SCREENSHOT_SIZE = 50 * 1024; // 50KB max per screenshot
+    this.MAX_SCREENSHOT_SIZE = 500 * 1024; // 500KB max per screenshot (after compression)
+    this.COMPRESSION_QUALITY = 0.6; // JPEG quality (0-1)
+  }
+
+  /**
+   * Compress screenshot to reduce storage size
+   * Converts to JPEG and resizes if needed
+   */
+  async compressScreenshot(dataUrl, maxSizeKB = 500) {
+    try {
+      // If already small enough, return as-is
+      if (dataUrl.length <= maxSizeKB * 1024) {
+        console.log(`✅ Screenshot already small enough: ${Math.round(dataUrl.length / 1024)}KB`);
+        return dataUrl;
+      }
+
+      console.log(`🔄 Compressing screenshot from ${Math.round(dataUrl.length / 1024)}KB...`);
+
+      // Create image element
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = dataUrl;
+      });
+
+      // Calculate new dimensions (max 1200px wide to reduce size)
+      const MAX_WIDTH = 1200;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > MAX_WIDTH) {
+        height = (height * MAX_WIDTH) / width;
+        width = MAX_WIDTH;
+      }
+
+      // Create canvas and draw resized image
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Try different quality levels until we get under the limit
+      let quality = this.COMPRESSION_QUALITY;
+      let compressed = null;
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        compressed = canvas.toDataURL('image/jpeg', quality);
+        const compressedSizeKB = compressed.length / 1024;
+
+        console.log(`  Attempt ${attempt + 1}: quality=${quality.toFixed(2)}, size=${Math.round(compressedSizeKB)}KB`);
+
+        if (compressedSizeKB <= maxSizeKB) {
+          console.log(`✅ Screenshot compressed: ${Math.round(dataUrl.length / 1024)}KB → ${Math.round(compressedSizeKB)}KB`);
+          return compressed;
+        }
+
+        // Reduce quality for next attempt
+        quality *= 0.7;
+      }
+
+      // If still too large after all attempts, return the best we got
+      console.warn(`⚠️ Screenshot still large after compression: ${Math.round(compressed.length / 1024)}KB`);
+      return compressed;
+
+    } catch (error) {
+      console.error('Screenshot compression failed:', error);
+      // Return null if compression fails
+      return null;
+    }
   }
 
   /**
@@ -56,14 +126,24 @@ class ExperimentHistory {
       const experimentId = experimentData.id || this.generateExperimentId();
       const timestamp = Date.now();
 
-      // Optimize screenshot size (compress or remove if too large)
+      // Compress screenshot if present
       let optimizedScreenshot = null;
       if (experimentData.screenshot) {
-        const screenshotSize = experimentData.screenshot.length;
-        if (screenshotSize <= this.MAX_SCREENSHOT_SIZE) {
-          optimizedScreenshot = experimentData.screenshot;
+        const originalSize = experimentData.screenshot.length;
+        console.log(`📸 Processing screenshot: ${Math.round(originalSize / 1024)}KB`);
+
+        // Compress screenshot to fit storage limits
+        optimizedScreenshot = await this.compressScreenshot(
+          experimentData.screenshot,
+          Math.round(this.MAX_SCREENSHOT_SIZE / 1024)
+        );
+
+        if (optimizedScreenshot) {
+          const finalSize = optimizedScreenshot.length;
+          const savings = Math.round(((originalSize - finalSize) / originalSize) * 100);
+          console.log(`✅ Screenshot saved: ${Math.round(finalSize / 1024)}KB (${savings}% reduction)`);
         } else {
-          console.warn(`⚠️ Screenshot too large (${Math.round(screenshotSize / 1024)}KB), skipping to save storage`);
+          console.warn(`⚠️ Screenshot compression failed, skipping screenshot`);
         }
       }
 

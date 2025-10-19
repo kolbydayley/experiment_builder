@@ -17,6 +17,28 @@ class ServiceWorker {
     // Abort controller for cancelling AI requests
     this.currentAbortController = null;
     this.currentRequestContext = null; // Store context for reverting
+
+    // Phase 2: Initialize few-shot examples library
+    this.fewShotExamples = null;
+    this.loadFewShotExamples();
+  }
+
+  async loadFewShotExamples() {
+    try {
+      // Use importScripts instead of eval (CSP-safe)
+      importScripts(chrome.runtime.getURL('utils/few-shot-examples.js'));
+
+      // FewShotExamples is now in global scope
+      if (typeof FewShotExamples !== 'undefined') {
+        this.fewShotExamples = new FewShotExamples();
+        console.log('✅ [Phase 2] Few-shot examples library loaded');
+      } else {
+        console.warn('⚠️ [Phase 2] FewShotExamples class not found after import');
+      }
+    } catch (error) {
+      console.warn('⚠️ [Phase 2] Failed to load few-shot examples:', error.message);
+      // Continue without examples - will just use old prompt format
+    }
   }
 
   createOperationLogger(context = 'Operation') {
@@ -1977,8 +1999,22 @@ CRITICAL: Use the deep context and layout analysis to generate PERFECT code with
       userMessage += `- **Follow z-index strategy**: Use the recommended z-index from PAGE-WIDE BEHAVIOR ANALYSIS\n`;
       userMessage += `- **Consider scroll-triggered behaviors**: If elements have scroll classes or transforms, new elements should integrate smoothly\n`;
       userMessage += `- **Respect framework patterns**: If data-* attributes or framework markers detected, ensure compatibility\n`;
-      userMessage += `\n**RESPOND WITH JSON:**\n`;
+      userMessage += `\n**RESPOND WITH JSON (WITH COMPLETENESS CHECK):**\n`;
       userMessage += `{\n`;
+      userMessage += `  "analysis": {\n`;
+      userMessage += `    "requestedChanges": ["list each change from user request"],\n`;
+      userMessage += `    "targetElements": [{"selector": "...", "changes": "..."}],\n`;
+      userMessage += `    "completenessCheck": {\n`;
+      userMessage += `      "textChange": true/false,\n`;
+      userMessage += `      "colorChange": true/false,\n`;
+      userMessage += `      "sizeChange": true/false,\n`;
+      userMessage += `      "positionChange": true/false,\n`;
+      userMessage += `      "behaviorChange": true/false,\n`;
+      userMessage += `      "elementCreation": true/false,\n`;
+      userMessage += `      "allImplemented": true\n`;
+      userMessage += `    },\n`;
+      userMessage += `    "reasoning": "Brief explanation of approach"\n`;
+      userMessage += `  },\n`;
       userMessage += `  "variations": [\n`;
       userMessage += `    {\n`;
       userMessage += `      "number": 1,\n`;
@@ -2002,7 +2038,7 @@ CRITICAL: Use the deep context and layout analysis to generate PERFECT code with
         model: settings?.model || 'claude-sonnet-4-5-20250929',
         anthropicApiKey: settings?.anthropicApiKey,  // For Anthropic
         authToken: settings?.authToken,  // For OpenAI
-        maxTokens: 8000  // Ensure enough tokens for complete code generation
+        maxTokens: 16000  // Higher limit for complex code with analysis object
       };
 
       logger.log('Calling AI for code generation', `model=${aiSettings.model}`);
@@ -2184,15 +2220,33 @@ CRITICAL: Use the deep context and layout analysis to generate PERFECT code with
       // FALLBACK: Standard single-stage generation
       console.log('📊 Using STANDARD single-stage generation (fallback)');
       logger.log('Generating code with Element Database');
+
+      // 🚨 PHASE 3: Extract requirements before generation (validation gate)
+      let extractedRequirements = null;
+      if (pageData.elementDatabase?.elements) {
+        try {
+          extractedRequirements = await this.extractRequirements(
+            description,
+            pageData.elementDatabase.elements,
+            settings
+          );
+
+          logger.log('Requirements extracted', `count=${extractedRequirements.requirements.length}`);
+        } catch (error) {
+          console.warn('⚠️ [Phase 3] Extraction failed, continuing without:', error.message);
+        }
+      }
+
       const prompt = this.buildCodeGenerationPrompt(
         pageData,
         description,
         designFiles,
         variations,
         settings,
-        selectedElement
+        selectedElement,
+        extractedRequirements  // Pass requirements to prompt builder
       );
-      
+
       // Log final prompt statistics
       console.log('📊 Final Prompt Analysis:');
       console.log(`  📏 Total Length: ${prompt.length} characters`);
@@ -2346,7 +2400,8 @@ When you see "YOU MUST ONLY USE THESE SELECTORS" in the user's message, that lis
         provider: mergedSettings?.provider || 'anthropic', // Default to Anthropic
         authToken: mergedSettings?.authToken || authToken,
         anthropicApiKey: mergedSettings?.anthropicApiKey,
-        model: mergedSettings?.model || 'claude-3-7-sonnet-20250219' // Default to Claude 3.7 Sonnet
+        model: mergedSettings?.model || 'claude-3-7-sonnet-20250219', // Default to Claude 3.7 Sonnet
+        maxTokens: 16000  // Higher limit for complex code with analysis object
       };
 
       console.log('🎯 Final AI Settings:', { provider: aiSettings.provider, model: aiSettings.model, hasAnthropicKey: !!aiSettings.anthropicApiKey, hasOpenAIKey: !!aiSettings.authToken });
@@ -2552,11 +2607,27 @@ Now generate the corrected code with ALL original functionality preserved.`;
         logger.log('Test script generation disabled', 'Skipping per user settings');
       }
 
+      // 🚨 PHASE 3: Aggregate usage from extraction + generation
+      let aggregatedUsage = this.normalizeUsage(aiResponse);
+
+      if (extractedRequirements && extractedRequirements.usage) {
+        const extractionUsage = this.normalizeUsage({ usage: extractedRequirements.usage });
+        // Add extraction tokens to the total
+        aggregatedUsage.promptTokens += extractionUsage.promptTokens;
+        aggregatedUsage.completionTokens += extractionUsage.completionTokens;
+        aggregatedUsage.totalTokens += extractionUsage.totalTokens;
+
+        console.log('📊 [Phase 3] Usage aggregation:');
+        console.log(`  Extraction: ${extractionUsage.totalTokens} tokens`);
+        console.log(`  Generation: ${this.normalizeUsage(aiResponse).totalTokens} tokens`);
+        console.log(`  Total: ${aggregatedUsage.totalTokens} tokens`);
+      }
+
       return {
         code: parsedCode,
         testResults: testResults,
         testScript: testScriptData, // NEW: Include test script
-        usage: this.normalizeUsage(aiResponse),
+        usage: aggregatedUsage,
         logs: logger.entries()
       };
     } catch (error) {
@@ -3296,7 +3367,89 @@ Be LENIENT - allow code rewrites if they accomplish the user's goal.`;
     return parts.join('\n');
   }
 
-  buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings, selectedElement = null) {
+  /**
+   * PHASE 3: Extract requirements from user request before generation
+   * This validates understanding and creates a checklist for validation
+   */
+  async extractRequirements(userRequest, elementDatabase, settings) {
+    console.log('🔍 [Phase 3] Extracting requirements from user request...');
+
+    try {
+      // Use lightweight model (Haiku) for quick extraction
+      const prompt = `Extract specific requirements from this user request.
+
+USER REQUEST: "${userRequest}"
+
+AVAILABLE ELEMENTS (selectors only):
+${elementDatabase.slice(0, 20).map(el => `- ${el.selector}: "${el.text?.substring(0, 40) || el.tag}"`).join('\n')}
+
+Respond with JSON ONLY (no markdown):
+{
+  "requirements": [
+    {"type": "text_change", "target": "selector", "value": "new text", "description": "change button text"},
+    {"type": "color_change", "target": "selector", "value": "red", "description": "change background color"},
+    {"type": "size_change", "target": "selector", "value": "larger", "description": "increase font size"},
+    {"type": "position_change", "target": "new element", "value": "top of page", "description": "add fixed banner"},
+    {"type": "behavior_change", "target": "selector", "value": "hide", "description": "hide element"},
+    {"type": "element_creation", "target": "body", "value": "countdown timer", "description": "create new timer"}
+  ],
+  "targetSelectors": ["list", "of", "selectors"],
+  "estimatedComplexity": 3,
+  "needsCleanupManager": false,
+  "needsWaitForElement": true
+}
+
+TYPES: text_change, color_change, size_change, position_change, behavior_change, element_creation
+COMPLEXITY: 1-10 (1=simple color change, 5=multiple changes, 10=complex timer/animation)`;
+
+      const aiSettings = {
+        provider: 'anthropic',
+        model: 'claude-3-5-haiku-20241022', // Fast, cheap model
+        anthropicApiKey: settings?.anthropicApiKey,
+        maxTokens: 1000
+      };
+
+      const response = await this.callAI([
+        { role: 'user', content: prompt }
+      ], aiSettings);
+
+      // Parse JSON response
+      let cleanedResponse = response.content.trim();
+
+      // Remove markdown code blocks if present
+      if (cleanedResponse.includes('```')) {
+        const jsonMatch = cleanedResponse.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+        if (jsonMatch) {
+          cleanedResponse = jsonMatch[1].trim();
+        }
+      }
+
+      const extracted = JSON.parse(cleanedResponse);
+
+      console.log(`✅ [Phase 3] Extracted ${extracted.requirements.length} requirements`);
+      console.log(`  Complexity: ${extracted.estimatedComplexity}/10`);
+      console.log(`  Needs CleanupManager: ${extracted.needsCleanupManager}`);
+
+      // IMPORTANT: Include usage data for cost tracking
+      return {
+        ...extracted,
+        usage: response.usage || {}  // Add usage from AI call
+      };
+    } catch (error) {
+      console.warn('⚠️ [Phase 3] Requirement extraction failed:', error.message);
+      // Return minimal fallback structure
+      return {
+        requirements: [],
+        targetSelectors: [],
+        estimatedComplexity: 5,
+        needsCleanupManager: false,
+        needsWaitForElement: true,
+        usage: {}  // Empty usage for fallback
+      };
+    }
+  }
+
+  buildCodeGenerationPrompt(pageData, description, designFiles, variations, settings, selectedElement = null, extractedRequirements = null) {
     // Check if we have hierarchical context (new system) or legacy element database
     const hasHierarchicalContext = pageData.context && pageData.context.mode;
 
@@ -3412,6 +3565,20 @@ ${metadata.focusPath ? `\n**SELECTED ELEMENT PATH:** ${metadata.focusPath}` : ''
 The database contains the most important interactive elements across the entire page.
 Elements are ranked by importance (position, size, interactivity).
 `;
+
+    // 🚨 PHASE 2: Add few-shot examples if available
+    let fewShotSection = '';
+    if (this.fewShotExamples) {
+      try {
+        const relevantExamples = this.fewShotExamples.getRelevantExamples(description, 2);
+        if (relevantExamples && relevantExamples.length > 0) {
+          fewShotSection = this.fewShotExamples.formatForPrompt(relevantExamples);
+          console.log(`✅ [Phase 2] Added ${relevantExamples.length} relevant examples to prompt`);
+        }
+      } catch (error) {
+        console.warn('⚠️ [Phase 2] Error selecting few-shot examples:', error.message);
+      }
+    }
 
     // Build streamlined prompt (30% shorter while maintaining quality)
     const coreRules = `**CRITICAL RULES:**
@@ -3635,6 +3802,32 @@ ${orderedElements.map((el, i) => `${i + 1}. "${el.selector}"${i === 0 && selecte
 Generate A/B test code using this ELEMENT DATABASE.
 
 **REQUEST:** ${description}
+${extractedRequirements && extractedRequirements.requirements.length > 0 ? `
+
+🔍 **PRE-VALIDATED REQUIREMENTS (YOU MUST IMPLEMENT ALL OF THESE):**
+
+${extractedRequirements.requirements.map((req, idx) =>
+  `${idx + 1}. ${req.description} (${req.type})`
+).join('\n')}
+
+**VALIDATION CHECKLIST FOR YOUR completenessCheck:**
+Your analysis.completenessCheck must include:
+${extractedRequirements.requirements.map(req => {
+  switch(req.type) {
+    case 'text_change': return '- textChange: true';
+    case 'color_change': return '- colorChange: true';
+    case 'size_change': return '- sizeChange: true';
+    case 'position_change': return '- positionChange: true';
+    case 'behavior_change': return '- behaviorChange: true';
+    case 'element_creation': return '- elementCreation: true';
+    default: return '';
+  }
+}).filter(Boolean).join('\n')}
+- allImplemented: true
+
+${extractedRequirements.needsCleanupManager ? '⚠️ **CLEANUP MANAGER REQUIRED**: Register all intervals, timeouts, and created elements.' : ''}
+${extractedRequirements.estimatedComplexity >= 7 ? '⚠️ **COMPLEX REQUEST**: Pay extra attention to completeness and edge cases.' : ''}
+` : ''}
 ${selectedElementContext}
 ${contextInstructions}
 **PAGE:** ${metadata.url}
@@ -3665,6 +3858,8 @@ ${elementsJSON}
   ⚠️ If element already has padding: "20px", don't add MORE padding - adjust or replace it
 - section: Page area (hero, nav, footer, etc.)
 
+${fewShotSection}
+
 ${coreRules}
 
 **VARIATIONS (${variations.length}):**
@@ -3682,8 +3877,12 @@ Just use: waitForElement(selector, callback)
 **CODE PATTERN:**
 ${exampleCode}
 
-**OUTPUT FORMAT - STRICT JSON:**
+**OUTPUT FORMAT - STRICT JSON WITH COMPLETENESS CHECK:**
 You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSON.
+
+🚨 **NEW: MANDATORY COMPLETENESS ANALYSIS** 🚨
+Your JSON MUST include an "analysis" object that explicitly tracks what you're implementing.
+This prevents accidentally skipping parts of the user's request.
 
 ⚠️ **CODE LENGTH LIMITS (CRITICAL):**
 - Each variation's JS code must be ≤ 2000 characters
@@ -3693,6 +3892,28 @@ You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSO
 - If implementing complex logic, break it into smaller helper functions
 
 {
+  "analysis": {
+    "requestedChanges": [
+      "List EVERY change from user request here",
+      "Break down complex requests into specific changes",
+      "Example: change button text to 'X'",
+      "Example: change button color to red",
+      "Example: add hover effect"
+    ],
+    "targetElements": [
+      { "selector": "exact selector from database", "changes": "what you'll do to it" }
+    ],
+    "completenessCheck": {
+      "textChange": true/false,
+      "colorChange": true/false,
+      "sizeChange": true/false,
+      "positionChange": true/false,
+      "behaviorChange": true/false,
+      "elementCreation": true/false,
+      "allImplemented": true  // MUST be true - set false only if you're unable to implement something
+    },
+    "reasoning": "Brief explanation of your approach"
+  },
   "variations": [
     {
       "number": 1,
@@ -3705,8 +3926,28 @@ You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSO
   "globalJS": "Shared JavaScript helper functions or empty string"
 }
 
-**EXAMPLE JSON OUTPUT (Simple change):**
+**EXAMPLE JSON OUTPUT (Simple change - text + color):**
 {
+  "analysis": {
+    "requestedChanges": [
+      "change button text to 'Get Started Today'",
+      "change button background color to green",
+      "increase font size to 18px"
+    ],
+    "targetElements": [
+      { "selector": "#mainCTA", "changes": "text + color + size" }
+    ],
+    "completenessCheck": {
+      "textChange": true,
+      "colorChange": true,
+      "sizeChange": true,
+      "positionChange": false,
+      "behaviorChange": false,
+      "elementCreation": false,
+      "allImplemented": true
+    },
+    "reasoning": "Simple button styling change using CSS for colors and JS for text content"
+  },
   "variations": [
     {
       "number": 1,
@@ -3721,6 +3962,28 @@ You MUST respond with valid JSON only. No markdown, no code blocks, just raw JSO
 
 **EXAMPLE JSON OUTPUT (Complex feature with helper functions and Cleanup Manager):**
 {
+  "analysis": {
+    "requestedChanges": [
+      "create new countdown timer element",
+      "position timer at top of page (fixed)",
+      "style timer with black background",
+      "update timer every second",
+      "register interval with CleanupManager"
+    ],
+    "targetElements": [
+      { "selector": "body", "changes": "prepend new timer element" }
+    ],
+    "completenessCheck": {
+      "textChange": false,
+      "colorChange": true,
+      "sizeChange": false,
+      "positionChange": true,
+      "behaviorChange": true,
+      "elementCreation": true,
+      "allImplemented": true
+    },
+    "reasoning": "Creating new fixed element with interval requires Cleanup Manager registration and globalJS helper function"
+  },
   "variations": [
     {
       "number": 1,
@@ -3739,6 +4002,9 @@ NOTE: Do NOT include "function waitForElement(...)" definition - just call it di
 BEST PRACTICE: Use CSS section for colors/sizes (with !important), JS section for text/behavior.
 
 **CHECKLIST BEFORE SUBMITTING:**
+□ 🚨 INCLUDED "analysis" object with completenessCheck
+□ 🚨 SET "allImplemented": true in completenessCheck
+□ 🚨 LISTED ALL requested changes in requestedChanges array
 □ ⚠️ VERIFIED every selector exists in the ELEMENTS list above
 □ ❌ NO made-up selectors like 'button.btn.btn--primary'
 □ ✅ ONLY used exact selectors from database (copy-paste)
@@ -3747,6 +4013,8 @@ BEST PRACTICE: Use CSS section for colors/sizes (with !important), JS section fo
 □ 🧹 ALL setInterval calls are registered with ConvertCleanupManager
 □ 🧹 ALL setTimeout calls are registered with ConvertCleanupManager
 □ 🧹 ALL created elements are registered with ConvertCleanupManager
+
+🔴 **FINAL VALIDATION:** Before returning your JSON, re-read the user request and verify your completenessCheck reflects EVERYTHING they asked for.
 □ Implemented ALL requested changes
 □ Added duplication prevention (dataset.varApplied)
 □ Descriptive variation names
@@ -4410,6 +4678,34 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
             console.warn(`  ⚠️ AI did not generate globalJS despite variation JS being present`);
           }
 
+          // 🚨 PHASE 1: Validate completeness check (if present)
+          if (parsed.analysis && parsed.analysis.completenessCheck) {
+            console.log('🔍 [Phase 1] Validating completeness check...');
+            const check = parsed.analysis.completenessCheck;
+            const changes = parsed.analysis.requestedChanges || [];
+
+            // Log the analysis for debugging
+            console.log(`  📋 Requested changes: ${changes.join(', ')}`);
+            console.log(`  ✓ Completeness: ${JSON.stringify(check)}`);
+
+            // Validate that allImplemented is true
+            if (check.allImplemented === false) {
+              console.warn('⚠️ [Phase 1] AI indicated incomplete implementation:');
+              console.warn(`  Analysis: ${JSON.stringify(parsed.analysis, null, 2)}`);
+              // Don't throw - just warn, as AI might be overly cautious
+            }
+
+            // Validate that at least some changes were acknowledged
+            if (changes.length === 0) {
+              console.warn('⚠️ [Phase 1] No changes listed in analysis.requestedChanges');
+            } else {
+              console.log(`✅ [Phase 1] Completeness check passed: ${changes.length} changes acknowledged`);
+            }
+          } else {
+            // No analysis object - might be using old format or AI didn't follow instructions
+            console.log('⚠️ [Phase 1] No analysis object in response (AI may be using old format or didn\'t follow instructions)');
+          }
+
           return {
             variations: parsed.variations.map(v => ({
               number: v.number || 1,
@@ -4418,7 +4714,8 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
               js: v.js || ''
             })),
             globalCSS: parsed.globalCSS || '',
-            globalJS: parsed.globalJS || ''
+            globalJS: parsed.globalJS || '',
+            analysis: parsed.analysis || null  // Include analysis for debugging/validation
           };
         }
       } catch (jsonError) {
@@ -5342,7 +5639,8 @@ CRITICAL: (1) Respond with ONLY valid JSON. (2) Make smart editorial decisions t
         provider: actualSettings?.provider || 'openai',
         authToken: authToken,
         anthropicApiKey: actualSettings?.anthropicApiKey,
-        model: actualSettings?.model || 'gpt-4o-mini'
+        model: actualSettings?.model || 'gpt-4o-mini',
+        maxTokens: 16000  // Higher limit for refinements (includes previous code + new code)
       };
 
       console.log('🤖 [adjustCode] Calling AI with model:', aiSettings.model);

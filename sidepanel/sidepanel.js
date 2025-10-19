@@ -247,7 +247,12 @@ class UnifiedExperimentBuilder {
       
       console.log('Step 6: Set initial state...');
       this.updateWorkflowState('fresh');
-      
+
+      // 🚨 FIX: Clear any stale status messages or typing indicators from previous sessions
+      console.log('Step 6.1: Clearing stale status messages...');
+      this.hideTypingIndicator();
+      this.clearStatus(); // Clear status bar (don't show empty message)
+
       console.log('Step 7: Inject content scripts proactively...');
       await this.ensureContentScriptsLoaded();
 
@@ -3980,6 +3985,11 @@ Generating code for this element...`);
     const indicator = document.getElementById('typingIndicator');
     if (indicator) {
       indicator.classList.add('hidden');
+      // Clear the status text to prevent stale messages
+      const statusEl = document.getElementById('typingStatus');
+      if (statusEl) {
+        statusEl.textContent = '';
+      }
     }
   }
 
