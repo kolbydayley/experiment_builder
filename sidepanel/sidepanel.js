@@ -582,20 +582,6 @@ class UnifiedExperimentBuilder {
       console.log('🔍 All buttons found:', Array.from(allButtons).map(b => ({ id: b.id, text: b.textContent.trim().substring(0, 20) })));
     }
 
-    const uploadBtn = document.getElementById('uploadDesignBtn');
-    if (uploadBtn) {
-      console.log('✅ Found uploadDesignBtn');
-      uploadBtn.replaceWith(uploadBtn.cloneNode(true));
-      const newUploadBtn = document.getElementById('uploadDesignBtn');
-      newUploadBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        console.log('📁 Upload Design clicked');
-        this.openDesignFileUpload();
-      });
-    } else {
-      console.error('❌ uploadDesignBtn not found');
-    }
-
     const addVariationBtn = document.getElementById('addVariationBtn');
     if (addVariationBtn) {
       console.log('✅ Found addVariationBtn');
@@ -661,11 +647,6 @@ class UnifiedExperimentBuilder {
     const chatTemplatesBtn = document.getElementById('chatTemplatesBtn');
     if (chatTemplatesBtn) {
       chatTemplatesBtn.addEventListener('click', () => this.showTemplates());
-    }
-
-    const chatDesignBtn = document.getElementById('chatDesignBtn');
-    if (chatDesignBtn) {
-      chatDesignBtn.addEventListener('click', () => this.openDesignFileUpload());
     }
 
     const chatElementBtn = document.getElementById('chatElementBtn');
@@ -1848,8 +1829,8 @@ class UnifiedExperimentBuilder {
 
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => {
-          reject(new Error('AI generation timed out after 120 seconds. The API might be slow or unavailable.'));
-        }, 120000); // 120 second timeout (handles refinements with validation + retry)
+          reject(new Error('AI generation timed out after 3 minutes. The API might be slow or unavailable.'));
+        }, 180000); // 3 minute timeout (handles complex generations with deep context)
       });
 
       const response = await Promise.race([messagePromise, timeoutPromise]);
@@ -6806,9 +6787,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
           <button class="tool-btn select-element-btn" data-variation-id="${variation.id}" title="Select page element">
             🎯 Select Element
           </button>
-          <button class="tool-btn upload-design-btn" data-variation-id="${variation.id}" title="Upload design file">
-            📁 Upload Design
-          </button>
         </div>
       </div>
     `).join('');
@@ -6836,13 +6814,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
     additionalVariations.querySelectorAll('.select-element-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         this.activateElementSelector();
-      });
-    });
-
-    // Bind upload design buttons
-    additionalVariations.querySelectorAll('.upload-design-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this.openDesignFileUpload();
       });
     });
   }
@@ -7682,7 +7653,6 @@ function waitForElement(selector, callback, maxWait = 10000) {
     const buttons = [
       { id: 'selectElementBtn', name: 'Select Element', method: () => this.activateElementSelector() },
       { id: 'templatesBtn', name: 'Templates', method: () => this.showTemplates() },
-      { id: 'uploadDesignBtn', name: 'Upload Design', method: () => this.openDesignFileUpload() },
       { id: 'addVariationBtn', name: 'Add Variation', method: () => this.addVariation() },
       { id: 'drawerToggle', name: 'Code Drawer Toggle', method: () => this.toggleCodeDrawer() }
     ];

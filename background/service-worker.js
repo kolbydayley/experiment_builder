@@ -1562,7 +1562,7 @@ Return ONLY valid JSON, no additional text.`;
               contextType: 'deep'
             };
           } else {
-            logger.error(`Failed to capture deep context for ${selector}`, response.error);
+            logger.log(`Failed to capture deep context for ${selector}`, response.error);
             return {
               selector,
               reason,
@@ -1571,7 +1571,7 @@ Return ONLY valid JSON, no additional text.`;
             };
           }
         } catch (error) {
-          logger.error(`Content script error for ${selector}`, error.message);
+          logger.log(`Content script error for ${selector}`, error.message);
           // Try to find in existing database as fallback
           const existing = (pageData.context?.primary || pageData.elementDatabase?.elements || [])
             .find(el => el.selector === selector);
@@ -1732,6 +1732,58 @@ Return ONLY valid JSON, no additional text.`;
   }
 
   /**
+   * Extract brand context from element database (fallback when deep context is insufficient)
+   * Works with both element.visual (element database) and element.allStyles (hierarchical context)
+   */
+  extractBrandContextFromElements(elements) {
+    const colors = new Set();
+    const textColors = new Set();
+    const fonts = new Set();
+    const backgroundImages = new Set();
+
+    elements.forEach(element => {
+      // Try allStyles first (hierarchical context), then visual (element database)
+      const styles = element.allStyles || element.visual;
+
+      if (styles) {
+        // Extract background colors (skip transparent/none/white)
+        if (styles.backgroundColor &&
+            !['transparent', 'rgba(0, 0, 0, 0)', 'none', '#ffffff', 'rgb(255, 255, 255)', 'white', ''].includes(styles.backgroundColor.toLowerCase())) {
+          colors.add(styles.backgroundColor);
+        }
+
+        // Extract background images
+        if (styles.backgroundImage &&
+            styles.backgroundImage !== 'none' &&
+            styles.backgroundImage.includes('url(')) {
+          backgroundImages.add(styles.backgroundImage);
+        }
+
+        // Extract text colors (skip black/white defaults)
+        if (styles.color &&
+            !['#000000', 'rgb(0, 0, 0)', 'black', '#ffffff', 'rgb(255, 255, 255)', 'white', ''].includes(styles.color.toLowerCase())) {
+          textColors.add(styles.color);
+        }
+
+        // Extract font families (only first font in stack)
+        if (styles.fontFamily) {
+          const firstFont = styles.fontFamily.split(',')[0].trim().replace(/['"]/g, '');
+          if (firstFont && !firstFont.includes('system') && firstFont !== 'serif' && firstFont !== 'sans-serif') {
+            fonts.add(firstFont);
+          }
+        }
+      }
+    });
+
+    return {
+      colors: Array.from(colors).slice(0, 5),
+      textColors: Array.from(textColors).slice(0, 3),
+      fonts: Array.from(fonts).slice(0, 3),
+      backgroundImages: Array.from(backgroundImages).slice(0, 3)
+    };
+  }
+
+  /**
    * STAGE 3: Generate code with deep context and layout analysis
    * This is the final code generation stage with complete targeted context
    */
@@ -1774,19 +1826,61 @@ CRITICAL: Use the deep context and layout analysis to generate PERFECT code with
       logger.log('Building Stage 3 prompt', `descriptionLength=${description?.length || 0}, plan="${plan.plan?.substring(0,50)}..."`);
 
       // Extract brand context from deep context elements (colors, fonts)
-      const brandContext = this.extractBrandContext(deepContext);
-      if (brandContext) {
+      let brandContext = this.extractBrandContext(deepContext);
+
+      // FALLBACK: If deep context didn't provide enough brand info, extract from element database or hierarchical context
+      if (!brandContext || (brandContext.colors?.length || 0) < 2) {
+        logger.log('Insufficient brand context from deep context, extracting from element database');
+
+        // Try hierarchical context first (has full allStyles data)
+        let elementsToCheck = [];
+        if (pageData.context?.primary) {
+          elementsToCheck = [...(pageData.context.primary || []), ...(pageData.context.proximity || []), ...(pageData.context.structure || [])];
+          logger.log('Using hierarchical context', `${elementsToCheck.length} elements`);
+        } else {
+          elementsToCheck = pageData.elementDatabase?.elements || [];
+          logger.log('Using element database', `${elementsToCheck.length} elements`);
+        }
+
+        const fallbackBrandContext = this.extractBrandContextFromElements(elementsToCheck);
+
+        logger.log('Fallback brand context extracted', `colors=${fallbackBrandContext?.colors?.length || 0}, fonts=${fallbackBrandContext?.fonts?.length || 0}, images=${fallbackBrandContext?.backgroundImages?.length || 0}`);
+
+        // Merge with existing brand context
+        brandContext = {
+          colors: [...(brandContext?.colors || []), ...(fallbackBrandContext?.colors || [])].slice(0, 5),
+          textColors: [...(brandContext?.textColors || []), ...(fallbackBrandContext?.textColors || [])].slice(0, 3),
+          fonts: [...(brandContext?.fonts || []), ...(fallbackBrandContext?.fonts || [])].slice(0, 3),
+          backgroundImages: [...(brandContext?.backgroundImages || []), ...(fallbackBrandContext?.backgroundImages || [])].slice(0, 3)
+        };
+
+        logger.log('Merged brand context', `colors=${brandContext.colors?.length || 0}, fonts=${brandContext.fonts?.length || 0}, images=${brandContext.backgroundImages?.length || 0}`);
+      }
+
+      if (brandContext && (brandContext.colors?.length > 0 || brandContext.fonts?.length > 0 || brandContext.backgroundImages?.length > 0)) {
         userMessage += `**PAGE BRAND CONTEXT (extracted from existing design):**\n`;
         if (brandContext.colors?.length > 0) {
-          userMessage += `- Colors found: ${brandContext.colors.join(', ')}\n`;
+          userMessage += `- Brand colors found: ${brandContext.colors.join(', ')}\n`;
         }
         if (brandContext.fonts?.length > 0) {
-          userMessage += `- Fonts: ${brandContext.fonts.join(', ')}\n`;
+          userMessage += `- Brand fonts: ${brandContext.fonts.join(', ')}\n`;
         }
         if (brandContext.textColors?.length > 0) {
           userMessage += `- Text colors: ${brandContext.textColors.join(', ')}\n`;
         }
-        userMessage += `- **USE THESE COLORS/FONTS** to match the existing design, don't invent new colors\n\n`;
+        if (brandContext.backgroundImages?.length > 0) {
+          userMessage += `- Existing background images on page:\n`;
+          brandContext.backgroundImages.forEach((img, i) => {
+            userMessage += `  ${i + 1}. ${img}\n`;
+          });
+        }
+        userMessage += `\n**CRITICAL BRAND REQUIREMENTS:**\n`;
+        userMessage += `- USE the colors/fonts listed above to match the existing design\n`;
+        userMessage += `- If creating a hero section and background images exist above, REUSE one of those images instead of creating gradients\n`;
+        userMessage += `- Do NOT invent new brand colors or use generic color schemes (like purple gradients)\n`;
+        userMessage += `- Stay consistent with the page's existing visual style\n\n`;
+      } else {
+        logger.log('⚠️ No brand context available - AI may invent colors');
       }
 
       // Add AI's own plan for continuity
@@ -4141,6 +4235,47 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
   }
 
   /**
+   * Get appropriate maxTokens for a given AI model
+   * @param {string} model - The model name
+   * @param {number} requestedTokens - Requested maxTokens (optional)
+   * @returns {number} - Safe maxTokens for the model
+   */
+  getModelMaxTokens(model, requestedTokens) {
+    // Model-specific output token limits
+    const MODEL_LIMITS = {
+      'claude-3-5-haiku-20241022': 8192,
+      'claude-3-7-sonnet-20250219': 16000,
+      'claude-sonnet-4-5-20250929': 16000,
+      'gpt-4o': 16384,
+      'gpt-4o-mini': 16384,
+      'gpt-4-turbo': 4096
+    };
+
+    // Find the limit for this model
+    let limit = 16000; // Default for most models
+
+    for (const [modelName, maxTokens] of Object.entries(MODEL_LIMITS)) {
+      if (model.includes(modelName) || modelName.includes(model)) {
+        limit = maxTokens;
+        break;
+      }
+    }
+
+    // If no specific token count requested, return safe default (80% of limit)
+    if (!requestedTokens) {
+      return Math.floor(limit * 0.8);
+    }
+
+    // If requested tokens exceed limit, cap at limit
+    if (requestedTokens > limit) {
+      console.warn(`⚠️ Requested maxTokens (${requestedTokens}) exceeds model limit (${limit}). Capping at ${limit}.`);
+      return limit;
+    }
+
+    return requestedTokens;
+  }
+
+  /**
    * Unified AI call - routes to appropriate provider
    */
   async callAI(messages, settings) {
@@ -4149,9 +4284,12 @@ For example, if the code calls getNextFridayMidnightPT(), getTimeRemaining(), an
 
     console.log('🤖 AI Provider:', { provider, model, hasAnthropicKey: !!settings.anthropicApiKey, hasOpenAIKey: !!settings.authToken });
 
-    // Extract maxTokens if provided
+    // Get safe maxTokens for this model
+    const maxTokens = this.getModelMaxTokens(model, settings?.maxTokens);
+
+    // Extract options
     const options = {
-      maxTokens: settings?.maxTokens,
+      maxTokens: maxTokens,
       temperature: settings?.temperature
     };
 

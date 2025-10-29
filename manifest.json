@@ -9,8 +9,6 @@
     "sidePanel",
     "scripting",
     "tabs",
-    "cookies",
-    "tabCapture",
     "debugger"
   ],
   "host_permissions": [

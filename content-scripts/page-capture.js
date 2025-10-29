@@ -1096,8 +1096,10 @@ class PageCapture {
     return {
       color: computedStyles.color,
       backgroundColor: computedStyles.backgroundColor,
+      backgroundImage: computedStyles.backgroundImage,
       fontSize: computedStyles.fontSize,
       fontWeight: computedStyles.fontWeight,
+      fontFamily: computedStyles.fontFamily,
       padding: computedStyles.padding,
       margin: computedStyles.margin,
       border: computedStyles.border,
